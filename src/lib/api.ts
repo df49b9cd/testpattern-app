@@ -1,0 +1,81 @@
+import { invoke } from "./bridge";
+import type {
+  Category,
+  Channel,
+  ChannelQuery,
+  GuideRow,
+  HistoryInput,
+  HistoryItem,
+  MediaKind,
+  MediaQuery,
+  Movie,
+  MovieDetail,
+  Page,
+  PlayRequest,
+  Programme,
+  RecentChannel,
+  SearchResults,
+  Series,
+  SeriesDetail,
+  Settings,
+  Source,
+  SourceInput,
+  TestResult,
+  UpNext,
+  WatchedMeta,
+} from "./types";
+
+/** Thin typed wrappers around the Tauri commands (src-tauri/src/lib.rs). */
+export const api = {
+  // sources
+  sources: () => invoke<Source[]>("sources_list"),
+  /** `id`: the source being edited (an empty password then means the stored one). */
+  testSource: (input: SourceInput, id?: number) => invoke<TestResult>("source_test", { input, id }),
+  addSource: (input: SourceInput) => invoke<Source>("source_add", { input }),
+  updateSource: (id: number, input: SourceInput) => invoke<Source>("source_update", { id, input }),
+  removeSource: (id: number) => invoke<void>("source_remove", { id }),
+  syncSource: (id: number, epgOnly = false) => invoke<void>("source_sync", { id, epgOnly }),
+
+  // catalog
+  categories: (kind: MediaKind) => invoke<Category[]>("categories", { kind }),
+  channels: (query: ChannelQuery) => invoke<Page<Channel>>("channels", { query }),
+  channel: (sourceId: number, id: string) => invoke<Channel>("channel", { sourceId, id }),
+  movies: (query: MediaQuery) => invoke<Page<Movie>>("movies", { query }),
+  series: (query: MediaQuery) => invoke<Page<Series>>("series_list", { query }),
+  movieDetail: (sourceId: number, id: string) => invoke<MovieDetail>("movie_detail", { sourceId, id }),
+  seriesDetail: (sourceId: number, id: string) => invoke<SeriesDetail>("series_detail", { sourceId, id }),
+  epg: (sourceId: number, channelId: string, from: number, to: number) =>
+    invoke<Programme[]>("epg_channel", { sourceId, channelId, from, to }),
+  guide: (query: ChannelQuery & { from: number; to: number }) => invoke<Page<GuideRow>>("epg_grid", { query }),
+  search: (q: string, limit = 30) => invoke<SearchResults>("search", { q, limit }),
+
+  // library
+  toggleFavorite: (kind: MediaKind, sourceId: number, itemId: string) =>
+    invoke<boolean>("favorite_toggle", { kind, sourceId, itemId }),
+  updateHistory: (entry: HistoryInput) => invoke<void>("history_update", { entry }),
+  /** `meta` describes items without history yet (never-played episodes). */
+  markWatched: (kind: "movie" | "episode", sourceId: number, itemId: string, watched: boolean, meta?: WatchedMeta) =>
+    invoke<void>("mark_watched", { kind, sourceId, itemId, watched, meta }),
+  removeHistory: (kind: string, sourceId: number, itemId: string) =>
+    invoke<void>("history_remove", { kind, sourceId, itemId }),
+  continueWatching: (limit = 20) => invoke<HistoryItem[]>("continue_watching", { limit }),
+  recentChannels: (limit = 20) => invoke<RecentChannel[]>("recent_channels", { limit }),
+  upNext: (limit = 20) => invoke<UpNext[]>("up_next", { limit }),
+
+  // playback
+  play: (req: PlayRequest) => invoke<void>("play", { req }),
+  stop: () => invoke<void>("player_stop"),
+  command: (...args: (string | number)[]) => invoke<void>("player_command", { args: args.map(String) }),
+  set: (name: string, value: unknown) => invoke<void>("player_set", { name, value }),
+  get: <T = unknown>(name: string) => invoke<T | null>("player_get", { name }),
+
+  // settings
+  settings: () => invoke<Settings>("settings_get"),
+  setSetting: (key: string, value: unknown) => invoke<void>("settings_set", { key, value }),
+};
+
+export function errorMessage(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  return JSON.stringify(e);
+}

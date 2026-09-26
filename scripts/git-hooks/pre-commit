@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Refuses commits whose staged changes contain a value from .env.local (test
+# account credentials, provider server/mirror hosts). Prints only the key
+# name, never the value. Enable once per clone:
+#
+#   git config core.hooksPath scripts/git-hooks
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+ENV_FILE="$ROOT/.env.local"
+[[ -f "$ENV_FILE" ]] || exit 0
+
+# added lines of text files in the index (binary files are skipped by diff)
+added="$(git diff --cached --no-color --no-ext-diff --unified=0 --diff-filter=ACMR |
+  grep '^+' | grep -v '^+++ ' || true)"
+[[ -n "$added" ]] || exit 0
+
+found=0
+while IFS='=' read -r key value || [[ -n "$key" ]]; do
+  key="${key#export }"
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  value="${value%\"}" && value="${value#\"}"
+  value="${value%\'}" && value="${value#\'}"
+  IFS=',' read -ra parts <<<"$value"
+  for part in "${parts[@]}"; do
+    part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    # the value itself and, for URLs, the bare host name
+    host="${part#*://}"
+    host="${host%%[:/]*}"
+    for needle in "$part" "$host"; do
+      [[ ${#needle} -ge 4 ]] || continue
+      if grep -qF -- "$needle" <<<"$added"; then
+        echo "pre-commit: staged changes contain the value of $key from .env.local — commit refused." >&2
+        found=1
+        break
+      fi
+    done
+  done
+done <"$ENV_FILE"
+
+if [[ $found -ne 0 ]]; then
+  echo "pre-commit: find it with: git diff --cached | grep -nF \"\$(grep '^KEY=' .env.local | cut -d= -f2-)\"" >&2
+fi
+exit $found

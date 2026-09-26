@@ -1,0 +1,50 @@
+# testpattern — generated, downloaded and machine-local files stay out of git.
+# Everything ignored here can be rebuilt: WORKLOG.md §3 "How to build and run".
+
+# --- dependencies & build output
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+vite.config.*.timestamp-*
+src-tauri/target/
+# written by tauri-build on every build (capability schemas for editors)
+src-tauri/gen/schemas/
+
+# --- media engine sources/builds (scripts/build-media.sh)
+third_party/src/
+third_party/build/
+third_party/prefix/
+
+# --- dev environment: rootless sysroot, RPM cache, venv, headless test
+#     profile + logs + snapshots (scripts/fedora-sysroot.sh, headless.sh)
+.deps/
+
+# --- secrets & local overrides: test accounts live in .env.local (never
+#     commit them; .env.example documents the keys)
+.env
+.env.*
+!.env.example
+*.local
+*.local.json
+*.pem
+*.key
+
+# --- Claude Code: per-session state (.claude/launch.json is shared, tracked)
+.claude/.cc-writes/
+.claude/settings.local.json
+
+# --- editors & OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- logs & coverage
+*.log
+npm-debug.log*
+coverage/
