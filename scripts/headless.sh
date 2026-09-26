@@ -9,6 +9,7 @@
 #   scripts/headless.sh status
 #   scripts/headless.sh restart-app            (after a cargo build)
 #   scripts/headless.sh seed                   (add test account 1 from .env.local)
+#   scripts/headless.sh tmdb                   (TMDB key from .env.local, if any)
 #   scripts/headless.sh keyring lock|unlock    (the test keyring, no prompt)
 #
 # TP_HEADLESS_X11=1 at start also runs an Xwayland inside the nested KWin
@@ -174,10 +175,22 @@ case "${1:-status}" in
     curl -s -X POST -H 'content-type: application/json' --data "$body" http://127.0.0.1:17777/invoke >/dev/null
     for _ in $(seq 1 120); do
       state=$(curl -s -X POST -H 'content-type: application/json' --data '{"cmd":"sources_list","args":{}}' http://127.0.0.1:17777/invoke)
-      if echo "$state" | grep -q '"syncing":false' && echo "$state" | grep -q '"programmes":[1-9]'; then echo "seeded"; exit 0; fi
+      if echo "$state" | grep -q '"syncing":false' && echo "$state" | grep -q '"programmes":[1-9]'; then
+        echo "seeded"
+        [[ -n "${TP_TMDB_TOKEN:-${TP_TMDB_KEY:-}}" ]] && "$0" tmdb
+        exit 0
+      fi
       sleep 1
     done
     echo "seed did not finish" >&2; exit 1
+    ;;
+  tmdb)
+    # The user's TMDB key (gitignored .env.local) for the isolated profile;
+    # sent on stdin so it never shows in a process list.
+    set -a; . "$ROOT/.env.local"; set +a
+    python3 -c 'import json,os; print(json.dumps({"cmd":"tmdb_set_key","args":{"key":os.environ.get("TP_TMDB_TOKEN") or os.environ.get("TP_TMDB_KEY","")}}))' \
+      | curl -s -X POST -H 'content-type: application/json' --data-binary @- http://127.0.0.1:17777/invoke \
+      | python3 -c 'import json,sys; r=json.load(sys.stdin); print("tmdb:", r if isinstance(r, str) else {k: r.get(k) for k in ("configured","running","titles","known","error")})'
     ;;
   keyring)
     # what a user's wallet does on its own (screen lock, unlocked in another

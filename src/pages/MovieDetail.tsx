@@ -6,6 +6,7 @@ import { clock, duration, resolutionLabel } from "../lib/format";
 import { openExternal, youtubeUrl } from "../lib/open";
 import { playMovie } from "../lib/play";
 import { DetailHero, Facts, MetaDot } from "../components/DetailHero";
+import { VersionPill, Versions } from "../components/Versions";
 import { Badge, Button, EmptyState, IconButton, ProgressBar, Spinner } from "../components/ui";
 
 export function MovieDetailPage() {
@@ -17,6 +18,8 @@ export function MovieDetailPage() {
     queryKey: ["movie-detail", sid, id],
     queryFn: () => api.movieDetail(sid, id!),
     enabled: !!id,
+    // other versions' details still loading: ask again a few times
+    refetchInterval: (query) => (query.state.data?.versionsPending && query.state.dataUpdateCount < 6 ? 3000 : false),
   });
 
   if (q.isLoading) return <Spinner className="p-10" label="Loading…" />;
@@ -74,6 +77,7 @@ export function MovieDetailPage() {
             {channels && channels > 2 && <Badge>{channels === 6 ? "5.1" : channels === 8 ? "7.1" : `${channels}ch`}</Badge>}
             {m.ext && <Badge>{m.ext}</Badge>}
             {m.watched && <Badge tone="accent">Watched</Badge>}
+            <VersionPill versions={m.versions} />
           </>
         }
         actions={
@@ -125,18 +129,39 @@ export function MovieDetailPage() {
         plot={m.plot}
       />
       {resumable && m.duration ? (
-        <div className="-mt-4 mb-8 flex max-w-xl items-center gap-3 px-10 text-sm text-dim">
+        <div className="relative -mt-4 mb-8 flex max-w-xl items-center gap-3 px-10 text-sm text-dim">
           <ProgressBar value={m.position / m.duration} className="flex-1" />
           <span>{Math.round((m.duration - m.position) / 60)} min left</span>
         </div>
       ) : null}
+      {/* positioned: the hero's backdrop reaches down here */}
+      <div className="relative mb-10">
+        <Versions
+          kind="movie"
+          versions={m.versions}
+          pending={m.versionsPending}
+          onPicked={() => {
+            void qc.invalidateQueries({ queryKey: ["movie-detail", sid, id] });
+            void qc.invalidateQueries({ queryKey: ["movies"] });
+          }}
+        />
+      </div>
       <Facts
         items={[
           ["Director", m.director],
           ["Cast", m.cast],
           ["Genre", m.genre],
           ["Released", m.releaseDate],
-          ["Country", m.country],
+          ["Country", m.country ?? (m.tmdb?.countries.length ? m.tmdb.countries.join(", ") : null)],
+          ["Original language", m.tmdb?.originalLanguage],
+          [
+            "Collection",
+            m.tmdb?.collection && (
+              <button className="font-medium text-accent-strong hover:text-fg" onClick={() => navigate(`/movies?franchise=${encodeURIComponent(m.tmdb!.collection!)}`)}>
+                {m.tmdb.collection}
+              </button>
+            ),
+          ],
         ]}
       />
     </div>

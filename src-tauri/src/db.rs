@@ -275,6 +275,99 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE source ADD COLUMN password_in_keyring INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v7 — grouping for browsing (works/): one work per movie/series across
+    // provider copies, one group per live channel across stream variants,
+    // remembered choices, and track info learned from the files
+    r#"
+    ALTER TABLE movie ADD COLUMN work_key TEXT;
+    ALTER TABLE series ADD COLUMN work_key TEXT;
+    ALTER TABLE channel ADD COLUMN group_key TEXT;
+    CREATE INDEX movie_by_work ON movie(work_key);
+    CREATE INDEX series_by_work ON series(work_key);
+    CREATE INDEX channel_by_group ON channel(group_key);
+
+    CREATE TABLE work (
+        kind      TEXT NOT NULL,                 -- 'movie' | 'series'
+        key       TEXT NOT NULL,                 -- 'tmdb:<id>' | 'title:<norm>|<year>' | 'item:<source>:<id>'
+        title     TEXT NOT NULL,
+        year      INTEGER,
+        poster    TEXT,
+        backdrop  TEXT,
+        rating    REAL,
+        genre     TEXT,                          -- canonical genres, ', ' separated
+        added     INTEGER,                       -- newest member
+        versions  INTEGER NOT NULL,
+        badges    TEXT NOT NULL DEFAULT '',      -- '4K|Dolby Vision|…' over all members
+        services  TEXT NOT NULL DEFAULT '',      -- 'Netflix|Apple TV+|…'
+        adult     INTEGER NOT NULL DEFAULT 0,
+        source_id INTEGER NOT NULL,              -- representative member
+        item_id   TEXT NOT NULL,
+        PRIMARY KEY (kind, key)
+    ) WITHOUT ROWID;
+    CREATE INDEX work_by_added ON work(kind, added DESC);
+    CREATE INDEX work_by_title ON work(kind, title COLLATE NOCASE);
+
+    CREATE TABLE work_facet (
+        kind  TEXT NOT NULL,
+        facet TEXT NOT NULL,                     -- service | language | quality | genre | decade | collection
+        value TEXT NOT NULL,
+        key   TEXT NOT NULL,
+        PRIMARY KEY (kind, facet, value, key)
+    ) WITHOUT ROWID;
+    CREATE INDEX work_facet_by_key ON work_facet(kind, key);
+
+    CREATE TABLE channel_group (
+        key       TEXT PRIMARY KEY,              -- '<country>|<normalized title>'
+        title     TEXT NOT NULL,
+        country   TEXT,
+        genre     TEXT NOT NULL,
+        logo      TEXT,
+        epg_id    TEXT,
+        variants  INTEGER NOT NULL,
+        adult     INTEGER NOT NULL DEFAULT 0,
+        position  INTEGER NOT NULL,
+        source_id INTEGER NOT NULL,              -- default variant
+        item_id   TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX channel_group_nav ON channel_group(country, genre, position);
+    CREATE INDEX channel_group_by_genre ON channel_group(genre, position);
+
+    -- the version the user picked (survives re-syncs: keyed by work/group)
+    CREATE TABLE work_pref (
+        kind       TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        source_id  INTEGER NOT NULL,
+        item_id    TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, key)
+    ) WITHOUT ROWID;
+    CREATE TABLE channel_pref (
+        key        TEXT PRIMARY KEY,
+        source_id  INTEGER NOT NULL,
+        item_id    TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    ) WITHOUT ROWID;
+
+    -- audio/subtitle/video tracks seen in a file (player or probe)
+    CREATE TABLE media_info (
+        source_id  INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+        kind       TEXT NOT NULL,                -- 'movie' | 'episode'
+        item_id    TEXT NOT NULL,
+        json       TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (source_id, kind, item_id)
+    ) WITHOUT ROWID;
+    "#,
+    // v8: TMDB details of the catalog's titles (tmdb.rs), shared by all sources
+    r#"
+    CREATE TABLE tmdb (
+        kind       TEXT NOT NULL,                -- 'movie' | 'tv'
+        id         TEXT NOT NULL,                -- TMDB id
+        json       TEXT,                         -- tmdb::Info; NULL = not on TMDB
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, id)
+    ) WITHOUT ROWID;
+    "#,
 ];
 
 fn migrate(c: &Connection) -> Result<()> {

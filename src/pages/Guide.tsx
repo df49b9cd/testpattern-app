@@ -6,8 +6,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
 import { day, hhmm, nowUnix } from "../lib/format";
+import { keyString, parseKey, queryFor } from "../lib/liveLists";
 import { playCatchup, playChannel } from "../lib/play";
-import type { Channel, GuideRow, Programme } from "../lib/types";
+import type { Channel, ChannelQuery, GuideRow, Programme } from "../lib/types";
 import { ChannelLogo } from "../components/media";
 import { Button, EmptyState, IconButton, LiveDot, Spinner } from "../components/ui";
 
@@ -33,13 +34,18 @@ export function GuidePage() {
   }, []);
 
   const categories = useQuery({ queryKey: ["categories", "live"], queryFn: () => api.categories("live") });
-  const [sourceId, categoryId] = list.includes(":") ? [Number(list.split(":")[0]), list.slice(list.indexOf(":") + 1)] : [undefined, undefined];
-  const base = {
-    favorites: list === "favorites" || undefined,
-    withEpg: list === "epg" || undefined,
-    sourceId,
-    categoryId,
-  };
+  const nav = useQuery({ queryKey: ["channels", "nav"], queryFn: api.liveNav });
+  // "epg": every channel with guide data; countries/genres: theirs with guide
+  // data; favorites and provider categories: all of them
+  const key = list === "epg" ? null : parseKey(list);
+  const base: ChannelQuery =
+    key === null ? { grouped: true, withEpg: true } : { ...queryFor(key), withEpg: key.type === "nav" || undefined };
+  const navKey = key?.type === "nav" ? key : null;
+  const genresHere = navKey
+    ? (nav.data?.genres ?? []).filter((g) =>
+        nav.data?.cells.some((c) => c.genre === g && (navKey.country === undefined || (c.country ?? "") === navKey.country)),
+      )
+    : [];
 
   const q = useInfiniteQuery({
     queryKey: ["guide", list, from],
@@ -79,19 +85,44 @@ export function GuidePage() {
       <div className="flex flex-wrap items-center gap-4 px-8 pb-4 pt-6">
         <h1 className="text-3xl font-bold tracking-tight">TV Guide</h1>
         <select
-          value={list}
+          aria-label="Channels"
+          value={navKey ? keyString({ type: "nav", country: navKey.country }) : list}
           onChange={(e) => setParams({ list: e.target.value }, { replace: true })}
           className="h-9 max-w-72 rounded-lg bg-white/[0.06] px-3 text-sm outline-none ring-1 ring-white/[0.08] focus:ring-accent"
         >
           <option value="epg">All channels with guide</option>
           <option value="favorites">Favorites</option>
-          {(categories.data ?? []).map((c) => (
-            <option key={`${c.sourceId}:${c.id}`} value={`${c.sourceId}:${c.id}`}>
-              {c.region ? `${c.region} · ` : ""}
-              {c.title}
-            </option>
-          ))}
+          <optgroup label="Countries">
+            {(nav.data?.countries ?? []).map((c) => (
+              <option key={c.code ?? "-"} value={keyString({ type: "nav", country: c.code ?? "" })}>
+                {c.name}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="Provider categories">
+            {(categories.data ?? []).map((c) => (
+              <option key={`${c.sourceId}:${c.id}`} value={`${c.sourceId}:${c.id}`}>
+                {c.region ? `${c.region} · ` : ""}
+                {c.title}
+              </option>
+            ))}
+          </optgroup>
         </select>
+        {navKey && (
+          <select
+            aria-label="Genre"
+            value={navKey.genre ?? ""}
+            onChange={(e) => setParams({ list: keyString({ ...navKey, genre: e.target.value || undefined }) }, { replace: true })}
+            className="h-9 max-w-56 rounded-lg bg-white/[0.06] px-3 text-sm outline-none ring-1 ring-white/[0.08] focus:ring-accent"
+          >
+            <option value="">All genres</option>
+            {genresHere.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <span className="mr-2 text-sm text-dim">{day(from)}</span>
           <IconButton label="Earlier" onClick={() => shift(-3)}>

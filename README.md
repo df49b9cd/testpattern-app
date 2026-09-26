@@ -12,6 +12,15 @@ search, for **Xtream Codes** accounts and **M3U** playlists (+ XMLTV).
 - **Ships as one executable** (~62 MB) — .deb, .rpm and AppImage
 - **Hardware decoding** through VA-API with zero-copy on Wayland; **source
   passwords** live in the desktop keyring (KWallet, GNOME Keyring)
+- **One entry per title:** the copies a provider lists of a film or show
+  (Netflix, Apple TV+, Blu-ray, Nordic, 4K Dolby Vision, …) become *versions*
+  with their seasons, picture, audio and subtitles; one row per TV channel
+  with its feeds (HD, RAW, HEVC, 4K…); browse by service, genre, language,
+  quality, decade, country and live genre
+- **Optional TMDB metadata** with your own free API key (Settings →
+  Metadata): genres for every movie, original languages, collections, TV
+  networks. This product uses the TMDB API but is not endorsed or certified
+  by TMDB.
 
 ## Build (Fedora)
 
@@ -51,7 +60,8 @@ scripts/headless.sh start && scripts/headless.sh seed && scripts/smoke.sh
 ```
 
 The smoke test needs a provider account: copy `.env.example` to the
-gitignored `.env.local` and fill it in. To make sure those credentials never
+gitignored `.env.local` and fill it in (optionally with a TMDB key:
+`TP_TMDB_TOKEN`, see `.env.example`). To make sure those credentials never
 reach a commit, enable the repository's hook once per clone:
 
 ```bash

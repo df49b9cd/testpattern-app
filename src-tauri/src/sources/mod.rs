@@ -402,6 +402,7 @@ pub async fn source_remove(state: State<'_, AppState>, id: i64) -> Result<()> {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM search WHERE source_id = ?1", [id])?;
         tx.execute("DELETE FROM source WHERE id = ?1", [id])?;
+        crate::works::rebuild(&tx)?;
         tx.commit()?;
         Ok(())
     })
@@ -449,6 +450,10 @@ pub fn spawn_sync<R: Runtime>(app: AppHandle<R>, st: AppState, id: i64, scope: S
         match result {
             Ok(counts) => {
                 let _ = app.emit(SYNC_EVENT, SyncProgress::Done { source_id: id, counts });
+                // new titles: their TMDB details (when a key is set)
+                if scope == SyncScope::Full {
+                    crate::tmdb::spawn(app.clone(), st.clone());
+                }
             }
             Err(e) => {
                 log::warn!("sync of source {id} failed: {e}");
@@ -856,6 +861,7 @@ fn write_xtream(conn: &mut Connection, id: i64, l: XtreamLists) -> Result<()> {
     }
     drop(search);
     prune_detail_cache(&tx, id)?;
+    crate::works::rebuild(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -1000,6 +1006,7 @@ fn write_m3u(conn: &mut Connection, id: i64, pl: &m3u::Playlist) -> Result<()> {
     }
     drop((cat_stmt, ch_stmt, mv_stmt, sr_stmt, ep_stmt, search));
     prune_detail_cache(&tx, id)?;
+    crate::works::rebuild(&tx)?;
     tx.commit()?;
     Ok(())
 }

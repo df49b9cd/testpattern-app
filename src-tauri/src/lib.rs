@@ -9,11 +9,14 @@ mod library;
 mod names;
 mod playback;
 mod player;
+mod probe;
 mod secrets;
 mod settings;
 mod sources;
 mod state;
+mod tmdb;
 mod util;
+mod works;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,6 +56,10 @@ pub fn run() {
             let cache_dir = app.path().app_cache_dir()?;
             let db = db::Db::open(&data_dir.join("testpattern.db"))
                 .map_err(|e| format!("cannot open database in {}: {e}", data_dir.display()))?;
+            // grouping rules changed since the catalog was last grouped
+            if let Err(e) = works::rebuild_if_stale(&mut db.write()) {
+                log::error!("regrouping the catalog failed: {e}");
+            }
             let st: state::AppState = Arc::new(state::App {
                 db,
                 http: state::http_client(None),
@@ -82,6 +89,14 @@ pub fn run() {
             });
 
             // Keep catalogs and guides fresh: a first pass as soon as the
+            // TMDB details of titles added since the last run (tmdb.rs), after
+            // startup settled; syncs start further runs.
+            let (tmdb_app, tmdb_state) = (app.handle().clone(), st.clone());
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                tmdb::spawn(tmdb_app, tmdb_state);
+            });
+
             // keyring passwords are loaded (secrets.rs), then every 30 min.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -113,9 +128,17 @@ pub fn run() {
             sources::source_sync,
             catalog::categories,
             catalog::channels,
+            catalog::live_nav,
+            catalog::channel_variants,
             catalog::channel,
             catalog::movies,
             catalog::series_list,
+            catalog::work_facets,
+            works::versions::work_prefer,
+            probe::version_probe,
+            tmdb::tmdb_status,
+            tmdb::tmdb_set_key,
+            tmdb::tmdb_refresh,
             catalog::movie_detail,
             catalog::series_detail,
             catalog::epg_channel,
@@ -123,6 +146,8 @@ pub fn run() {
             catalog::search,
             catalog::up_next,
             library::favorite_toggle,
+            library::channel_prefer,
+            library::channel_group_favorite,
             library::history_update,
             library::mark_watched,
             library::history_remove,

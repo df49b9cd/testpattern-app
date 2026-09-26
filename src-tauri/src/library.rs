@@ -16,10 +16,30 @@ pub async fn favorite_toggle(state: State<'_, AppState>, kind: String, source_id
         return Err(Error::msg(format!("cannot favorite {kind}")));
     }
     let conn = state.db.write();
-    let removed = conn.execute(
-        "DELETE FROM favorite WHERE source_id = ?1 AND kind = ?2 AND item_id = ?3",
-        params![source_id, kind, item_id],
-    )?;
+    toggle_favorite(&conn, &kind, source_id, &item_id)
+}
+
+/// Movies and series are favorites as a whole: a work counts as favorite when
+/// any of its copies is, and un-favoriting clears every copy.
+pub fn toggle_favorite(conn: &Connection, kind: &str, source_id: i64, item_id: &str) -> Result<bool> {
+    let removed = if kind == "live" {
+        conn.execute(
+            "DELETE FROM favorite WHERE source_id = ?1 AND kind = ?2 AND item_id = ?3",
+            params![source_id, kind, item_id],
+        )?
+    } else {
+        let table = if kind == "movie" { "movie" } else { "series" };
+        conn.execute(
+            &format!(
+                "DELETE FROM favorite WHERE kind = ?2 AND (
+                     (source_id = ?1 AND item_id = ?3)
+                     OR (source_id, item_id) IN (
+                         SELECT x.source_id, x.id FROM {table} x
+                          WHERE x.work_key = (SELECT work_key FROM {table} WHERE source_id = ?1 AND id = ?3)))"
+            ),
+            params![source_id, kind, item_id],
+        )?
+    };
     if removed > 0 {
         return Ok(false);
     }
@@ -28,6 +48,58 @@ pub async fn favorite_toggle(state: State<'_, AppState>, kind: String, source_id
         params![source_id, kind, item_id, now()],
     )?;
     Ok(true)
+}
+
+/// Makes `(source_id, id)` the feed that plays for its channel group.
+pub fn prefer_channel(conn: &Connection, key: &str, source_id: i64, id: &str) -> Result<()> {
+    let member: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM channel WHERE source_id = ?1 AND id = ?2 AND group_key = ?3)",
+        params![source_id, id, key],
+        |r| r.get(0),
+    )?;
+    if !member {
+        return Err(Error::NotFound(format!("channel {id} in {key}")));
+    }
+    conn.execute(
+        "INSERT INTO channel_pref (key, source_id, item_id, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(key) DO UPDATE SET source_id = excluded.source_id, item_id = excluded.item_id,
+                                        updated_at = excluded.updated_at",
+        params![key, source_id, id, now()],
+    )?;
+    conn.execute("UPDATE channel_group SET source_id = ?2, item_id = ?3 WHERE key = ?1", params![key, source_id, id])?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn channel_prefer(state: State<'_, AppState>, key: String, source_id: i64, id: String) -> Result<()> {
+    prefer_channel(&state.db.write(), &key, source_id, &id)
+}
+
+/// Heart on a channel row (all feeds of the channel): clears the favorite
+/// of every feed, or makes the playing feed a favorite.
+pub fn toggle_group_favorite(conn: &Connection, key: &str) -> Result<bool> {
+    let removed = conn.execute(
+        "DELETE FROM favorite WHERE kind = 'live'
+            AND (source_id, item_id) IN (SELECT source_id, id FROM channel WHERE group_key = ?1)",
+        [key],
+    )?;
+    if removed > 0 {
+        return Ok(false);
+    }
+    let (source_id, id): (i64, String) = conn
+        .query_row("SELECT source_id, item_id FROM channel_group WHERE key = ?1", [key], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("channel {key}")))?;
+    conn.execute(
+        "INSERT INTO favorite (source_id, kind, item_id, added_at) VALUES (?1, 'live', ?2, ?3)",
+        params![source_id, id, now()],
+    )?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn channel_group_favorite(state: State<'_, AppState>, key: String) -> Result<bool> {
+    toggle_group_favorite(&state.db.write(), &key)
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,11 +295,20 @@ pub struct HistoryItem {
 #[tauri::command]
 pub async fn continue_watching(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<HistoryItem>> {
     let conn = state.db.read();
+    // One entry per title: the latest play of any copy (episode of any copy of
+    // a show). A title whose latest play was finished is not "in progress".
     let mut stmt = conn.prepare_cached(
         "SELECT kind, source_id, item_id, series_id, season, episode, title, subtitle, image, backdrop, ext,
                 position, duration, updated_at
-           FROM history
-          WHERE kind IN ('movie', 'episode') AND watched = 0 AND position > 30
+           FROM (SELECT h.*, ROW_NUMBER() OVER (
+                        PARTITION BY COALESCE(m.work_key, s.work_key,
+                                              h.kind || ':' || h.source_id || ':' || COALESCE(h.series_id, h.item_id))
+                        ORDER BY h.updated_at DESC) AS n
+                   FROM history h
+                   LEFT JOIN movie m ON h.kind = 'movie' AND m.source_id = h.source_id AND m.id = h.item_id
+                   LEFT JOIN series s ON h.kind = 'episode' AND s.source_id = h.source_id AND s.id = h.series_id
+                  WHERE h.kind IN ('movie', 'episode'))
+          WHERE n = 1 AND watched = 0 AND position > 30
           ORDER BY updated_at DESC LIMIT ?1",
     )?;
     let rows = stmt
@@ -264,9 +345,17 @@ pub struct RecentChannel {
 #[tauri::command]
 pub async fn recent_channels(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<RecentChannel>> {
     let conn = state.db.read();
+    // one entry per channel: the feed watched last
     let recent: Vec<(i64, String, i64)> = conn
         .prepare_cached(
-            "SELECT source_id, item_id, updated_at FROM history WHERE kind = 'live' ORDER BY updated_at DESC LIMIT ?1",
+            "SELECT source_id, item_id, updated_at
+               FROM (SELECT h.source_id, h.item_id, h.updated_at,
+                            ROW_NUMBER() OVER (PARTITION BY COALESCE(c.group_key, h.source_id || ':' || h.item_id)
+                                               ORDER BY h.updated_at DESC) AS n
+                       FROM history h
+                       LEFT JOIN channel c ON c.source_id = h.source_id AND c.id = h.item_id
+                      WHERE h.kind = 'live')
+              WHERE n = 1 ORDER BY updated_at DESC LIMIT ?1",
         )?
         .query_map([limit.unwrap_or(20)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;
@@ -313,6 +402,104 @@ mod tests {
 
     fn watched(c: &Connection, id: &str) -> bool {
         c.query_row("SELECT watched FROM history WHERE item_id = ?1", [id], |r| r.get(0)).unwrap()
+    }
+
+    fn two_copies(c: &Connection) {
+        for id in ["m1", "m2"] {
+            c.execute(
+                "INSERT INTO movie (source_id, id, name, title, year, tmdb, position) VALUES (1, ?1, 'Film', 'Film', 2020, '5', 0)",
+                [id],
+            )
+            .unwrap();
+        }
+        crate::works::rebuild(c).unwrap();
+    }
+
+    fn sky_feeds(c: &Connection) {
+        c.execute("INSERT INTO category (source_id, kind, id, name, title, region, position) VALUES (1, 'live', 'sp', 'SPORT', 'SPORT', 'UK', 0)", [])
+            .unwrap();
+        for (id, badges) in [("hd", "HD"), ("sd", "SD"), ("raw", "RAW")] {
+            c.execute(
+                "INSERT INTO channel (source_id, id, name, title, badges, category_id, position) VALUES (1, ?1, 'SKY', 'SKY SPORTS F1', ?2, 'sp', 0)",
+                params![id, badges],
+            )
+            .unwrap();
+        }
+        crate::works::rebuild(c).unwrap();
+    }
+
+    #[test]
+    fn channel_feeds_play_as_one_channel() {
+        let c = crate::db::test_conn();
+        sky_feeds(&c);
+        let key = "UK|skysportsf1";
+        let playing = |c: &Connection| crate::catalog::channel_group_by_key(c, key).unwrap().id;
+        assert_eq!(playing(&c), "hd");
+        prefer_channel(&c, key, 1, "raw").unwrap();
+        assert_eq!(playing(&c), "raw");
+        assert!(prefer_channel(&c, key, 1, "nope").is_err());
+        // the pick survives regrouping (a sync)
+        crate::works::rebuild(&c).unwrap();
+        assert_eq!(playing(&c), "raw");
+        // the heart covers every feed
+        assert!(toggle_group_favorite(&c, key).unwrap());
+        c.execute("INSERT INTO favorite (source_id, kind, item_id, added_at) VALUES (1, 'live', 'sd', 9)", []).unwrap();
+        assert!(!toggle_group_favorite(&c, key).unwrap());
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM favorite", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        // grouped lists: one row, variant chips list all three
+        let q = crate::catalog::ChannelQuery { grouped: true, country: Some("UK".into()), ..Default::default() };
+        let page = crate::catalog::query_channels(&c, &q).unwrap();
+        assert_eq!((page.total, page.items[0].group.as_ref().unwrap().variants), (1, 3));
+        let v = crate::catalog::variants_of(&c, key).unwrap();
+        assert_eq!(v.iter().map(|v| v.label.as_str()).collect::<Vec<_>>(), vec!["HD", "RAW", "SD"]);
+        assert!(v[1].selected);
+        let nav = crate::catalog::live_nav_for(&c).unwrap();
+        assert_eq!((nav.countries[0].name.as_str(), nav.cells[0].genre.as_str(), nav.cells[0].count), ("United Kingdom", "Sports", 1));
+    }
+
+    #[test]
+    fn favorites_belong_to_the_whole_work() {
+        let c = crate::db::test_conn();
+        two_copies(&c);
+        assert!(toggle_favorite(&c, "movie", 1, "m1").unwrap());
+        // un-favoriting through the other copy clears the work
+        assert!(!toggle_favorite(&c, "movie", 1, "m2").unwrap());
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM favorite", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn continue_watching_lists_a_title_once() {
+        let c = crate::db::test_conn();
+        two_copies(&c);
+        let play = |id: &str, pos: f64, watched: bool, at: i64| {
+            c.execute(
+                "INSERT OR REPLACE INTO history (source_id, kind, item_id, title, position, duration, watched, updated_at)
+                 VALUES (1, 'movie', ?1, 'Film', ?2, 6000, ?3, ?4)",
+                params![id, pos, watched, at],
+            )
+            .unwrap();
+        };
+        let listed = |c: &Connection| -> Vec<String> {
+            c.prepare(
+                "SELECT item_id FROM (SELECT h.*, ROW_NUMBER() OVER (
+                        PARTITION BY COALESCE(m.work_key, h.kind || ':' || h.item_id) ORDER BY h.updated_at DESC) AS n
+                   FROM history h LEFT JOIN movie m ON m.source_id = h.source_id AND m.id = h.item_id)
+                  WHERE n = 1 AND watched = 0 AND position > 30",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        play("m1", 600.0, false, 100);
+        play("m2", 900.0, false, 200);
+        assert_eq!(listed(&c), vec!["m2"]);
+        // finished in the other copy: no longer in progress
+        play("m1", 5990.0, true, 300);
+        assert!(listed(&c).is_empty());
     }
 
     #[test]

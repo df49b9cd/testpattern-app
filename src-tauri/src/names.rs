@@ -145,6 +145,62 @@ static MIDDLE_YEAR: LazyLock<Regex> =
 static TRAILING_COUNTRY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s*\(([A-Z]{2})\)\s*$").unwrap());
 
+/// "ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ" → "Dolby Vision": superscript/modifier letters to ASCII,
+/// everything else untouched.
+pub fn fold_superscripts(s: &str) -> String {
+    s.chars().map(|c| unsuper(c).unwrap_or(c)).collect()
+}
+
+/// Provider shouting → readable: "NETFLIX DOCU-SERIES" → "Netflix Docu-Series",
+/// keeping acronyms and codes ("HBO", "4K", "TV2", "PPV") as they are.
+pub fn title_case(s: &str) -> String {
+    const KEEP: &[&str] = &[
+        "TV", "HD", "SD", "UHD", "FHD", "HDR", "HEVC", "HBO", "SVT", "NRK", "UFC", "WWE", "NBA", "NFL", "NHL", "MLB",
+        "MMA", "IMDB", "DC", "UK", "US", "USA", "EN", "PPV", "BBC", "ITV", "CNN", "ESPN", "DAZN", "MTV", "AMC", "TCM",
+        "TNT", "FX", "ABC", "CBS", "NBC", "RAW", "VIP", "EPL", "UEFA", "FIFA", "MLS", "NCAA", "WNBA", "GAA", "LOI",
+        "BT", "TSN", "DR", "RTL", "ARD", "ZDF", "SKY",
+    ];
+    s.split(' ')
+        .map(|word| {
+            let upper = word.to_uppercase();
+            let core: String = upper.chars().filter(|c| c.is_alphanumeric()).collect();
+            if KEEP.contains(&core.as_str()) || (core.chars().any(|c| c.is_ascii_digit()) && core.len() <= 5) {
+                return upper;
+            }
+            // capitalize after start, '-', '(' and '/': "DOCU-SERIES" → "Docu-Series"
+            let mut out = String::with_capacity(word.len());
+            let mut start = true;
+            for c in word.chars() {
+                if c.is_alphabetic() {
+                    if start {
+                        out.extend(c.to_uppercase());
+                    } else {
+                        out.extend(c.to_lowercase());
+                    }
+                    start = false;
+                } else {
+                    out.push(c);
+                    start = matches!(c, '-' | '(' | '/' | '&');
+                }
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A provider category for display: cleaned title plus its quality badges,
+/// "APPLE+ SERIES ⁴ᴷ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ" → "Apple+ Series · 4K Dolby Vision".
+pub fn display_category(name: &str) -> String {
+    let c = category(name);
+    let mut out = title_case(&c.title);
+    if !c.badges.is_empty() {
+        out.push_str(" · ");
+        out.push_str(&title_case(&c.badges.join(" ")));
+    }
+    out
+}
+
 pub fn is_separator(name: &str) -> bool {
     SEPARATOR.is_match(name)
 }
@@ -310,6 +366,16 @@ mod tests {
         let c = category("US| TV ᶜᶦᵗʸ ᴿᴬᵂ ⁶⁰ᶠᵖˢ");
         assert_eq!(c.title, "TV CITY");
         assert_eq!(c.badges, vec!["RAW", "60FPS"]);
+    }
+
+    #[test]
+    fn readable_category_names() {
+        assert_eq!(title_case("NETFLIX DOCU-SERIES"), "Netflix Docu-Series");
+        assert_eq!(title_case("TURKSIH SERIES (SUB EN)"), "Turksih Series (Sub EN)");
+        assert_eq!(title_case("NORDIC HBO MAX"), "Nordic HBO Max");
+        assert_eq!(title_case("SVENSK TV4 PLAY"), "Svensk TV4 Play");
+        assert_eq!(display_category("APPLE+ SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ"), "Apple+ Series · 4K Dolby Vision");
+        assert_eq!(display_category("EN - DRAMA"), "EN - Drama");
     }
 
     #[test]

@@ -162,7 +162,10 @@ export function PlayerPage() {
 
   // ---- live zapping
   const zapList = now?.zapList ?? [];
-  const zapIndex = live ? zapList.findIndex((c) => c.sourceId === now?.sourceId && c.id === now?.id) : -1;
+  // by feed, else by channel (another feed of it may be playing)
+  const groupKey = now?.channel?.group?.key;
+  let zapIndex = live ? zapList.findIndex((c) => c.sourceId === now?.sourceId && c.id === now?.id) : -1;
+  if (live && zapIndex < 0 && groupKey) zapIndex = zapList.findIndex((c) => c.group?.key === groupKey);
   const zapTo = useCallback(
     (c: Channel) => {
       void usePlayer.getState().play(channelNowPlaying(c, usePlayer.getState().now?.zapList));
@@ -789,9 +792,11 @@ function NextEpisode() {
   });
   const next: Episode | undefined = useMemo(() => {
     const eps = (detail.data?.seasons ?? []).filter((s) => s.season > 0).flatMap((s) => s.episodes);
-    const i = eps.findIndex((e) => e.id === now?.id);
+    // the list merges every copy of the show: find ours by its number
+    let i = eps.findIndex((e) => e.season === now?.season && e.episode === now?.episode);
+    if (i < 0) i = eps.findIndex((e) => e.id === now?.id);
     return i >= 0 ? eps[i + 1] : undefined;
-  }, [detail.data, now?.id]);
+  }, [detail.data, now?.id, now?.season, now?.episode]);
   const [left, setLeft] = useState(10);
   const [cancelled, setCancelled] = useState(false);
   useEffect(() => {

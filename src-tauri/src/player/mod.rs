@@ -33,6 +33,16 @@ pub enum PlayerEvent {
     Log { level: String, prefix: String, text: String },
 }
 
+/// The catalog item a file belongs to (movie or episode), so what playback
+/// learns about its tracks can be stored for the version picker.
+#[derive(Debug, Clone)]
+pub struct MediaRef {
+    /// "movie" | "episode"
+    pub kind: &'static str,
+    pub source_id: i64,
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadOptions {
@@ -47,6 +57,9 @@ pub struct LoadOptions {
     pub referrer: Option<String>,
     #[serde(default)]
     pub paused: bool,
+    /// set by `play` (never by the UI)
+    #[serde(skip)]
+    pub media: Option<MediaRef>,
 }
 
 #[derive(Default)]
@@ -59,6 +72,10 @@ struct Session {
     loaded_at: Option<Instant>,
     ever_loaded: bool,
     recording: Option<Recording>,
+    /// learned tracks: HDR seen in `video-params`, last summary stored
+    hdr: bool,
+    track_list: Option<Value>,
+    tracks_saved: Option<String>,
 }
 
 /// A live recording (mpv `stream-record`). mpv overwrites the target when a
@@ -190,6 +207,9 @@ impl Player {
                                 }
                                 last_time_emit = Instant::now();
                             }
+                            if name == "track-list" || name == "video-params" {
+                                Self::learn_tracks(&app, &session, &name, &value);
+                            }
                             PlayerEvent::Prop { name, value }
                         }
                         Event::StartFile => PlayerEvent::StartFile,
@@ -226,6 +246,39 @@ impl Player {
                 log::info!("mpv event loop finished");
             })
             .expect("spawn mpv event thread");
+    }
+
+    /// Remembers the audio/subtitle/video tracks of the playing movie or
+    /// episode (`media_info`, shown per version on the detail pages).
+    fn learn_tracks<R: Runtime>(app: &AppHandle<R>, session: &Mutex<Option<Session>>, name: &str, value: &Value) {
+        let (media, json) = {
+            let mut guard = session.lock();
+            let Some(s) = guard.as_mut() else { return };
+            let Some(media) = s.options.media.clone() else { return };
+            if name == "video-params" {
+                s.hdr |= matches!(value["gamma"].as_str(), Some("pq" | "hlg"));
+            } else {
+                s.track_list = Some(value.clone());
+            }
+            let Some(summary) = s.track_list.as_ref().and_then(|t| crate::works::versions::summarize_tracks(t, s.hdr)) else {
+                return;
+            };
+            let json = summary.to_string();
+            if s.tracks_saved.as_deref() == Some(json.as_str()) {
+                return;
+            }
+            s.tracks_saved = Some(json.clone());
+            (media, json)
+        };
+        let app = app.clone();
+        // off the mpv event thread: the database writer may be busy (sync)
+        std::thread::spawn(move || {
+            let Some(st) = app.try_state::<crate::state::AppState>() else { return };
+            let conn = st.db.write();
+            if let Err(e) = crate::works::versions::save_tracks(&conn, media.source_id, media.kind, &media.id, &json) {
+                log::warn!("could not store tracks of {} {}: {e}", media.kind, media.id);
+            }
+        });
     }
 
     /// Live streams drop all the time; transparently re-open them a few times.
@@ -327,6 +380,11 @@ impl Player {
         &self.mpv
     }
 
+    /// A stream is open (playing, paused, or held at its end).
+    pub fn busy(&self) -> bool {
+        self.session.lock().is_some() && self.mpv.get_json("idle-active") != Some(Value::Bool(true))
+    }
+
     pub fn stop(&self) -> Result<(), mpv::MpvError> {
         *self.session.lock() = None;
         let _ = self.mpv.set_string("stream-record", "");
@@ -347,7 +405,7 @@ pub fn redact(text: &str) -> String {
 }
 
 /// Per-file option string for `loadfile`.
-fn file_options(o: &LoadOptions) -> String {
+pub fn file_options(o: &LoadOptions) -> String {
     let mut opts = vec![format!("pause={}", if o.paused { "yes" } else { "no" })];
     if let Some(start) = o.start.filter(|s| *s > 0.0) {
         opts.push(format!("start={start:.1}"));
