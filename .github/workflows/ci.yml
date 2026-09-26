@@ -1,0 +1,118 @@
+# CI (WORKLOG T-037). Every push to main and every pull request runs
+# scripts/check.sh — Rust unit tests + clippy, TypeScript typecheck + vitest,
+# third-party notices — on Ubuntu 24.04 with the packages the release
+# container uses (packaging/ubuntu/packages.txt). Version tags (v*) and manual
+# runs also build the portable release bundles (T-049). The end-to-end smoke
+# test stays local: it needs the IPTV account, which allows one stream at a time.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $(sed -e 's/#.*//' packaging/ubuntu/packages.txt)
+
+      - name: Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      # FFmpeg/mpv & co. sources and static build, redone only when
+      # build-media.sh (tags, options) or the system packages change
+      - name: Media engine cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            third_party/src
+            third_party/prefix
+          key: media-ubuntu24.04-${{ hashFiles('scripts/build-media.sh', 'packaging/ubuntu/packages.txt') }}
+
+      - name: Media engine
+        run: scripts/build-media.sh
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Frontend
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Checks
+        run: scripts/check.sh
+
+  bundle:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $(sed -e 's/#.*//' packaging/ubuntu/packages.txt)
+
+      - name: Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Media engine cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            third_party/src
+            third_party/prefix
+          key: media-ubuntu24.04-${{ hashFiles('scripts/build-media.sh', 'packaging/ubuntu/packages.txt') }}
+
+      - name: Media engine
+        run: scripts/build-media.sh
+
+      # one binary (glibc 2.39) as .deb, AppImage and .rpm — like
+      # scripts/ubuntu-build.sh; the AppImage tools run without FUSE
+      - name: Bundles
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          sudo apt-get install -y --no-install-recommends squashfs-tools
+          bun install --frozen-lockfile
+          bun run tauri build --bundles deb,appimage,rpm
+          scripts/appimage-fix.sh src-tauri/target/release/bundle/appimage/*.AppImage
+          objdump -T src-tauri/target/release/testpattern | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1
+          scripts/deb-depends.sh src-tauri/target/release/testpattern
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: testpattern-linux-x86_64
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error

@@ -78,6 +78,9 @@ done
 
 cat > "$DEPS/env.sh" <<EOF
 # Source this before building: . .deps/env.sh
+# (a no-op where this checkout isn't at this path, e.g. mounted into a build
+# container that uses its own distro packages — scripts/ubuntu-build.sh)
+[ -d "$SYSROOT" ] || return 0
 export TP_SYSROOT="$SYSROOT"
 export PKG_CONFIG_PATH="$ROOT/third_party/prefix/lib/pkgconfig:$SYSROOT/usr/lib64/pkgconfig:$SYSROOT/usr/share/pkgconfig\${PKG_CONFIG_PATH:+:\$PKG_CONFIG_PATH}"
 export PATH="$SYSROOT/usr/bin:$DEPS/venv/bin:\$PATH"

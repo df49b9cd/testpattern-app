@@ -12,6 +12,9 @@
 # dynamic.
 #
 # Usage: scripts/build-media.sh [--clean]
+# TP_MEDIA_PREFIX / TP_MEDIA_BUILD put the result and the build tree elsewhere
+# (scripts/ubuntu-build.sh keeps its container build apart from this host's);
+# TP_JOBS limits the parallel compile jobs.
 set -euo pipefail
 
 FFMPEG_TAG=n9.0.2
@@ -24,9 +27,9 @@ LIBDISPLAYINFO_TAG=0.4.0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TP="$ROOT/third_party"
 SRC="$TP/src"
-BUILD="$TP/build"
-PREFIX="$TP/prefix"
-JOBS="$(nproc)"
+BUILD="${TP_MEDIA_BUILD:-$TP/build}"
+PREFIX="${TP_MEDIA_PREFIX:-$TP/prefix}"
+JOBS="${TP_JOBS:-$(nproc)}"
 
 [[ -f "$ROOT/.deps/env.sh" ]] && . "$ROOT/.deps/env.sh"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
@@ -47,6 +50,13 @@ declare -A DEPENDENTS=(
   [libplacebo]="mpv" [libdisplay-info]="mpv" [mpv]=""
 )
 invalidate() { rm -f "$PREFIX/lib/${MARKER[$1]}"; }
+# Options live in this script: when it changes, everything is rebuilt, so a
+# build never keeps features it no longer asks for (see the end).
+STAMP="$PREFIX/.build-media.sha256"
+SCRIPT_SUM="$(sha256sum "$0" | cut -d' ' -f1)"
+if [[ "$(cat "$STAMP" 2>/dev/null)" != "$SCRIPT_SUM" ]]; then
+  for c in "${!MARKER[@]}"; do invalidate "$c"; done
+fi
 # after (re)building a component, its dependents are stale
 rebuilt() { for d in ${DEPENDENTS[$1]}; do invalidate "$d"; done; }
 
@@ -175,7 +185,7 @@ if ! built mpv; then
     -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled \
     -Dlua=disabled -Djavascript=disabled -Dlibarchive=disabled \
     -Dlibavdevice=disabled -Drubberband=disabled -Dzimg=disabled \
-    -Duchardet=enabled -Dlcms2=enabled \
+    -Duchardet=enabled -Dlcms2=enabled -Djpeg=disabled \
     -Dcdda=disabled -Ddvdnav=disabled -Dlibbluray=disabled \
     -Dmanpage-build=disabled -Dhtml-build=disabled -Dpdf-build=disabled \
     >"$BUILD/mpv-configure.log"
@@ -183,6 +193,7 @@ if ! built mpv; then
   meson install -C "$BUILD/mpv" >/dev/null
 fi
 
+echo "$SCRIPT_SUM" >"$STAMP"
 echo "==> media engine ready in $PREFIX"
 pkg-config --modversion libavcodec mpv libplacebo dav1d libxml-2.0 libdisplay-info | paste -sd' ' |
   sed 's/^/    libavcodec mpv libplacebo dav1d libxml2 libdisplay-info: /'

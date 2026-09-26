@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Dependency currency audit (WORKLOG.md "Dependency policy"): compares every
 # direct crate in src-tauri/Cargo.toml with the newest stable release on
-# crates.io, then runs `bun outdated`, `rustup check` and compares every
-# media-engine tag in scripts/build-media.sh with upstream. Exit code 1
+# crates.io, then runs `bun outdated`, `rustup check`, and compares the bun
+# pinned in package.json, every media-engine tag in scripts/build-media.sh and
+# every GitHub Action major in .github/workflows with upstream. Exit code 1
 # when something is behind (except the documented GTK3 crate pins).
 #
 #   scripts/outdated.sh
@@ -67,6 +68,12 @@ echo "==> npm (bun outdated)"
 echo "==> toolchain"
 echo "  pinned: $(grep channel "$ROOT/rust-toolchain.toml")"
 rustup check 2>/dev/null | grep -E '^stable' || true
+bun_old=0
+bun_pinned=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get('packageManager', '').removeprefix('bun@'))" "$ROOT/package.json")
+bun_newest=$(git ls-remote --tags https://github.com/oven-sh/bun 2>/dev/null | sed -n 's#.*refs/tags/bun-v\([0-9]*\.[0-9]*\.[0-9]*\)$#\1#p' | sort -V | tail -1)
+mark=ok
+[[ -n "$bun_newest" && "$bun_pinned" != "$bun_newest" ]] && { mark=OLD; bun_old=1; }
+printf '  %-3s bun (package.json) %-10s latest %s — installed %s\n' "$mark" "$bun_pinned" "${bun_newest:-?}" "$(bun --version)"
 
 echo "==> media engine (scripts/build-media.sh)"
 media=0
@@ -84,4 +91,15 @@ LIBXML2_TAG https://gitlab.gnome.org/GNOME/libxml2.git ^v[0-9]+\.[0-9]+\.[0-9]+$
 LIBPLACEBO_TAG https://code.videolan.org/videolan/libplacebo.git ^v[0-9]+\.[0-9]+\.[0-9]+$
 LIBDISPLAYINFO_TAG https://gitlab.freedesktop.org/emersion/libdisplay-info.git ^[0-9]+\.[0-9]+\.[0-9]+$
 EOF
-exit $((crates | media))
+echo "==> GitHub Actions (.github/workflows)"
+actions=0
+for uses in $(grep -ho 'uses: *[^ ]*@v[0-9][^ ]*' "$ROOT"/.github/workflows/*.yml | sed 's/uses: *//' | sort -u); do
+  repo=${uses%@*}
+  major=${uses#*@}
+  newest=$(git ls-remote --tags "https://github.com/$repo" 2>/dev/null | grep -v '\^{}' | sed 's#.*refs/tags/##' |
+    grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+  mark=ok
+  [[ -n "$newest" && "${newest%%.*}" != "$major" ]] && { mark=OLD; actions=1; }
+  printf '  %-3s %-26s %-5s latest %s\n' "$mark" "$repo" "$major" "${newest:-?}"
+done
+exit $((crates | media | bun_old | actions))

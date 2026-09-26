@@ -79,16 +79,33 @@ bun install
 bun run dev               # Vite on :1420 (keep running)
 (cd src-tauri && cargo build)
 scripts/dev-run.sh        # launches target/debug/testpattern
-bun run tauri build --bundles rpm,deb   # release: single binary + rpm/deb (verified)
-scripts/check.sh          # unit tests + clippy + tsc
+bun run tauri build       # release for this machine: single binary + rpm/deb
+scripts/ubuntu-build.sh   # portable release (Ubuntu 24.04 container): deb + AppImage + rpm
+scripts/check.sh          # unit tests + clippy + tsc + vitest + notices
 scripts/headless.sh start && scripts/headless.sh seed && scripts/smoke.sh
 scripts/outdated.sh       # dependency audit (see "Dependency policy")
 scripts/csp-check.sh      # CSP vs. the real UI (bundled assets, headless)
 ```
 
-`tauri.conf.json` also lists the `appimage` bundle target, which has never
-been built (it needs `linuxdeploy`, downloaded by the bundler on first use —
-T-049), so a plain `bun run tauri build` goes beyond what is verified.
+**Portable releases** (T-049): a release built here needs this machine's
+glibc (2.43, Fedora 44). `scripts/ubuntu-build.sh` builds the media engine
+and the app inside an Ubuntu 24.04 container instead (podman; image from
+`packaging/ubuntu/`, rebuilt when its definition changes; the pinned Rust
+toolchain, the crate cache, bun and node_modules are mounted from this
+machine) and packages that one binary — glibc 2.39: Ubuntu 24.04+, Debian 13,
+Fedora 40+ — as .deb, AppImage and .rpm in
+`.deps/ubuntu24/target/release/bundle/`. On the way it repairs the AppImage
+(`scripts/appimage-fix.sh`) and checks the .deb dependencies
+(`scripts/deb-depends.sh`). `scripts/ubuntu-build.sh debug` + `run-app` run
+the Ubuntu build inside the container against the headless session:
+`TP_APP_BIN="$PWD/scripts/ubuntu-build.sh run-app" scripts/headless.sh start`,
+then `scripts/smoke.sh`. CI builds the same bundles for version tags.
+
+**This machine** (Ryzen 9 5950X): at 32 parallel jobs compilers crash
+sporadically (GCC "internal compiler error: Segmentation fault" on random
+FFmpeg files, a nasm GP fault in libc) while the same files compile fine
+alone — likely hardware instability under all-core load. Build with
+`TP_JOBS=16 CARGO_BUILD_JOBS=16` (`build-media.sh` reads `TP_JOBS`).
 
 `scripts/smoke.sh` (~35 s, 22 checks) plays at most one stream at a time and
 runs one full catalog sync of the headless profile. Its GPU-decoding check
@@ -111,7 +128,11 @@ template: `.env.example`).
 **Each account allows ONE concurrent stream** — never play/probe two streams on
 the same account at once. Never commit or print credentials.
 
-**Git:** branch `main`. After cloning, enable the credential guard once:
+**Git:** branch `main`; remote `origin` =
+`git@github.com:df49b9cd/testpattern-app.git` (private, SSH — the `gh` token
+lacks the `workflow` scope that HTTPS pushes of workflow files need).
+`df49b9cd/testpattern` is a different project of the user's (a Bevy app):
+never push there. After cloning, enable the credential guard once:
 `git config core.hooksPath scripts/git-hooks` — its `pre-commit` refuses
 commits whose staged changes contain any `.env.local` value (credentials,
 provider hosts) and names only the key. `.gitignore` keeps out everything
@@ -163,7 +184,8 @@ binaries. Agents commit only when the user asks.
 Every dependency must be on its **latest stable** release. Audited
 2026-09-26 (re-audited later that day with `scripts/outdated.sh`: all current):
 - Rust **1.98.1** pinned in `rust-toolchain.toml` (+ `rust-version` in
-  `src-tauri/Cargo.toml`), edition **2024**. Bun **1.4.2**.
+  `src-tauri/Cargo.toml`), edition **2024**. Bun **1.4.2**, pinned as
+  `packageManager` in `package.json` (CI installs that one).
 - All direct crates at latest stable (checked against crates.io) **except**
   the GTK3 stack — `gtk`/`gdk` 0.18, `glib`/`cairo-rs` 0.18,
   `javascriptcore-rs` 1.1 — which must match what `webkit2gtk` 2.0.2 (newest)
@@ -174,14 +196,17 @@ Every dependency must be on its **latest stable** release. Audited
 - Media engine: FFmpeg **n9.0.2**, mpv **v0.41.0**, libplacebo **v7.360.1**,
   dav1d **1.5.4**, libxml2 **v2.15.4**, libdisplay-info **0.4.0**
   (`scripts/build-media.sh` re-fetches when a pinned tag changes and rebuilds
-  everything linking it).
+  everything linking it; any edit of the script itself rebuilds everything).
+- GitHub Actions (`.github/workflows/ci.yml`): newest majors — checkout v7,
+  cache v6, setup-bun v2, rust-cache v2, upload-artifact v7.
 - After changing any dependency run `scripts/notices.py` (regenerates
   `THIRD_PARTY_NOTICES.md`; `scripts/check.sh` fails until you do).
 - How to re-audit: `scripts/outdated.sh` — compares every direct crate in
   `src-tauri/Cargo.toml` with crates.io (`OLD` = behind, `pin` = the GTK3
   exception above; exit 1 when something is behind), then runs
-  `bun outdated`, `rustup check` and compares the FFmpeg/mpv tags in
-  `scripts/build-media.sh` with upstream (`git ls-remote`).
+  `bun outdated`, `rustup check` and compares the bun pin, the FFmpeg/mpv
+  tags in `scripts/build-media.sh` and the Action majors in the workflow with
+  upstream (`git ls-remote`).
 
 ## 4. Repository map
 
@@ -196,6 +221,11 @@ Every dependency must be on its **latest stable** release. Audited
 | `scripts/outdated.sh` | Dependency currency audit (crates.io, bun, rustup, FFmpeg/mpv tags) |
 | `scripts/git-hooks/pre-commit` | Refuses commits containing `.env.local` values (enable: `git config core.hooksPath scripts/git-hooks`) |
 | `scripts/csp-check.sh` | Fails on Content-Security-Policy violations in a bundled-assets build (T-040) |
+| `scripts/ubuntu-build.sh` | Portable release in an Ubuntu 24.04 container: one glibc-2.39 binary as .deb/AppImage/.rpm; `debug` + `run-app` to test it in the headless session (T-049) |
+| `scripts/appimage-fix.sh` | Drops the bundled libwayland and the forced X11 backend from Tauri's AppImage, repacks it (T-049) |
+| `scripts/deb-depends.sh` | Checks `bundle.linux.deb.depends` against `dpkg-shlibdeps` (run on Ubuntu 24.04) |
+| `packaging/ubuntu/` | `Containerfile` + `packages.txt` (Ubuntu build packages, also installed by CI) |
+| `.github/workflows/ci.yml` | CI: `scripts/check.sh` on Ubuntu 24.04 for pushes/PRs; portable bundles for `v*` tags and manual runs (T-037) |
 | `scripts/notices.py` | Generates `THIRD_PARTY_NOTICES.md` (run after any dependency change; `check.sh` enforces) |
 | `LICENSE` · `THIRD_PARTY_NOTICES.md` · `packaging/debian/copyright` | GPLv3 text · generated third-party licenses · DEP-5 copyright for the deb |
 | `.gitignore` · `.gitattributes` · `.env.example` | Ignore rules (rebuildable + secrets) · LF/binary attributes · test-account template |
@@ -693,9 +723,36 @@ UHF/Infuse feature, **P2** = later.
   `vaapi` 8% vs software 112%; no dropped frames; the player's info overlay
   shows "Decoder hardware (vaapi)".
 
+- **T-049 Portable release builds** — `scripts/ubuntu-build.sh` (see §3)
+  builds in an Ubuntu 24.04 container (273 MB of Ubuntu packages, once) and
+  packages one binary needing glibc 2.39 as .deb (25 MB), AppImage (101 MB)
+  and .rpm (25 MB). Fixed on the way: (1) mpv had enabled JPEG screenshots
+  wherever libjpeg headers exist, so the Ubuntu build needed `libjpeg.so.8`
+  (Debian/Fedora ship `.so.62`) → `-Djpeg=disabled`; `build-media.sh` now
+  rebuilds everything when the script changes, and both builds need the same
+  31 libraries. (2) .deb `Depends` = `dpkg-shlibdeps` output (25 packages
+  with minimum versions); `scripts/deb-depends.sh` fails the build when they
+  drift. (3) AppImage: linuxdeploy bundles Ubuntu's `libwayland-*` with GTK;
+  a newer host Mesa's EGL then fails against them ("Could not create default
+  EGL display: EGL_BAD_PARAMETER") → black window on X11 — and it is the
+  crash behind the `GDK_BACKEND=x11` that Tauri's GTK hook forces
+  (tauri#8541). `scripts/appimage-fix.sh` drops both and repacks onto the
+  original runtime. Verified: all 22 smoke checks with the Ubuntu build
+  running *inside* the container (Ubuntu's WebKitGTK/Mesa/VA-API); `apt
+  install` of the .deb in a bare `ubuntu:24.04` pulls 287 packages and the
+  binary finds every library; on this Fedora 44 host the raw binary (= the
+  .rpm's content) and the fixed AppImage render the full UI natively on
+  Wayland (EGL, VA-API zero-copy) and on X11 through a nested Xwayland (GLX —
+  the app's first X11 test; `TP_HEADLESS_X11=1`), while the unfixed AppImage
+  showed a black window. Plain `bun run tauri build` makes rpm+deb only now
+  (AppImage only via the portable build). Not tested: Debian 13 itself (its
+  t64 package names match Ubuntu 24.04's).
+
 ### 🟨 In progress
 
-- (none)
+- **T-037 (P2) CI pipeline** — started 2026-09-26: private repo
+  `df49b9cd/testpattern-app` created, `main` pushed, workflow written; first
+  run goes through a pull request (card below).
 
 ### 🟦 To do
 
@@ -703,22 +760,6 @@ UHF/Infuse feature, **P2** = later.
 - Windows/macOS: libmpv render API with WGL/CGL contexts or `wid` embedding;
   build FFmpeg/mpv statically per platform. Mobile: HTML5 fallback player
   (hls.js) fed by a local Rust HTTP proxy that remuxes TS → HLS/fMP4.
-
-#### T-049 (P2) Portable release builds (other distros)
-- **glibc baseline:** the release binary needs `GLIBC_2.43` (it is built on
-  Fedora 44), so it only starts on distros at least that new — static
-  linking (T-036) can't fix that. For older distros, build releases in an
-  older-baseline container (e.g. Debian 13 / Ubuntu 24.04: install the
-  WebKitGTK 4.1, GTK3 and codec `-dev` packages, run
-  `scripts/build-media.sh` there, then `bun run tauri build`); check with
-  `objdump -T src-tauri/target/release/testpattern | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1`.
-- **.deb** must be built on Debian/Ubuntu: `bundle.linux.deb` has no
-  `depends` yet (package names differ from Fedora, e.g. `libasound2t64`) —
-  add them there.
-- **AppImage:** `appimage` is in `bundle.targets` but has never been built;
-  the bundler downloads `linuxdeploy` on first `--bundles appimage` (needs
-  the user's OK). Either verify it or drop it from the list so plain
-  `bun run tauri build` matches reality.
 
 #### T-037 (P2) CI pipeline
 - GitHub Actions (or similar) on Fedora container: install the packages from
@@ -729,10 +770,8 @@ UHF/Infuse feature, **P2** = later.
   the job; run inside `xvfb`/headless KWin (see `scripts/headless.sh`).
 
 ### ⛔ Blocked / needs the user
-- No git remote yet (local repository only) — the user decides where to host
-  it; never push without being asked.
-- AppImage (T-049) needs the bundler to download `linuxdeploy` from GitHub on
-  first use — not done without the user's OK.
+- Pushing: only when the user asks (remote and project notes in §3 "Git").
+- T-028 needs Windows/macOS machines (and a decision about mobile).
 - Optional: run the `sudo dnf install ...` from §3 so builds don't need the
   rootless sysroot. Anything with `sudo` is the user's to run in their own
   terminal: inside the agent's sandbox it fails ("no new privileges").
