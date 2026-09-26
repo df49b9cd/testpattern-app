@@ -1,0 +1,15 @@
+# Build environment for portable Linux releases (WORKLOG T-049): Ubuntu 24.04
+# is the oldest supported baseline (glibc 2.39). scripts/ubuntu-build.sh
+# builds with it; CI installs the same packages.txt on its Ubuntu runner.
+FROM docker.io/library/ubuntu:24.04
+ARG DEBIAN_FRONTEND=noninteractive
+COPY packages.txt /tmp/packages.txt
+# The last line is only for running the debug build in the container
+# (scripts/ubuntu-build.sh run-app): Mesa GL/VA-API drivers and a font.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends $(sed -e 's/#.*//' /tmp/packages.txt) \
+      libgl1-mesa-dri libegl-mesa0 mesa-va-drivers fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
+# repacking the AppImage (scripts/appimage-fix.sh)
+RUN apt-get update && apt-get install -y --no-install-recommends squashfs-tools \
+ && rm -rf /var/lib/apt/lists/*

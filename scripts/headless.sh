@@ -11,6 +11,11 @@
 #   scripts/headless.sh seed                   (add test account 1 from .env.local)
 #   scripts/headless.sh keyring lock|unlock    (the test keyring, no prompt)
 #
+# TP_HEADLESS_X11=1 at start also runs an Xwayland inside the nested KWin
+# (never the desktop's); .deps/headless/x11 then holds its DISPLAY and
+# XAUTHORITY for X11 clients — e.g. the AppImage, whose GTK hook forces
+# GDK_BACKEND=x11 (T-049), or the app's GLX path.
+#
 # The session uses its own profile under .deps/headless/{data,cache,config}
 # and a throwaway GNOME Keyring (unlocked) as its Secret Service; inspect it
 # with `DBUS_SESSION_BUS_ADDRESS=$(cat .deps/headless/dbus) secret-tool …`.
@@ -123,10 +128,28 @@ case "${1:-status}" in
     echo $! >"$STATE/keyring.pid"
     for _ in $(seq 1 50); do has_owner org.freedesktop.secrets && break; sleep 0.1; done
     has_owner org.freedesktop.secrets || echo "warning: no keyring on the test bus; see $LOGS/keyring.log" >&2
-    kwin_wayland --virtual --socket "$sock" --width "${size%x*}" --height "${size#*x}" --no-lockscreen \
-      >"$LOGS/kwin.log" 2>&1 &
+    xwayland=()
+    [[ -n "${TP_HEADLESS_X11:-}" ]] && xwayland=(--xwayland)
+    kwin_wayland --virtual "${xwayland[@]}" --socket "$sock" --width "${size%x*}" --height "${size#*x}" \
+      --no-lockscreen >"$LOGS/kwin.log" 2>&1 &
     echo $! >"$STATE/kwin.pid"
     for _ in $(seq 1 50); do [[ -S "$XDG_RUNTIME_DIR/$sock" ]] && break; sleep 0.1; done
+    rm -f "$STATE/x11"
+    if [[ -n "${TP_HEADLESS_X11:-}" ]]; then
+      xw=""
+      for _ in $(seq 1 50); do
+        xw="$(pgrep -a -P "$(cat "$STATE/kwin.pid")" Xwayland || true)"
+        [[ -n "$xw" ]] && break
+        sleep 0.1
+      done
+      disp="$(sed -n 's/.*Xwayland \(:[0-9]*\).*/\1/p' <<<"$xw")"
+      auth="$(sed -n 's/.* -auth \([^ ]*\).*/\1/p' <<<"$xw")"
+      if [[ -n "$disp" ]]; then
+        echo "DISPLAY=$disp XAUTHORITY=$auth" >"$STATE/x11"
+      else
+        echo "warning: no Xwayland in the nested KWin; see $LOGS/kwin.log" >&2
+      fi
+    fi
     # Reuse a dev server that is already up (e.g. one the developer started);
     # only servers we start ourselves get stopped again.
     if curl -s -m 1 -o /dev/null http://localhost:1420/; then

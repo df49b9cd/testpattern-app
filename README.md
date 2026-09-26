@@ -9,7 +9,7 @@ search, for **Xtream Codes** accounts and **M3U** playlists (+ XMLTV).
 - **Playback:** libmpv + FFmpeg built from source and **statically linked**, rendered
   through OpenGL underneath the web UI — plays H.264/HEVC/AV1, AAC/AC3/EAC3/DTS,
   MPEG-TS/HLS/MKV regardless of the distro's codec packages
-- **Ships as one executable** (~62 MB) — see `bun run tauri build`
+- **Ships as one executable** (~62 MB) — .deb, .rpm and AppImage
 - **Hardware decoding** through VA-API with zero-copy on Wayland; **source
   passwords** live in the desktop keyring (KWallet, GNOME Keyring)
 
@@ -20,8 +20,12 @@ sudo dnf install $(scripts/fedora-sysroot.sh --print-packages)   # or: scripts/f
 scripts/build-media.sh          # static FFmpeg + libmpv (≈1 min)
 bun install
 bun run tauri dev               # development
-bun run tauri build --bundles rpm,deb   # release binary + rpm/deb
+bun run tauri build             # release binary + rpm/deb for this machine
+scripts/ubuntu-build.sh         # portable release: deb + AppImage + rpm (glibc ≥ 2.39)
 ```
+
+The portable release is built in an Ubuntu 24.04 container (podman), so it
+runs on Ubuntu 24.04+, Debian 13, Fedora 40+ and similar — see WORKLOG.md §3.
 
 If you used the rootless sysroot, run `. .deps/env.sh` before building.
 
@@ -42,7 +46,7 @@ The player's stats show which decoder is in use.
 ## Test
 
 ```bash
-scripts/check.sh                                   # unit tests, clippy, typecheck
+scripts/check.sh                                   # unit tests, clippy, typecheck (also CI)
 scripts/headless.sh start && scripts/headless.sh seed && scripts/smoke.sh
 ```
 
