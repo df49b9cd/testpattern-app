@@ -10,9 +10,10 @@ export function clock(seconds: number | null | undefined, withHours = false): st
 
 /** 5025 → "1h 24m", 900 → "15m". */
 export function duration(seconds: number | null | undefined): string {
-  const s = Math.max(0, Math.round(seconds ?? 0));
-  const h = Math.floor(s / 3600);
-  const m = Math.round((s % 3600) / 60);
+  // round the total first, so 59.9 min reads "1h", not "60m"
+  const total = Math.round(Math.max(0, seconds ?? 0) / 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
   if (h === 0) return `${m}m`;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }

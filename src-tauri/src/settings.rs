@@ -17,6 +17,9 @@ pub fn defaults() -> Map<String, Value> {
         "player.volume": 100,
         "content.showAdult": false,
         "ui.startPage": "home",
+        "cache.imagesMb": crate::images::DEFAULT_CACHE_MB,
+        // empty: ~/Videos/testpattern (playback::player_record)
+        "recording.dir": "",
     });
     v.as_object().cloned().unwrap_or_default()
 }
@@ -58,21 +61,34 @@ fn all(conn: &Connection) -> Result<Map<String, Value>> {
     Ok(map)
 }
 
-/// Pushes player-related settings into mpv.
-pub fn apply_player<R: Runtime>(app: &AppHandle<R>, st: &AppState) {
+/// Pushes player settings into mpv: all of them (startup) or just `only` —
+/// re-applying e.g. `hwdec` mid-playback would needlessly touch the decoder.
+pub fn apply_player<R: Runtime>(app: &AppHandle<R>, st: &AppState, only: Option<&str>) {
     let Some(player) = app.try_state::<crate::player::Player>() else { return };
     let conn = st.db.read();
+    let wanted = |key: &str| only.is_none_or(|o| o == key);
     let set = |name: &str, v: String| {
         if let Err(e) = player.mpv().set_string(name, &v) {
             log::warn!("apply setting {name}: {e}");
         }
     };
-    set("hwdec", get_str(&conn, "player.hwdec"));
-    set("alang", get_str(&conn, "player.audioLang"));
-    set("slang", get_str(&conn, "player.subLang"));
-    set("sub-visibility", if get_bool(&conn, "player.subsEnabled") { "yes" } else { "no" }.into());
-    if let Some(v) = get(&conn, "player.volume").as_f64() {
-        let _ = player.mpv().set_double("volume", v);
+    if wanted("player.hwdec") {
+        set("hwdec", get_str(&conn, "player.hwdec"));
+    }
+    if wanted("player.audioLang") {
+        set("alang", get_str(&conn, "player.audioLang"));
+    }
+    if wanted("player.subLang") {
+        set("slang", get_str(&conn, "player.subLang"));
+    }
+    if wanted("player.subsEnabled") {
+        set("sub-visibility", if get_bool(&conn, "player.subsEnabled") { "yes" } else { "no" }.into());
+    }
+    // the UI remembers the volume it last set (stores/player.ts)
+    if wanted("player.volume")
+        && let Some(v) = get(&conn, "player.volume").as_f64()
+    {
+        let _ = player.mpv().set_double("volume", v.clamp(0.0, 150.0));
     }
 }
 
@@ -98,7 +114,7 @@ pub async fn settings_set<R: Runtime>(
         )?;
     }
     if key.starts_with("player.") {
-        apply_player(&app, state.inner());
+        apply_player(&app, state.inner(), Some(&key));
     }
     Ok(())
 }

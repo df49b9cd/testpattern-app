@@ -14,15 +14,15 @@ import { useVideoViewport } from "../hooks/useVideoViewport";
 import { ChannelLogo } from "../components/media";
 import { Badge, Button, EmptyState, IconButton, LiveDot, ProgressBar, Spinner } from "../components/ui";
 
-type ListKey = { type: "favorites" } | { type: "recent" } | { type: "all" } | { type: "cat"; sourceId: number; id: string };
+export type ListKey = { type: "favorites" } | { type: "recent" } | { type: "all" } | { type: "cat"; sourceId: number; id: string };
 
-function parseKey(v: string | null): ListKey {
+export function parseKey(v: string | null): ListKey {
   if (!v || v === "favorites") return { type: "favorites" };
   if (v === "recent" || v === "all") return { type: v };
   const [sid, ...rest] = v.split(":");
   return { type: "cat", sourceId: Number(sid), id: rest.join(":") };
 }
-const keyString = (k: ListKey) => (k.type === "cat" ? `${k.sourceId}:${k.id}` : k.type);
+export const keyString = (k: ListKey) => (k.type === "cat" ? `${k.sourceId}:${k.id}` : k.type);
 
 const PAGE = 1000;
 const ROW = 68;

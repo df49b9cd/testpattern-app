@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Dependency currency audit (WORKLOG.md "Dependency policy"): compares every
 # direct crate in src-tauri/Cargo.toml with the newest stable release on
-# crates.io, then runs `bun outdated`, `rustup check` and the FFmpeg/mpv tag
-# check. Exit code 1 when a crate is behind (except documented GTK3 pins).
+# crates.io, then runs `bun outdated`, `rustup check` and compares every
+# media-engine tag in scripts/build-media.sh with upstream. Exit code 1
+# when something is behind (except the documented GTK3 crate pins).
 #
 #   scripts/outdated.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> crates (src-tauri/Cargo.toml → crates.io)"
-python3 - "$ROOT/src-tauri/Cargo.toml" <<'EOF'
+crates=0
+python3 - "$ROOT/src-tauri/Cargo.toml" <<'EOF' || crates=1
 import json, re, sys, tomllib, urllib.request
 
 # Pinned on purpose: must match what webkit2gtk/Tauri are built on
@@ -58,7 +60,6 @@ for name, spec in sorted(deps.items()):
     print(f"  {mark:3} {name:30} {req:10} latest {v}")
 sys.exit(1 if behind else 0)
 EOF
-crates=$?
 
 echo "==> npm (bun outdated)"
 (cd "$ROOT" && bun outdated 2>&1 | grep -v '^\[' || true)
@@ -68,7 +69,19 @@ echo "  pinned: $(grep channel "$ROOT/rust-toolchain.toml")"
 rustup check 2>/dev/null | grep -E '^stable' || true
 
 echo "==> media engine (scripts/build-media.sh)"
-grep -E '^(FFMPEG|MPV)_TAG=' "$ROOT/scripts/build-media.sh" | sed 's/^/  pinned: /'
-echo "  newest FFmpeg: $(git ls-remote --tags https://github.com/FFmpeg/FFmpeg 'n*' | sed 's#.*refs/tags/##' | grep -E '^n[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)"
-echo "  newest mpv:    $(git ls-remote --tags https://github.com/mpv-player/mpv 'v*' | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
-exit $crates
+media=0
+while read -r var repo pattern; do
+  pinned=$(sed -n "s/^$var=//p" "$ROOT/scripts/build-media.sh")
+  newest=$(git ls-remote --tags "$repo" 2>/dev/null | grep -v '\^{}' | sed 's#.*refs/tags/##' | grep -E "$pattern" | sort -V | tail -1)
+  mark=ok
+  [[ -n "$newest" && "$pinned" != "$newest" ]] && { mark=OLD; media=1; }
+  printf '  %-3s %-20s %-10s latest %s\n' "$mark" "$var" "$pinned" "${newest:-?}"
+done <<'EOF'
+FFMPEG_TAG https://github.com/FFmpeg/FFmpeg ^n[0-9]+\.[0-9]+(\.[0-9]+)?$
+MPV_TAG https://github.com/mpv-player/mpv ^v[0-9]+\.[0-9]+\.[0-9]+$
+DAV1D_TAG https://code.videolan.org/videolan/dav1d.git ^[0-9]+\.[0-9]+\.[0-9]+$
+LIBXML2_TAG https://gitlab.gnome.org/GNOME/libxml2.git ^v[0-9]+\.[0-9]+\.[0-9]+$
+LIBPLACEBO_TAG https://code.videolan.org/videolan/libplacebo.git ^v[0-9]+\.[0-9]+\.[0-9]+$
+LIBDISPLAYINFO_TAG https://gitlab.freedesktop.org/emersion/libdisplay-info.git ^[0-9]+\.[0-9]+\.[0-9]+$
+EOF
+exit $((crates | media))

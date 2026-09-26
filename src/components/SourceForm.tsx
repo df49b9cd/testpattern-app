@@ -26,6 +26,8 @@ export function SourceForm({
   const [altUrls, setAltUrls] = useState((initial?.altUrls ?? []).join("\n"));
   const [epgUrl, setEpgUrl] = useState(initial?.epgUrl ?? "");
   const [userAgent, setUserAgent] = useState(initial?.userAgent ?? "");
+  // hours in the form, minutes in the backend
+  const [catchupShift, setCatchupShift] = useState(String((initial?.catchupShiftMinutes ?? 0) / 60));
   const [advanced, setAdvanced] = useState(false);
   const [test, setTest] = useState<{ ok: true; result: TestResult } | { ok: false; error: string } | null>(null);
   const [busy, setBusy] = useState<"test" | "submit" | null>(null);
@@ -42,6 +44,7 @@ export function SourceForm({
       .filter(Boolean),
     epgUrl: epgUrl.trim() || undefined,
     userAgent: userAgent.trim() || undefined,
+    catchupShiftMinutes: Math.round((Number(catchupShift) || 0) * 60),
   });
 
   // Pasting an Xtream playlist link into the M3U tab is recognised by the
@@ -144,6 +147,16 @@ export function SourceForm({
             <TextField label="TV guide (XMLTV) URL override" value={epgUrl} onChange={(e) => setEpgUrl(e.target.value)} placeholder="Provider guide is used when empty" spellCheck={false} />
           )}
           <TextField label="User agent" value={userAgent} onChange={(e) => setUserAgent(e.target.value)} placeholder="testpattern default" spellCheck={false} />
+          <TextField
+            label="Catch-up time correction (hours)"
+            type="number"
+            step="0.5"
+            min="-12"
+            max="14"
+            value={catchupShift}
+            onChange={(e) => setCatchupShift(e.target.value)}
+            hint="Only if catch-up starts at the wrong time: the provider's servers use another time zone than this computer."
+          />
         </div>
       )}
 

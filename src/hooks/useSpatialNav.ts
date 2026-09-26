@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router";
 
-type Dir = "left" | "right" | "up" | "down";
+export type Dir = "left" | "right" | "up" | "down";
 const KEYS: Record<string, Dir> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
 
 const FOCUSABLE = 'button:not([disabled]), a[href], [role="button"], input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -13,8 +13,17 @@ function visible(el: HTMLElement): boolean {
   return style.visibility !== "hidden" && style.display !== "none" && Number(style.opacity) > 0.05;
 }
 
-/** Best candidate in direction `dir` from `from`, TV-remote style. */
-function pick(from: DOMRect, dir: Dir, candidates: HTMLElement[]): HTMLElement | null {
+/** Does `r` share a row (left/right) or column (up/down) with `from`? */
+function inLine(from: DOMRect, r: DOMRect, dir: Dir): boolean {
+  return dir === "left" || dir === "right" ? r.top < from.bottom && from.top < r.bottom : r.left < from.right && from.left < r.right;
+}
+
+/**
+ * Best candidate in direction `dir` from `from`, TV-remote style: elements in
+ * the same row/column first (e.g. the next poster on a shelf, however far),
+ * then the nearest by distance.
+ */
+export function pick(from: DOMRect, dir: Dir, candidates: HTMLElement[]): HTMLElement | null {
   const cx = from.left + from.width / 2;
   const cy = from.top + from.height / 2;
   let best: HTMLElement | null = null;
@@ -49,8 +58,8 @@ function pick(from: DOMRect, dir: Dir, candidates: HTMLElement[]): HTMLElement |
         secondary = Math.abs(dx);
         break;
     }
-    // stay in the same row/column when possible
-    const score = primary + secondary * 2.5;
+    // in-line candidates beat everything else; then distance, off-axis weighted
+    const score = (inLine(from, r, dir) ? 0 : 1e9) + primary + secondary * 2.5;
     if (score < bestScore) {
       bestScore = score;
       best = el;

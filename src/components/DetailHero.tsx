@@ -28,7 +28,8 @@ export function DetailHero({
   return (
     <section className="relative">
       <div className="absolute inset-x-0 top-0 h-[78vh] min-h-[520px] overflow-hidden">
-        <Artwork src={backdrop ?? poster} width={1600} alt="" className="absolute inset-0 scale-105 opacity-70" />
+        {/* no backdrop: plain background, not a "?" monogram */}
+        <Artwork src={backdrop ?? poster} width={1600} alt="" className="absolute inset-0 scale-105 opacity-70" fallback={<span />} />
         <div className="absolute inset-0 scrim-l" />
         <div className="absolute inset-0 scrim-b" />
       </div>

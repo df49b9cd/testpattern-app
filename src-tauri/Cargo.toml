@@ -58,3 +58,5 @@ glib = "0.18"
 webkit2gtk = { version = "2.0", features = ["v2_40"] }
 cairo-rs = { version = "0.18", features = ["png"] }
 javascriptcore-rs = "1.1"
+# source passwords in the desktop keyring (Secret Service: KWallet, GNOME Keyring)
+secret-service = { version = "5.2", features = ["rt-tokio-crypto-rust"] }

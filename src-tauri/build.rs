@@ -60,18 +60,24 @@ fn link_media_engine() {
     };
 
     // Link order matters for static archives: dependents before dependencies.
+    // Besides mpv/FFmpeg, the libraries whose shared-library names change
+    // between distro releases are static too (scripts/build-media.sh).
     const STATIC: &[&str] = &[
         "mpv",
+        "placebo",
+        "display-info",
         "avfilter",
         "avformat",
         "avcodec",
         "swscale",
         "swresample",
         "avutil",
+        "xml2",
+        "dav1d",
     ];
 
     // FFmpeg's private deps (dav1d, va, ssl, xml2, ...) + mpv's public deps
-    // (libass, libplacebo, pipewire, ...). Only mpv/FFmpeg themselves are static.
+    // (libass, libplacebo, pipewire, ...); everything not in STATIC is dynamic.
     let mut flags = pkg_config(&[
         "--static",
         "--libs",
@@ -99,6 +105,12 @@ fn link_media_engine() {
         } else if flag == "-pthread" && !args.contains(&flag) {
             args.push(flag);
         }
+    }
+
+    // libplacebo has C++ parts; its pkg-config file doesn't name the C++
+    // runtime, which its shared build used to pull in by itself.
+    if !dylibs.iter().any(|d| d == "stdc++") {
+        dylibs.push("stdc++".to_owned());
     }
 
     for dir in &search {

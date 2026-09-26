@@ -112,6 +112,7 @@ pub const MPV_RENDER_PARAM_X11_DISPLAY: mpv_render_param_type = 8;
 pub const MPV_RENDER_PARAM_WL_DISPLAY: mpv_render_param_type = 9;
 pub const MPV_RENDER_PARAM_ADVANCED_CONTROL: mpv_render_param_type = 10;
 pub const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: mpv_render_param_type = 12;
+pub const MPV_RENDER_PARAM_DRM_DISPLAY_V2: mpv_render_param_type = 16;
 
 pub const MPV_RENDER_UPDATE_FRAME: u64 = 1;
 
@@ -129,6 +130,16 @@ pub type GetProcAddressFn = unsafe extern "C" fn(ctx: *mut c_void, name: *const 
 pub struct mpv_opengl_init_params {
     pub get_proc_address: Option<GetProcAddressFn>,
     pub get_proc_address_ctx: *mut c_void,
+}
+
+/// mpv copies it; only `render_fd` matters outside mpv's own DRM output.
+#[repr(C)]
+pub struct mpv_opengl_drm_params_v2 {
+    pub fd: c_int,
+    pub crtc_id: c_int,
+    pub connector_id: c_int,
+    pub atomic_request_ptr: *mut *mut c_void,
+    pub render_fd: c_int,
 }
 
 #[repr(C)]

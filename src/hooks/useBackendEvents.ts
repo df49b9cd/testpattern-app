@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { api } from "../lib/api";
 import { listen } from "../lib/bridge";
 import { useQueryClient } from "@tanstack/react-query";
 import type { PlayerEvent, SyncProgress } from "../lib/types";
@@ -11,6 +12,13 @@ export function useBackendEvents() {
   useEffect(() => {
     const unlisteners = [
       listen<PlayerEvent>("player://event", (e) => usePlayer.getState().onEvent(e.payload)),
+      // mpv applied the saved volume before the UI was listening: start in sync
+      Promise.all([api.get<number>("volume"), api.get<boolean>("mute")])
+        .then(([volume, mute]) =>
+          usePlayer.setState((s) => ({ props: { ...s.props, volume: volume ?? s.props.volume, mute: mute ?? s.props.mute } })),
+        )
+        .catch(() => {})
+        .then(() => () => {}),
       listen<SyncProgress>("sync://progress", (e) => {
         useSync.getState().apply(e.payload);
         if (e.payload.stage === "done" || e.payload.stage === "failed") {

@@ -10,6 +10,7 @@ import { Artwork } from "../components/media";
 import { LiveDot } from "../components/ui";
 import { useSpatialNav } from "../hooks/useSpatialNav";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { pipClipPath, usePipVisible, useViewportSize } from "../components/PipPlayer";
 import type { RouteHandle } from "./router";
 
 const NAV = [
@@ -27,6 +28,9 @@ export function Layout() {
   const location = useLocation();
   const matches = useMatches();
   const transparent = matches.some((m) => (m.handle as RouteHandle | undefined)?.transparent);
+  // picture-in-picture: a hole in the whole UI where the video shows through
+  const pip = usePipVisible();
+  const { w, h } = useViewportSize();
 
   // "/" or Ctrl/Cmd+K jumps to search from anywhere
   useEffect(() => {
@@ -43,7 +47,7 @@ export function Layout() {
   }, [navigate]);
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full" style={pip ? { clipPath: pipClipPath(w, h) } : undefined}>
       <Sidebar />
       <main className={clsx("relative min-w-0 flex-1", !transparent && "overflow-y-auto bg-bg")}>
         <ErrorBoundary resetKey={location.pathname}>

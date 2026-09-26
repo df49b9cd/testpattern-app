@@ -1,5 +1,6 @@
 import { invoke } from "./bridge";
 import type {
+  CacheStats,
   Category,
   Channel,
   ChannelQuery,
@@ -68,10 +69,14 @@ export const api = {
   command: (...args: (string | number)[]) => invoke<void>("player_command", { args: args.map(String) }),
   set: (name: string, value: unknown) => invoke<void>("player_set", { name, value }),
   get: <T = unknown>(name: string) => invoke<T | null>("player_get", { name }),
+  /** Starts/stops recording the live channel; the file being / last written. */
+  record: (on: boolean) => invoke<string | null>("player_record", { on }),
 
   // settings
   settings: () => invoke<Settings>("settings_get"),
   setSetting: (key: string, value: unknown) => invoke<void>("settings_set", { key, value }),
+  imageCache: () => invoke<CacheStats>("images_cache_info"),
+  clearImageCache: () => invoke<CacheStats>("images_cache_clear"),
 };
 
 export function errorMessage(e: unknown): string {

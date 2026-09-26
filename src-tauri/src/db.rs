@@ -236,6 +236,45 @@ const MIGRATIONS: &[&str] = &[
         prefix = '2 3 4'
     );
     "#,
+    // v2 — M3U catch-up scheme per channel (sources::m3u::catchup_url)
+    r#"
+    ALTER TABLE channel ADD COLUMN catchup_mode TEXT;
+    ALTER TABLE channel ADD COLUMN catchup_source TEXT;
+    "#,
+    // v3 — request headers some M3U streams need (sources::m3u::Entry)
+    r#"
+    ALTER TABLE channel ADD COLUMN user_agent TEXT;
+    ALTER TABLE channel ADD COLUMN referrer TEXT;
+    ALTER TABLE movie ADD COLUMN user_agent TEXT;
+    ALTER TABLE movie ADD COLUMN referrer TEXT;
+    "#,
+    // v4 — per-source catch-up time correction (T-048)
+    r#"
+    ALTER TABLE source ADD COLUMN catchup_shift_minutes INTEGER NOT NULL DEFAULT 0;
+    "#,
+    // v5 — episodes of M3U series (Xtream series come from get_series_info)
+    r#"
+    CREATE TABLE episode (
+        source_id  INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+        series_id  TEXT NOT NULL,
+        id         TEXT NOT NULL,
+        season     INTEGER NOT NULL,
+        episode    INTEGER NOT NULL,
+        title      TEXT NOT NULL,
+        image      TEXT,
+        ext        TEXT,
+        url        TEXT NOT NULL,
+        user_agent TEXT,
+        referrer   TEXT,
+        position   INTEGER NOT NULL,
+        PRIMARY KEY (source_id, id)
+    ) WITHOUT ROWID;
+    CREATE INDEX episode_by_series ON episode(source_id, series_id, season, episode);
+    "#,
+    // v6 — source passwords in the desktop keyring (secrets.rs)
+    r#"
+    ALTER TABLE source ADD COLUMN password_in_keyring INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 fn migrate(c: &Connection) -> Result<()> {

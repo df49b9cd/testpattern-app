@@ -15,7 +15,10 @@
 
 use std::cell::RefCell;
 use std::ffi::{CStr, c_void};
+use std::fs::File;
+use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_int};
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -35,6 +38,8 @@ struct Surface {
     area: gtk::GLArea,
     mpv: Arc<Mpv>,
     ctx: *mut mpv_render_context,
+    /// The GPU's render node, for VA-API zero-copy; open as long as `ctx`.
+    render_node: Option<File>,
 }
 
 static REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
@@ -90,7 +95,7 @@ fn install(webview: &webkit2gtk::WebView, mpv: Arc<Mpv>) -> Result<(), String> {
     area.connect_resize(|area, _, _| area.queue_render());
 
     SURFACE.with(|s| {
-        *s.borrow_mut() = Some(Surface { area: area.clone(), mpv, ctx: ptr::null_mut() });
+        *s.borrow_mut() = Some(Surface { area: area.clone(), mpv, ctx: ptr::null_mut(), render_node: None });
     });
 
     overlay.show_all();
@@ -114,7 +119,19 @@ fn on_realize(area: &gtk::GLArea) {
             get_proc_address: Some(get_proc_address),
             get_proc_address_ctx: ptr::null_mut(),
         };
-        let mut params = [
+        // With the GPU's render node mpv hands VA-API frames to GL as dmabufs
+        // (hwdec "vaapi", zero-copy). That import needs EGL — GLX sessions,
+        // and systems without a node, get "vaapi-copy" (frames copied back
+        // through memory) or software decoding instead.
+        let render_node = if using_egl() { open_render_node() } else { None };
+        let mut drm = mpv_opengl_drm_params_v2 {
+            fd: -1,
+            crtc_id: 0,
+            connector_id: 0,
+            atomic_request_ptr: ptr::null_mut(),
+            render_fd: render_node.as_ref().map_or(-1, |f| f.as_raw_fd()),
+        };
+        let mut params = vec![
             mpv_render_param {
                 type_: MPV_RENDER_PARAM_API_TYPE,
                 data: MPV_RENDER_API_TYPE_OPENGL.as_ptr() as *mut c_void,
@@ -123,8 +140,14 @@ fn on_realize(area: &gtk::GLArea) {
                 type_: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
                 data: &mut init as *mut _ as *mut c_void,
             },
-            mpv_render_param { type_: MPV_RENDER_PARAM_INVALID, data: ptr::null_mut() },
         ];
+        if render_node.is_some() {
+            params.push(mpv_render_param {
+                type_: MPV_RENDER_PARAM_DRM_DISPLAY_V2,
+                data: &mut drm as *mut _ as *mut c_void,
+            });
+        }
+        params.push(mpv_render_param { type_: MPV_RENDER_PARAM_INVALID, data: ptr::null_mut() });
         let mut ctx = ptr::null_mut();
         let rc = unsafe {
             mpv_render_context_create(&mut ctx, surface.mpv.raw(), params.as_mut_ptr())
@@ -135,6 +158,7 @@ fn on_realize(area: &gtk::GLArea) {
             return;
         }
         surface.ctx = ctx;
+        surface.render_node = render_node;
     });
     // Registering fires the callback right away, so do it with no borrow held.
     let ctx = SURFACE.with(|s| s.borrow().as_ref().map_or(ptr::null_mut(), |s| s.ctx));
@@ -151,6 +175,7 @@ fn on_unrealize(area: &gtk::GLArea) {
             && !surface.ctx.is_null() {
                 unsafe { mpv_render_context_free(surface.ctx) };
                 surface.ctx = ptr::null_mut();
+                surface.render_node = None; // mpv's VA display is gone with the context
             }
     });
 }
@@ -219,6 +244,7 @@ const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
 struct GlLoader {
     egl_get_proc: Option<unsafe extern "C" fn(*const c_char) -> *mut c_void>,
     egl_current_ctx: Option<unsafe extern "C" fn() -> *mut c_void>,
+    egl_current_display: Option<unsafe extern "C" fn() -> *mut c_void>,
     glx_get_proc: Option<unsafe extern "C" fn(*const u8) -> *mut c_void>,
     _libs: Vec<libloading::Library>,
 }
@@ -227,10 +253,17 @@ fn loader() -> &'static GlLoader {
     static LOADER: OnceLock<GlLoader> = OnceLock::new();
     LOADER.get_or_init(|| unsafe {
         let mut libs = Vec::new();
-        let mut l = GlLoader { egl_get_proc: None, egl_current_ctx: None, glx_get_proc: None, _libs: vec![] };
+        let mut l = GlLoader {
+            egl_get_proc: None,
+            egl_current_ctx: None,
+            egl_current_display: None,
+            glx_get_proc: None,
+            _libs: vec![],
+        };
         if let Ok(egl) = libloading::Library::new("libEGL.so.1") {
             l.egl_get_proc = egl.get(b"eglGetProcAddress\0").ok().map(|s: libloading::Symbol<_>| *s);
             l.egl_current_ctx = egl.get(b"eglGetCurrentContext\0").ok().map(|s: libloading::Symbol<_>| *s);
+            l.egl_current_display = egl.get(b"eglGetCurrentDisplay\0").ok().map(|s: libloading::Symbol<_>| *s);
             libs.push(egl);
         }
         if let Ok(glx) = libloading::Library::new("libGL.so.1") {
@@ -266,6 +299,59 @@ unsafe extern "C" fn get_proc_address(_ctx: *mut c_void, name: *const c_char) ->
         }
     }
     ptr::null_mut()
+}
+
+/// The render node of the GPU behind the current EGL display
+/// (EGL_EXT_device_drm_render_node), else the first one in /dev/dri.
+fn open_render_node() -> Option<File> {
+    let (path, how) = egl_render_node().map(|p| (p, "EGL device")).or_else(|| {
+        let mut nodes: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("renderD")))
+            .collect();
+        nodes.sort();
+        nodes.into_iter().next().map(|p| (p, "first render node"))
+    })?;
+    match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(f) => {
+            log::info!("VA-API zero-copy via {} ({how})", path.display());
+            Some(f)
+        }
+        Err(e) => {
+            log::warn!("{}: {e}", path.display());
+            None
+        }
+    }
+}
+
+fn egl_render_node() -> Option<PathBuf> {
+    const EGL_DEVICE_EXT: i32 = 0x322C;
+    const EGL_DRM_RENDER_NODE_FILE_EXT: i32 = 0x3377;
+    type QueryDisplayAttrib = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> u32;
+    type QueryDeviceString = unsafe extern "C" fn(*mut c_void, i32) -> *const c_char;
+    let l = loader();
+    let (current_display, get_proc) = (l.egl_current_display?, l.egl_get_proc?);
+    unsafe {
+        let display = current_display();
+        let query_attrib = get_proc(c"eglQueryDisplayAttribEXT".as_ptr());
+        let query_string = get_proc(c"eglQueryDeviceStringEXT".as_ptr());
+        if display.is_null() || query_attrib.is_null() || query_string.is_null() {
+            return None;
+        }
+        let query_attrib: QueryDisplayAttrib = std::mem::transmute(query_attrib);
+        let query_string: QueryDeviceString = std::mem::transmute(query_string);
+        let mut device: isize = 0;
+        if query_attrib(display, EGL_DEVICE_EXT, &mut device) == 0 || device == 0 {
+            return None;
+        }
+        let node = query_string(device as *mut c_void, EGL_DRM_RENDER_NODE_FILE_EXT);
+        if node.is_null() {
+            return None;
+        }
+        Some(PathBuf::from(CStr::from_ptr(node).to_str().ok()?))
+    }
 }
 
 unsafe fn gl_get_integerv(pname: u32, out: *mut c_int) {

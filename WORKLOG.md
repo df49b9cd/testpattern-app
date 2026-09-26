@@ -35,8 +35,11 @@ import, image proxy, libmpv control. UI talks to it via Tauri commands/events.
   and GStreamer lack native H.264/HEVC decoders, so WebKitGTK video and distro
   mpv cannot reliably play IPTV. We build **FFmpeg n9.0.2 + mpv v0.41.0 from
   source** (`scripts/build-media.sh`) and link them **statically**
-  (`src-tauri/build.rs`). Only ubiquitous libs (libass, libplacebo, libva,
-  pipewire/pulse/alsa, EGL, WebKitGTK) are dynamic.
+  (`src-tauri/build.rs`), together with the libraries whose shared-library
+  names change between distro releases (libplacebo, dav1d, libxml2,
+  libdisplay-info — T-036). Only long-stable system libs (glibc, libstdc++,
+  libass, libva/drm, pipewire/pulse/alsa, EGL, OpenSSL, WebKitGTK) are
+  dynamic.
 - **Video under the UI:** `src-tauri/src/player/linux.rs` reparents the
   WebKitWebView into a GtkOverlay above a GtkGLArea. Pages that show video must
   keep `html, body, #root` backgrounds transparent; opaque pages simply cover it.
@@ -46,11 +49,20 @@ import, image proxy, libmpv control. UI talks to it via Tauri commands/events.
   `mpv_render_context_render` never blocks the GTK thread; the update callback
   must never run inline (use a GLib idle source); empty mpv node lists have
   NULL pointers.
-- **Hardware decoding:** Fedora's mesa rejects VA-API H.264/HEVC ("No support
-  for codec h264 profile 100"), so mpv falls back to software decoding
-  (`hwdec=auto-safe`). Fine on this machine.
+- **Hardware decoding:** VA-API, zero-copy: the render context gets the GPU's
+  render node (`MPV_RENDER_PARAM_DRM_DISPLAY_V2.render_fd`, found through
+  `EGL_EXT_device_drm_render_node`), so `hwdec=auto-safe` picks `vaapi` and
+  frames reach GL as dmabufs (T-029). Fedora's own Mesa rejects VA-API
+  H.264/HEVC ("No support for codec h264 profile 100") → software; RPM
+  Fusion's `mesa-va-drivers-freeworld` adds them (installed on this machine
+  since 2026-09-26: libva loads `/usr/lib64/dri-freeworld/…`, so H.264/HEVC
+  channels show `vaapi` here). GLX (X11) sessions can't import dmabufs →
+  `vaapi-copy`.
 - **Credentials stay in the backend.** The UI refers to items by
   `(sourceId, itemId)`; stream URLs (which embed credentials) are built in Rust.
+  At rest, source passwords live in the desktop keyring (Secret Service:
+  KWallet, GNOME Keyring — `secrets.rs`, T-046); the database keeps them only
+  where no keyring is available.
 
 ## 3. How to build and run
 
@@ -71,14 +83,27 @@ bun run tauri build --bundles rpm,deb   # release: single binary + rpm/deb (veri
 scripts/check.sh          # unit tests + clippy + tsc
 scripts/headless.sh start && scripts/headless.sh seed && scripts/smoke.sh
 scripts/outdated.sh       # dependency audit (see "Dependency policy")
+scripts/csp-check.sh      # CSP vs. the real UI (bundled assets, headless)
 ```
 
 `tauri.conf.json` also lists the `appimage` bundle target, which has never
 been built (it needs `linuxdeploy`, downloaded by the bundler on first use —
-T-036), so a plain `bun run tauri build` goes beyond what is verified.
+T-049), so a plain `bun run tauri build` goes beyond what is verified.
 
-`scripts/smoke.sh` (~30 s) plays at most one stream at a time and runs one
-full catalog sync of the headless profile.
+`scripts/smoke.sh` (~35 s, 22 checks) plays at most one stream at a time and
+runs one full catalog sync of the headless profile. Its GPU-decoding check
+serves a local VP9 clip (made once with the system ffmpeg) from a temporary
+server on 127.0.0.1:18556 and is skipped where that isn't possible.
+
+**Headless session** (`scripts/headless.sh`): its private D-Bus starts
+services on demand (portals, KWallet's `ksecretd`, prompts) with the nested
+display and the isolated profile, so nothing appears on or writes to the real
+desktop/wallet; `stop` also ends everything that bus started (they used to
+outlive it). Its Secret Service is a throwaway GNOME Keyring (unlocked, data
+in `.deps/headless/keyring`); `scripts/headless.sh keyring lock|unlock`
+changes its state without a prompt, and
+`DBUS_SESSION_BUS_ADDRESS=$(cat .deps/headless/dbus) secret-tool search --all application testpattern`
+lists the app's entries (prints secrets — test profile only).
 
 **Test accounts** live in the gitignored `.env.local` (keys
 `TP_XTREAM_SERVER`, `TP_XTREAM_USER_1/PASS_1`, `..._2`, `TP_XTREAM_MIRRORS`;
@@ -124,7 +149,11 @@ binaries. Agents commit only when the user asks.
   83 VOD categories / ~39k movies, 67 series categories / ~11k series.
 - Streams: H.264 High 720p/1080p (50/60 fps, progressive) + AAC; movies are MKV
   H.264 + AAC 5.1 + SRT subs. Live formats allowed: ts, m3u8.
-- `xmltv.php` ≈ 13 MB (single line); only ~1,950 channels have `epg_channel_id`.
+- `xmltv.php` ≈ 70 MB / 206k programmes (was 13 MB at project start; single
+  line, generated on the fly — occasionally truncated/malformed or slow to
+  connect); only ~1,950 channels have `epg_channel_id`. 352 channels have a
+  3-day archive (`tv_archive`); timeshift streams take ~13 s to start and
+  some archives have gaps (HTTP 404, e.g. RT Documentary).
   `get_short_epg` returns base64 titles/descriptions.
 - Names are noisy: `UK: BBC ONE LONDON 4K ◉`, `AT&T: BBC NEWS ᴿᴬᵂ`,
   categories `UK| SKY CINEMA ᴴᴰ/ᴿᴬᵂ`, movies `SC - Cleanskin (2012)`,
@@ -141,9 +170,13 @@ Every dependency must be on its **latest stable** release. Audited
   and Tauri 2.11.6 (newest stable) are built on. Tauri 3 exists only as
   `3.0.0-alpha.x`; not adopted (stable only).
 - npm: `bun outdated` clean (React 19.3, Vite 8.3, TS 7.0, Tailwind 4.3,
-  react-router 8.4, @tauri-apps/* 2.11).
-- Media engine: FFmpeg **n9.0.2**, mpv **v0.41.0** (`scripts/build-media.sh`
-  re-fetches automatically when the pinned tags change).
+  react-router 8.4, @tauri-apps/* 2.11, vitest 5.0).
+- Media engine: FFmpeg **n9.0.2**, mpv **v0.41.0**, libplacebo **v7.360.1**,
+  dav1d **1.5.4**, libxml2 **v2.15.4**, libdisplay-info **0.4.0**
+  (`scripts/build-media.sh` re-fetches when a pinned tag changes and rebuilds
+  everything linking it).
+- After changing any dependency run `scripts/notices.py` (regenerates
+  `THIRD_PARTY_NOTICES.md`; `scripts/check.sh` fails until you do).
 - How to re-audit: `scripts/outdated.sh` — compares every direct crate in
   `src-tauri/Cargo.toml` with crates.io (`OLD` = behind, `pin` = the GTK3
   exception above; exit 1 when something is behind), then runs
@@ -155,13 +188,16 @@ Every dependency must be on its **latest stable** release. Audited
 | Path | What |
 |---|---|
 | `scripts/fedora-sysroot.sh` | Rootless `-devel` sysroot (dnf download + extract) → `.deps/sysroot`, `.deps/env.sh` |
-| `scripts/build-media.sh` | Builds static FFmpeg + libmpv into `third_party/prefix` (tag-pinned, auto re-fetch) |
+| `scripts/build-media.sh` | Builds static FFmpeg + libmpv + libplacebo/dav1d/libxml2/libdisplay-info into `third_party/prefix` (tag-pinned, rebuilds dependents); vendors their license texts to `packaging/licenses/` |
 | `scripts/dev-run.sh` | Runs the debug binary (`TP_DEV_AUTOPLAY`, `TP_DEV_MUTE`, `TP_DEV_AO`) |
-| `scripts/headless.sh` | Invisible test session: nested KWin + Vite (or reuse) + debug app, isolated profile |
-| `scripts/check.sh` | Rust unit tests + clippy `-D warnings` + `tsc` |
+| `scripts/headless.sh` | Invisible test session: nested KWin + Vite (or reuse) + debug app, isolated profile, throwaway keyring |
+| `scripts/check.sh` | Rust unit tests + clippy `-D warnings` + `tsc` + vitest + notices up to date |
 | `scripts/smoke.sh` | End-to-end checks against the provider in the headless session |
 | `scripts/outdated.sh` | Dependency currency audit (crates.io, bun, rustup, FFmpeg/mpv tags) |
 | `scripts/git-hooks/pre-commit` | Refuses commits containing `.env.local` values (enable: `git config core.hooksPath scripts/git-hooks`) |
+| `scripts/csp-check.sh` | Fails on Content-Security-Policy violations in a bundled-assets build (T-040) |
+| `scripts/notices.py` | Generates `THIRD_PARTY_NOTICES.md` (run after any dependency change; `check.sh` enforces) |
+| `LICENSE` · `THIRD_PARTY_NOTICES.md` · `packaging/debian/copyright` | GPLv3 text · generated third-party licenses · DEP-5 copyright for the deb |
 | `.gitignore` · `.gitattributes` · `.env.example` | Ignore rules (rebuildable + secrets) · LF/binary attributes · test-account template |
 | `.claude/launch.json` | Desktop-app preview config (`dev`, port 1420) |
 | `src-tauri/build.rs` | Links libmpv/FFmpeg statically, system deps dynamically |
@@ -177,11 +213,12 @@ Every dependency must be on its **latest stable** release. Audited
 | `src-tauri/src/playback.rs` | `play` command (URL building, catch-up, failover) |
 | `src-tauri/src/images.rs` | `img://` artwork proxy with disk cache/resize |
 | `src-tauri/src/settings.rs` | Settings store + mpv application |
+| `src-tauri/src/secrets.rs` | Source passwords in the desktop keyring (Secret Service), database fallback, one-time migration |
 | `src-tauri/src/names.rs` | Title/badge/region cleanup (unit tested) |
 | `src/main.tsx` | Entry; dev builds expose `window.__TP__` for automation |
 | `src/app/` | `App.tsx` providers · `router.tsx` routes · `Root.tsx` first-run redirect + global effects · `Layout.tsx` sidebar |
 | `src/pages/` | `Home` `Live` `Guide` `Movies` `MovieDetail` `Series` `SeriesDetail` `Search` `Settings` `Onboarding` `Player` |
-| `src/components/` | `ui.tsx` primitives · `media.tsx` artwork/cards/shelves · `PosterGrid.tsx` · `LibraryBrowser.tsx` · `DetailHero.tsx` · `SourceForm.tsx` · `ErrorBoundary.tsx` |
+| `src/components/` | `ui.tsx` primitives · `media.tsx` artwork/cards/shelves · `PosterGrid.tsx` · `LibraryBrowser.tsx` · `DetailHero.tsx` · `SourceForm.tsx` · `PipPlayer.tsx` · `ErrorBoundary.tsx` |
 | `src/lib/` | `types.ts` (mirrors Rust JSON) · `api.ts` · `bridge.ts` · `queryClient.ts` · `img.ts` · `format.ts` · `play.ts` · `open.ts` |
 | `src/stores/` | `player.ts` (now playing, mpv props, progress saving, viewport) · `sync.ts` |
 | `src/hooks/` | `useBackendEvents` · `useProgressSaver` · `useVideoViewport` · `useSpatialNav` |
@@ -305,7 +342,7 @@ UHF/Infuse feature, **P2** = later.
   `bundle/rpm/testpattern-0.1.0-1.x86_64.rpm` / `.deb` (23 MB) with explicit
   Fedora runtime `depends` in `tauri.conf.json` (`bundle.linux.rpm`).
   Re-verified after the session-2 fixes. The `appimage` target in
-  `tauri.conf.json` has never been built (T-036).
+  `tauri.conf.json` has never been built (T-049).
 - **T-026 Keyboard/remote navigation** — `src/hooks/useSpatialNav.ts`
   (arrow keys move focus by screen geometry, Backspace = back; components
   that handle arrows themselves call preventDefault). Also: `/` or Ctrl+K →
@@ -323,16 +360,17 @@ UHF/Infuse feature, **P2** = later.
   adds test account 1 from `.env.local`. The real profile
   (`~/.local/share/dev.testpattern.app`) is the user's — see log entry.
 
-- **T-030 Tests** — `scripts/check.sh` (23 Rust unit tests, clippy
-  `-D warnings`, tsc) and `scripts/smoke.sh` (19 end-to-end checks against
+- **T-030 Tests** — `scripts/check.sh` (Rust unit tests, clippy
+  `-D warnings`, tsc, vitest, notices check) and `scripts/smoke.sh` (19 end-to-end checks against
   the real provider in the headless session: sync, cleaned categories,
   now/next, paging, search, movie + series detail, mark watched without
   playing, Up next before/after a real catalog sync, live playback, zapping,
   movie resume, continue watching, stop, next-episode prompt at the end of an
   episode, finished episode saved as watched, devtools refusing foreign web
-  pages, mpv `run` blocked). Both green on 2026-09-26. Gaps: no frontend unit
-  tests (T-041); CI wiring (needs a runner with the media engine + a provider
-  secret) — T-037.
+  pages, mpv `run` blocked). Both green on 2026-09-26. Counts at the end of
+  the day: 30 Rust unit tests, 26 frontend tests (T-041), 19 smoke checks,
+  plus `scripts/csp-check.sh` (T-040). Open: CI wiring (needs a runner with
+  the media engine + a provider secret) — T-037.
 
 - **T-047 Review of all Done cards (2026-09-26, session 2)** — every card
   checked against the code and in the running app (headless session +
@@ -378,9 +416,286 @@ UHF/Infuse feature, **P2** = later.
       stripped into `tag` (applies after the next sync).
   Also: `scripts/outdated.sh`; unit tests 14 → 23, smoke checks 11 → 19.
 
+- **T-038 License files** — `LICENSE` = verbatim GPLv3 (copied from FFmpeg's
+  `COPYING.GPLv3`; sha256 `8ceb4b9e…` = the gnu.org text and 48 distro
+  copies). `THIRD_PARTY_NOTICES.md` is generated by `scripts/notices.py`
+  (stdlib Python): media engine (FFmpeg/mpv tags parsed from
+  `build-media.sh`, their licenses/configure flags), the system libraries
+  linked at runtime (curated table `SYSTEM_LIBS`), the 360 crates actually
+  linked (normal deps of the Linux x86_64 build via `cargo metadata`,
+  proc-macros excluded), the 16 npm packages bundled into the UI (runtime
+  deps + transitive) incl. the Inter font (OFL-1.1), and the 182 distinct
+  license texts (for "A OR B" the most permissive option is used — MIT
+  first; packages without a license file get the standard text with their
+  authors). `scripts/check.sh` runs `notices.py --check`, so a dependency
+  change without regenerating fails. Packages: rpm installs `LICENSE` +
+  notices to `/usr/share/licenses/testpattern/`, deb to
+  `/usr/share/doc/testpattern/` plus a DEP-5 `copyright`
+  (`packaging/debian/copyright`) — via `bundle.linux.{rpm,deb}.files`;
+  `bundle.license`/`licenseFile`/`copyright` set. In-app (GPLv3 §0
+  "Appropriate Legal Notices"): Settings → About shows the copyright/no
+  warranty/GPL notice and opens `LICENSE` and the notices, embedded as lazy
+  `?raw` chunks (35 KB / 354 KB) so they also travel with the bare binary.
+  Verified: rpm/deb contents, dialogs in the running app. **When publishing
+  binaries**, also publish the matching source (this repo at the release
+  commit; FFmpeg/mpv are covered by their tags + `build-media.sh`) — GPL §6.
+
+- **T-040 Content Security Policy** — `app.security.csp` in
+  `src-tauri/tauri.conf.json` (was `null`): `default-src 'self'`,
+  `script-src 'self'` (no `unsafe-eval`/`unsafe-inline`), `style-src 'self'`
+  (React `style={…}` goes through the CSSOM, which CSP doesn't restrict;
+  Tailwind is one CSS file), `img-src 'self' img: http://img.localhost data:
+  blob:`, `font-src 'self' data:`, `connect-src 'self' ipc:
+  http://ipc.localhost`, and `'none'` for media/object/frame/worker/
+  form-action. `devCsp` is looser (Vite needs inline scripts/styles + its HMR
+  websocket) — but on Linux Tauri cannot inject a CSP into pages loaded from
+  the Vite dev server at all, so **dev builds run without CSP**; only bundled
+  assets (`tauri://localhost`, release or `tauri build --debug`) enforce it.
+  The UI records violations in `window.__TP_CSP__` (+ `console.warn`,
+  `src/main.tsx`). **`scripts/csp-check.sh`** builds a debug binary with
+  bundled assets (`CARGO_TARGET_DIR=src-tauri/target/prodassets`, ~40 s
+  incremental), runs it in the headless session (`TP_APP_BIN` override in
+  `scripts/dev-run.sh`), walks every page, opens both license dialogs,
+  previews one live channel and fails on any violation (verified both ways:
+  0 violations as configured; dropping `img:` → `200× img-src:
+  img://localhost`). Run it after changing the CSP or adding a new kind of
+  resource (remote images, workers, inline styles from a library).
+
+- **T-039 M3U catch-up** — follows Kodi pvr.iptvsimple conventions (what M3U
+  playlists are written for). `sources/m3u.rs`: `catchup`/`catchup-type`,
+  `catchup-source`, `catchup-days`/`tvg-rec`/`timeshift` per `#EXTINF`, with
+  `#EXTM3U` values as defaults; `catchup_url()` builds `default` (template),
+  `append` (suffix), `shift` (`?utc=&lutc=`), `flussonic`
+  (`index-<start>-<dur>.m3u8`, `timeshift_abs-<start>.ts`) and `xc` (Xtream
+  live URL → `/timeshift/…`) URLs; placeholders `{utc}`/`${start}`,
+  `{utcend}`/`${end}`, `{lutc}`/`${now}`/`${timestamp}`, `{duration[:N]}`,
+  `{offset[:N]}`, `{utc:Y-m-d H:M:S}` (UTC) and `{Y}{m}{d}{H}{M}{S}` (start in
+  the machine's *local* time, like Kodi — Xtream servers want their own zone,
+  normally the viewer's). Schema v2 (`db.rs`): `channel.catchup_mode`,
+  `channel.catchup_source`. `write_m3u` sets `archive` only when a URL can be
+  built (`Entry::catchup_window`, 5 days when a scheme names no window);
+  `playback.rs` builds the URL for M3U channels. UI unchanged (the Guide
+  already offers catch-up from `archive`). Verified against the provider
+  through a local M3U playlist (served from 127.0.0.1, deleted afterwards):
+  `xc` and `default` played past programmes (durations matching the guide);
+  a 404 for RT Documentary happens with the Xtream source too (archive gap).
+  Unit tests: parsing/defaults, every scheme's URL, archive flags.
+  Found while testing — **EPG import robustness**: the provider sometimes
+  serves a broken guide (`</tv>` inside an open `<desc>` at byte 68.7M); the
+  import was all-or-nothing, so a new source got no guide at all. Now
+  `epg::import` replaces programmes channel by channel as they appear: a
+  document that breaks off still updates what it contained and keeps the
+  old guide for the rest (logged as "guide document incomplete"); only a
+  complete document prunes channels that disappeared (unit test
+  `broken_documents_update_what_they_contain`; ignored diagnostic
+  `TP_XMLTV=<file> cargo test --lib -- --ignored xmltv_file`).
+
+- **T-036 Distribution hardening** — libplacebo v7.360.1, dav1d 1.5.4,
+  libxml2 v2.15.4 and libdisplay-info 0.4.0 (all latest) are built as static
+  meson projects by `scripts/build-media.sh` and linked statically
+  (`build.rs` `STATIC`, dependents before dependencies). libdisplay-info
+  could not simply be dropped: in mpv 0.41 VA-API needs `vaapi-drm`, which
+  needs `drm`, which needs libdisplay-info (no X11/Wayland in our build).
+  Our prefix's headers now come first on the include path (the rootless
+  sysroot carries the distro's older headers of the same libraries). The
+  static libplacebo needs the C++ runtime: `build.rs` adds `-lstdc++`
+  (`libstdc++.so.6`; any distro new enough for our glibc has a new enough
+  one). The script now rebuilds everything that links a rebuilt component
+  (`MARKER`/`DEPENDENTS`). Result: the executable's NEEDED list has no
+  version-volatile names left (`libplacebo.so.360`, `libdav1d.so.7`,
+  `libxml2.so.2`, `libdisplay-info.so.3` are gone) — only glibc, libstdc++/
+  libgcc_s, zlib, OpenSSL 3, libass, lcms2, uchardet, libva/drm, X11/Xfixes,
+  ALSA/PipeWire/Pulse, EGL, GTK3/GDK/cairo/GLib/D-Bus, WebKitGTK/JSC 4.1 and
+  libsoup 3. rpm `depends` updated (-libplacebo/libdav1d/libdisplay-info/
+  libxml2, +libstdc++). Binary 57 → 63 MB. Verified: smoke 19/19, 1080p
+  live at 29.97 fps with 0 drops, DASH demuxer present, VA-API still
+  initialised (falls back to software for H.264 on Fedora mesa, as before).
+  Licenses: the notices list all statically linked native libraries with
+  their texts (vendored in `packaging/licenses/`, refreshed by
+  `build-media.sh`). `scripts/outdated.sh` now checks every media tag.
+  Gotcha: nasm 3.02 occasionally segfaults on dav1d's AVX-512 files in a
+  32-way parallel build — just re-run `scripts/build-media.sh`. Remaining
+  portability work (glibc baseline, native .deb, AppImage): T-049.
+
+- **T-043 Settings leftovers** — the player volume is remembered: the store
+  saves `player.volume` 1 s after it settles (`stores/player.ts`
+  `rememberVolume`), `settings.rs` applies it at startup, and the UI syncs
+  volume/mute from mpv when it subscribes (`hooks/useBackendEvents.ts` —
+  mpv applies the saved volume before the UI listens, so the store started
+  out believing 100). `settings_set` now applies only the changed key
+  (`apply_player(…, Some(key))`) instead of re-applying `hwdec` & co. on
+  every change. `ui.startPage` is implemented: Settings → General → Start
+  page (Home / Live TV / TV Guide), applied once per launch in
+  `app/Root.tsx` (`START_PAGES`). Verified: volume 55 survives a restart,
+  start page Live TV opens `/live`, Home stays reachable afterwards.
+
+- **T-042 Artwork cache size limit** — `images.rs`: a cache hit bumps the
+  file's mtime (at most hourly), `prune()` removes abandoned `*.tmp`,
+  expired `*.miss` markers and then the least recently used images until
+  below 90% of the cap; runs 60 s after startup and every 6 h
+  (`enforce_limit`, `lib.rs`), cap = setting `cache.imagesMb` (default 1024,
+  min 16). Commands `images_cache_info` / `images_cache_clear`; Settings →
+  General shows usage with a Clear button. Unit test
+  `prunes_least_recently_used_first`; verified in the app (usage, clear,
+  artwork refetch, startup pass logged).
+
+- **T-045 Guide history + streamed guide download** — `epg::history_days`
+  keeps as many past days as the source's longest catch-up archive (2..=7,
+  was a fixed 2), so the Guide can start catch-up that far back (this
+  provider's XMLTV itself only carries ~1 day of history). The guide is now
+  streamed to `<cache>/guide-<id>.part` (`sources::download_to`, removed
+  afterwards) and parsed from disk (`epg::open_guide`, gunzips `.xml.gz`) —
+  the 70 MB body is no longer held in memory; the DB write lock is still
+  only taken for parsing, not during the download. Measured on the 70 MB
+  guide: peak RSS growth during a guide sync 202 MB → 43 MB. Unit test
+  `keeps_history_for_the_longest_archive`.
+
+- **T-044 Per-stream request headers (M3U)** — `m3u.rs` reads user agent
+  and referrer from `#EXTINF` attributes (`user-agent`, `http-referrer`, …),
+  `#EXTVLCOPT:http-user-agent=` / `http-referrer=`, and Kodi's pipe syntax
+  `url|User-Agent=…&Referer=…` (URL-decoded; the pipe part is stripped from
+  the URL — before, it was sent to mpv as part of the URL). Schema v3 adds
+  `user_agent`/`referrer` to `channel` and `movie`; `play` passes them (item
+  UA wins over the source's) via `LoadOptions.referrer` → mpv per-file
+  `referrer`. Unit tests `stream_headers`, `per_file_options_escape_values`;
+  verified end to end with a local header-logging HTTP server (each of the
+  three conventions arrives as configured).
+
+- **T-048 Catch-up time correction per source** — schema v4
+  `source.catchup_shift_minutes`; Settings → Edit source → advanced →
+  "Catch-up time correction (hours)" (`SourceForm.tsx`, hours in the form,
+  minutes in the backend; `None` on update keeps the stored value). Applied
+  in `playback.rs`: Xtream timeshift time = start + server offset + shift;
+  M3U `catchup_url(…, shift)` moves only the local-time placeholders
+  (`{Y}…{S}`, `xc`) — `{utc}` & co. stay exact. Unit test in
+  `builds_catchup_urls`; verified the form round trip (−1 h ↔ −60 min).
+
+- **T-041 Frontend unit tests** — vitest 5 (`bun run test`, run by
+  `scripts/check.sh`; node environment, no DOM needed): `lib/format`,
+  `lib/img`, `stores/player` (`applyProp`, `trackId`, `saveProgress` guards
+  and titles, with `lib/api` mocked), `stores/sync`, `hooks/useSpatialNav`
+  (`pick`), `pages/Live` (`parseKey`/`keyString`), `components/PosterGrid`
+  (`gridLayout`, extracted). 26 tests. They found three bugs, fixed:
+  `duration(3599)` said "60m" (now rounds the total → "1h"); arrow keys
+  jumped diagonally to a nearer tile of another row instead of the next
+  one on the same shelf (`pick` now prefers same row/column, then distance
+  — verified on Home: → walks the shelf, ↓ goes to the next shelf); the
+  poster grid computed negative sizes before its first measurement.
+
+- **T-035 Recording live TV** — mpv's `stream-record` writes the stream it
+  already receives (no second connection — one-stream accounts). Command
+  `player_record(on)` (`playback.rs`): the backend picks the path —
+  setting `recording.dir`, else `~/Videos/testpattern` — and names the file
+  `<channel> <YYYY-MM-DD HH.MM.SS>.ts` (`player::file_name_for` strips
+  characters file systems reject); the webview still can't set
+  `stream-record` itself (allowlist). `Player` keeps the recording in the
+  stream's session: a new channel or stop clears `stream-record` (mpv would
+  otherwise overwrite the file with the next stream), an automatic
+  reconnect continues in `… (part N).ts`. `stream-record` is observed, so
+  the UI follows mpv: Record button + **R** in the live player, a REC badge
+  with elapsed time that stays visible when the controls hide, and
+  "Recording saved: …" when it ends (also on zapping). Verified: 1080p
+  H.264/AAC MPEG-TS written; zap ends and reports it. Tests:
+  `recording_file_names`, vitest for the property, smoke check "live
+  recording writes MPEG-TS" (20 smoke checks now).
+
+- **T-034 Picture-in-picture while browsing** — the player's PiP button (or
+  **P**) keeps playing in a 400×225 window bottom-right
+  (`components/PipPlayer.tsx`) and goes back to the previous page (Home if
+  there is none); the window has play/pause, back to full screen and close.
+  The video renders *behind* the web view, so while PiP shows, `Layout`
+  gets a `clip-path` (even-odd path with rounded corners, `pipClipPath`)
+  that cuts a hole through the whole UI exactly there, and the video is
+  positioned into the same rectangle (`useVideoViewport`). Store flag
+  `pip` (`stores/player.ts`; cleared by `stop()` and when the full-screen
+  player opens); `Root.tsx` no longer resets the video or stops live TV on
+  navigation while PiP is on. Hidden on `/player`, and on `/live` while a
+  live channel plays (the preview pane shows it there). Verified in the
+  app: movie → P returns to its detail page, keeps playing, survives page
+  changes, expand/close work; live → P, Live TV takes over, Home shows it
+  again. Vitest for the geometry.
+
+- **T-031 M3U series grouping** — non-live M3U entries named like
+  "Show S01E02 - Title", "Show S01 E02" or "Show 1x02" (`m3u::Entry::
+  episode_info`) become a `series` row per show (cleaned title/tag/year via
+  `names::title`, cover = the episode logo, category from `group-title`,
+  searchable) plus rows in the new `episode` table (schema v5: season,
+  episode, title, image, ext, url, headers) instead of one "movie" per
+  episode. Ids are hashes of group + title (+ season/episode), so they
+  survive re-syncs. Everything reading series goes through Xtream's
+  `get_series_info` shape: `catalog::m3u_series_json` synthesizes it, so the
+  series page, resume and Up next work unchanged; `play` resolves M3U
+  episode URLs (with their headers). Unit tests `recognizes_episodes`,
+  `m3u_episodes_become_series`, `m3u_series_read_like_xtream_ones`;
+  verified end to end with a local playlist (2 series + 1 movie, seasons
+  and titles, episode URL requested, Up next after marking watched).
+
+- **T-046 Credentials at rest** — source passwords live in the desktop
+  keyring via the Secret Service API (`src-tauri/src/secrets.rs`, crate
+  `secret-service` 5.2: DH-encrypted transfer, plain as fallback; KWallet 6
+  and GNOME Keyring both offer it — the `keyring` crate would add nothing on
+  Linux). Entry: label "testpattern: <source name>", attributes
+  `application=testpattern`, `profile=<random id>` (setting
+  `secrets.profile`, so profiles never share "source 1"), `source=<id>`.
+  Schema v6 adds `source.password_in_keyring`; `sources::load` takes the
+  password from an in-memory cache that `secrets::startup` fills before the
+  first sync, so callers didn't change. Flows: adding/editing a source puts
+  the typed password in the keyring (the unlock prompt may show — the user
+  is there); existing plaintext passwords move at startup only while the
+  keyring is unlocked (background work never prompts); the move clears the
+  row with `secure_delete` + WAL truncate and then rebuilds the file once
+  (VACUUM, ~0.3 s for 48 MB), because older versions of the row stay in
+  freed page space. Keyring locked at startup: one prompt, at most 90 s,
+  then the app carries on — Xtream calls (sync, play, details, test) fail
+  with "The password is stored in the system keyring, which is locked…",
+  Settings shows **Password: Keyring locked**, the 30-min sync retries
+  without prompting, a manual Sync may prompt (for that source only). No
+  Secret Service (or other platforms, T-028): the password stays in the
+  database — Settings shows **App database**. Renaming relabels the entry,
+  removing the source deletes it. Tests: `profile_id_is_stable_per_profile`,
+  `clearing_the_plaintext_leaves_no_copy_in_the_file` (fails without
+  `secure_delete` or without the rebuild), smoke "password kept in the
+  system keyring", ignored `keyring_probe` (read-only look at the session
+  keyring). Verified in the headless session against a throwaway GNOME
+  Keyring: migration (DB + WAL free of the password, keyring secret equals
+  `.env.local`), warm start + all 21 smoke checks, rename, password change
+  (still one entry), locked keyring (migration skipped without a prompt; the
+  startup prompt opens inside the nested session and times out; play and
+  source test give the message; unlock + Sync recovers — that source only, a
+  second locked one stays untouched), no Secret Service on the bus (fallback
+  to the database, guide sync works, moved back later), remove (entry
+  deleted) and add (straight to the keyring). The developer's KWallet
+  (`ksecretd`) answered the read-only probe: DH session, default collection
+  "kdewallet", unlocked — so the real profile's passwords move there on the
+  next start. Not covered: tokens inside M3U playlist/EPG URLs stay in the
+  database as typed.
+
+- **T-029 Hardware decoding interop** — instead of the planned mpv rebuild
+  with Wayland/X11 support (+ `MPV_RENDER_PARAM_WL_DISPLAY`), the render
+  context now gets `MPV_RENDER_PARAM_DRM_DISPLAY_V2` with only `render_fd`
+  set: the GPU's render node, from `EGL_EXT_device_drm_render_node` on the
+  current EGL display (else the first `/dev/dri/renderD*`), kept open as
+  long as the context (`player/linux.rs`). mpv's existing `vaapi-drm` build
+  then creates its VA display from it and imports decoded frames into GL as
+  dmabufs — no new build dependencies, same path on every Wayland
+  compositor. GLX contexts (GTK3 on X11) skip it (dmabuf import needs EGL)
+  and keep `vaapi-copy`. Measured in the app, 1080p30 AV1 over 8 s on the RX
+  6800 XT (Mesa 26.2): software 21% of a core, `vaapi-copy` (before) 10%,
+  `vaapi` (now) 8%; picture correct (snapshot of the test pattern). H.264
+  live channels: still software ("No support for codec h264 profile 100"
+  from Fedora's Mesa) and play as before. README documents RPM Fusion's
+  `mesa-va-drivers-freeworld` for H.264/HEVC (current rpmfusion.org howto).
+  Smoke check "GPU decodes without copying frames (vaapi)" (VP9 clip; fails
+  with `vaapi-copy`, the old behavior). With RPM Fusion's driver installed
+  (user, same day; needed the rpmfusion-free repo first), live channels on
+  the provider decode on the GPU too, one stream at a time: H.264 1080p30
+  `vaapi` 5% of a core vs software 20%; HEVC 2160p50 ("V Sport Ultra UHD")
+  `vaapi` 8% vs software 112%; no dropped frames; the player's info overlay
+  shows "Decoder hardware (vaapi)".
+
 ### 🟨 In progress
 
-- Nothing. Pick the next card from "To do".
+- (none)
 
 ### 🟦 To do
 
@@ -389,53 +704,21 @@ UHF/Infuse feature, **P2** = later.
   build FFmpeg/mpv statically per platform. Mobile: HTML5 fallback player
   (hls.js) fed by a local Rust HTTP proxy that remuxes TS → HLS/fMP4.
 
-#### T-029 (P2) Hardware decoding interop
-- Build mpv with `-Dwayland=enabled -Dx11=enabled` (needs wayland-protocols,
-  libXpresent headers) and pass `MPV_RENDER_PARAM_WL_DISPLAY` /
-  `MPV_RENDER_PARAM_X11_DISPLAY` from GDK so `hwdec=vaapi` can use zero-copy
-  dmabuf interop. Document that Fedora needs `mesa-va-drivers-freeworld`
-  (RPM Fusion) for H.264/HEVC VA-API.
-
-#### T-031 (P2) M3U series grouping
-- Detect `Show Name S01E02` / `/series/` URLs in M3U sources and build series +
-  a new `episode` table instead of dumping episodes into movies.
-
-#### T-034 (P2) Picture-in-picture while browsing
-- When the user leaves the player during VOD/live, keep playing in a small
-  floating rectangle (bottom-right) using the same "hole" technique as the Live
-  TV preview (`useVideoViewport` + transparent box, see `pages/Live.tsx`
-  PreviewPane). Needs a global PiP component in `src/app/Layout.tsx`, a store
-  flag `pip` in `src/stores/player.ts`, and `Root.tsx` must stop killing live
-  playback when leaving `/live` if PiP is active. The main area must become
-  transparent only where the PiP box is (box-shadow trick on the box itself).
-
-#### T-035 (P2) Recording live TV
-- mpv supports `stream-record=<file>`; add a Record button in the player for
-  live streams writing to `~/Videos/testpattern/<channel> <date>.ts`, with a
-  red REC indicator; stop on channel change.
-
-#### T-036 (P1) Distribution hardening (other distros)
-- **Why:** the binary links a few *version-volatile* system libraries whose
-  SONAMEs differ between distro releases: `libplacebo.so.360`,
-  `libdav1d.so.7`, `libdisplay-info.so.3`, `libxml2.so.2` (Fedora ≥ 44 may
-  move to `.so.16`). On another distro the binary would fail to start.
-- **Do:** in `scripts/build-media.sh` build these statically as well:
-  libplacebo as a meson subproject of mpv (`git clone --recursive
-  https://code.videolan.org/videolan/libplacebo third_party/src/mpv/subprojects/libplacebo`,
-  mpv option `--force-fallback-for=libplacebo`, `-Dlibplacebo:vulkan=disabled
-  -Dlibplacebo:opengl=enabled -Dlibplacebo:demos=false`), dav1d via meson
-  (`-Ddefault_library=static`) before FFmpeg, and drop `--enable-libxml2`
-  (only DASH needs it) or link libxml2 statically. Then extend the `STATIC`
-  list / link flags in `src-tauri/build.rs` and remove the corresponding
-  entries from `bundle.linux.rpm.depends`.
-- **Also:** `.deb` must be built on Debian/Ubuntu (package names and sonames
-  differ, e.g. `libasound2t64`); AppImage needs `linuxdeploy` (the Tauri
-  bundler downloads it on first `--bundles appimage`). `appimage` is already
-  in `bundle.targets` but has never been built — either build/verify it here
-  or drop it from the list so plain `bun run tauri build` matches reality.
-- **Accept:** `ldd target/release/testpattern` lists only glibc, GTK/WebKit,
-  libass/fribidi/freetype/harfbuzz, libva, pipewire/pulse/alsa, EGL/drm,
-  openssl — all with long-stable SONAMEs.
+#### T-049 (P2) Portable release builds (other distros)
+- **glibc baseline:** the release binary needs `GLIBC_2.43` (it is built on
+  Fedora 44), so it only starts on distros at least that new — static
+  linking (T-036) can't fix that. For older distros, build releases in an
+  older-baseline container (e.g. Debian 13 / Ubuntu 24.04: install the
+  WebKitGTK 4.1, GTK3 and codec `-dev` packages, run
+  `scripts/build-media.sh` there, then `bun run tauri build`); check with
+  `objdump -T src-tauri/target/release/testpattern | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1`.
+- **.deb** must be built on Debian/Ubuntu: `bundle.linux.deb` has no
+  `depends` yet (package names differ from Fedora, e.g. `libasound2t64`) —
+  add them there.
+- **AppImage:** `appimage` is in `bundle.targets` but has never been built;
+  the bundler downloads `linuxdeploy` on first `--bundles appimage` (needs
+  the user's OK). Either verify it or drop it from the list so plain
+  `bun run tauri build` matches reality.
 
 #### T-037 (P2) CI pipeline
 - GitHub Actions (or similar) on Fedora container: install the packages from
@@ -445,115 +728,14 @@ UHF/Infuse feature, **P2** = later.
   provider account → store `TP_XTREAM_*` as secrets and write `.env.local` in
   the job; run inside `xvfb`/headless KWin (see `scripts/headless.sh`).
 
-#### T-038 (P1) License files
-- Add `LICENSE` with the verbatim GPL-3.0 text (download from
-  https://www.gnu.org/licenses/gpl-3.0.txt) and `THIRD_PARTY_NOTICES.md`
-  listing FFmpeg (GPL build, n9.0.2), mpv (GPL, v0.41.0), and the dynamic
-  system libraries (libass, libplacebo, …) with their licenses. Include both
-  in the rpm/deb via `bundle.resources` in `src-tauri/tauri.conf.json`.
-
-#### T-039 (P1) M3U catch-up
-- **Why:** M3U providers announce catch-up with `#EXTINF` attributes
-  `catchup="default|append|shift|flussonic|xc"`, `catchup-source="…"` and
-  `catchup-days="N"` (also as defaults on the `#EXTM3U` line).
-  `src-tauri/src/sources/m3u.rs` only parses the days; `write_m3u` stores
-  `archive_days` but writes `archive = 0`, because `playback.rs` can only
-  build Xtream timeshift URLs ("catch-up needs an Xtream source").
-- **Do:** parse `catchup` + `catchup-source` (entry values override header
-  defaults) into `Entry`; add a migration v2 in `db.rs` (append to
-  `MIGRATIONS`, never edit v1) with `channel.catchup_mode TEXT` and
-  `channel.catchup_source TEXT`; in `playback.rs` (`"catchup"` branch) build:
-  `default` → `catchup-source` with placeholders replaced, `append` → stream
-  URL + `catchup-source` (placeholders replaced), `shift` → stream URL +
-  `?utc={start}&lutc={now}` (`&` if it already has a query). Placeholders:
-  `{utc}`/`${start}` (programme start, unix s), `{utcend}`/`${end}`,
-  `{lutc}`/`${now}`, `{duration}` (s), `{offset}` (now − start), and
-  `{Y}{m}{d}{H}{M}{S}` (start, UTC). Then write
-  `archive = days > 0 && mode supported` in `write_m3u` (and update the unit
-  test `m3u_channels_do_not_offer_catchup_yet` in `sources/mod.rs`).
-- **Accept:** unit tests for each mode's URL; the Guide's "Play catch-up"
-  works for an M3U channel with `catchup="shift"` or `"default"`.
-
-#### T-040 (P1) Content Security Policy for the webview
-- **Why:** `src-tauri/tauri.conf.json` has `"csp": null`. Provider-controlled
-  text (names, EPG descriptions, artwork URLs) is rendered through React
-  (escaped), but a CSP is the defense in depth that keeps an injection from
-  reaching the IPC (sources, playback, settings).
-- **Do:** set `app.security.csp`, e.g. `default-src 'self'; script-src
-  'self'; style-src 'self' 'unsafe-inline'; img-src 'self' img:
-  http://img.localhost data: blob:; font-src 'self' data:; connect-src
-  'self' ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'`
-  (`'unsafe-inline'` styles are needed for React `style={…}` attributes).
-  Tauri applies the CSP to its own protocol, i.e. release builds.
-- **Verify:** `bun run tauri build --bundles rpm,deb`, then run
-  `src-tauri/target/release/testpattern` inside the headless compositor with
-  the env `scripts/headless.sh` uses (`WAYLAND_DISPLAY=$(cat
-  .deps/headless/socket)`, `DBUS_SESSION_BUS_ADDRESS=$(cat
-  .deps/headless/dbus)`, `XDG_*_HOME` under `.deps/headless/`). Release
-  builds have no devtools server, so check visually (posters via `img:`,
-  Inter font, trailers open) or temporarily enable the `devtools` feature.
-- **Accept:** all pages render in the release build with the CSP set.
-
-#### T-041 (P2) Frontend unit tests
-- **Why:** there are none; logic in `src/stores/player.ts` (`applyProp`,
-  `trackId`, `saveProgress` guards), `src/lib/format.ts`,
-  `src/hooks/useSpatialNav.ts` (`pick`), `src/pages/Live.tsx` (`parseKey`)
-  and the column math in `src/components/PosterGrid.tsx` is only covered
-  indirectly by `scripts/smoke.sh`.
-- **Do:** add `vitest` + `happy-dom` (latest, per the dependency policy), a
-  `"test": "vitest run"` script, and call it from `scripts/check.sh`; export
-  the pure helpers you test.
-- **Accept:** `scripts/check.sh` runs ≥ 20 focused frontend tests.
-
-#### T-042 (P2) Artwork cache size limit
-- **Why:** `src-tauri/src/images.rs` keeps every resized poster/logo/backdrop
-  forever under `~/.cache/dev.testpattern.app/images` (40k movies × widths),
-  and `*.miss` markers accumulate — unbounded disk use.
-- **Do:** on a cache hit bump the file's mtime; at startup (background task)
-  delete `*.tmp`, `*.miss` older than a day, then evict oldest files until the
-  directory is below a cap (1 GB default, setting `cache.imagesMb`).
-- **Accept:** unit test on a temp dir; the cache stays under the cap.
-
-#### T-043 (P2) Settings leftovers
-- `player.volume` is applied at startup (`settings::apply_player`) but never
-  written, so the volume resets to 100 on every launch. Persist it (debounced)
-  when it changes in `src/pages/Player.tsx` (`Volume` slider, ↑/↓ keys) via
-  `api.setSetting("player.volume", v)`, and make `apply_player` not re-apply
-  the volume on every other `player.*` change.
-- `ui.startPage` (default `"home"`) exists in `settings.rs` defaults but is
-  unused: implement it (Settings → Start page: Home / Live TV / TV Guide;
-  `Root.tsx` redirects `/` once per launch) or delete it.
-
-#### T-044 (P2) Per-stream user agent / referrer from M3U
-- `m3u.rs` parses `user-agent`/`http-user-agent` attributes and
-  `#EXTVLCOPT:http-user-agent=` into `Entry.user_agent`, but `write_m3u`
-  drops it (no column) and `play` only passes the source-level user agent;
-  some streams also need `http-referrer` (`#EXTVLCOPT:http-referrer=`).
-- **Do:** migration adding `user_agent`/`referrer` to `channel` and `movie`;
-  parse referrer; pass both through `LoadOptions` → mpv per-file options
-  `user-agent` / `referrer` (escape like `force-media-title` in
-  `player/mod.rs` `file_options`).
-
-#### T-045 (P2) Guide history for catch-up
-- `epg::import` keeps programmes in [now − 2 days, now + 8 days], but
-  channels offer up to `archive_days` (often 3–7) of catch-up: paging the TV
-  Guide back further than 2 days shows empty rows, so older catch-up can't be
-  started. Use the source's largest `archive_days` (cap 7) as the lower bound.
-
-#### T-046 (P2) Credentials at rest
-- Source passwords are stored in plaintext (`source.password` in
-  `testpattern.db`). Move them to the desktop keyring (Secret Service on
-  Linux; the `keyring` crate — check the latest version) with a DB fallback
-  when no keyring is available; migrate existing rows; `sources::load` reads
-  through it.
-
 ### ⛔ Blocked / needs the user
 - No git remote yet (local repository only) — the user decides where to host
   it; never push without being asked.
-- AppImage (T-036) needs the bundler to download `linuxdeploy` from GitHub on
+- AppImage (T-049) needs the bundler to download `linuxdeploy` from GitHub on
   first use — not done without the user's OK.
 - Optional: run the `sudo dnf install ...` from §3 so builds don't need the
-  rootless sysroot.
+  rootless sysroot. Anything with `sudo` is the user's to run in their own
+  terminal: inside the agent's sandbox it fails ("no new privileges").
 
 ---
 
@@ -612,3 +794,37 @@ UHF/Infuse feature, **P2** = later.
   `.env.local` values first). Commits use the identity of the logged-in `gh`
   account (its name + GitHub noreply address; repo-local `user.name` /
   `user.email`), as the user asked.
+- **2026-09-26** — User: "continue work on the worklog". T-038 done (GPL
+  text, generated third-party notices incl. 360 crates / 16 npm packages /
+  182 license texts, packaged in rpm+deb, in-app legal notice). Next: T-040.
+- **2026-09-26** — T-040 done (CSP for bundled assets + `scripts/csp-check.sh`,
+  0 violations across the UI). Next: T-039.
+- **2026-09-26** — T-039 done (M3U catch-up, verified on the provider) + EPG
+  import now survives broken guide documents. Next: T-036.
+- **2026-09-26** — T-036 done (volatile libraries static; binary depends on
+  long-stable system libraries only); T-049 created for the rest of
+  portability. All P1 cards are done. Next: the P2 cards.
+- **2026-09-26** — P2 cards done in priority order: T-043 (volume/start
+  page/…), T-042 (artwork cache limit), T-045 (guide history, streamed
+  download), T-044 (M3U request headers), T-048 (catch-up correction),
+  T-041 (vitest; found 3 real bugs), T-035 (recording), T-034 (PiP), T-031
+  (M3U series). Each verified in the headless app; details in Done.
+- **2026-09-26** — T-046 done (passwords in the desktop keyring, see Done).
+  Found while testing it: earlier headless sessions had left processes
+  running after `stop` — among them KWallet daemons (`ksecretd`) started on
+  the private bus with the developer's real HOME and display. Nothing was
+  written (`~/.local/share/kwalletd` unchanged since login); the leftovers
+  were stopped, and `headless.sh` now gives on-demand services the nested
+  display + isolated profile, runs its own throwaway keyring and ends
+  everything the bus started. Remaining To-do cards need the user (T-037
+  remote, T-049 containers/AppImage download) or other hardware/OSes
+  (T-028); T-029 is next.
+- **2026-09-26** — T-029 done (VA-API zero-copy through the GPU's render
+  node; smoke 22/22). Release build re-verified: 62 MB, direct library needs
+  unchanged. What remains needs the user: T-037 (git remote for CI), T-049
+  (containers for older distros, OK to download `linuxdeploy`), T-028
+  (Windows/macOS hardware).
+- **2026-09-26** — User installed RPM Fusion's `mesa-va-drivers-freeworld`
+  (after enabling rpmfusion-free — "No match" before; README/WORKLOG now
+  say so). Verified: H.264 and 4K HEVC live channels decode as `vaapi`
+  (numbers in T-029).

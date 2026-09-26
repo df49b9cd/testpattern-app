@@ -41,6 +41,7 @@ S="$I const s = window.__smoke;"
 
 echo "catalog"
 check "source synced with EPG" "$I const s = (await inv('sources_list'))[0]; return !!s && s.counts.channels > 1000 && s.counts.programmes > 0 && !s.syncError;"
+check "password kept in the system keyring" "$I const s = (await inv('sources_list'))[0]; return s.passwordInKeyring === true && s.passwordLocked === false;"
 check "live categories cleaned" "$I const c = await inv('categories', {kind: 'live'}); return c.length > 50 && c.every(x => !/[ᴬ-ᵡ]/.test(x.title));"
 check "channels with now/next" "$I const p = await inv('channels', {query: {withEpg: true, limit: 50}}); return p.total > 100 && p.items.some(c => c.now);"
 check "movies paging" "$I const p = await inv('movies', {query: {sort: 'title', offset: 120, limit: 60}}); return p.total > 1000 && p.items.length === 60;"
@@ -65,12 +66,37 @@ curl -s "$DEV/snapshot?path=$OUT/live.png" >/dev/null
 check "zap to next channel" "$I const c = (await inv('channels', {query: {withEpg: true, limit: 2}})).items; await inv('play', {req: {kind: 'live', sourceId: c[1].sourceId, id: c[1].id}}); await sleep(1500); for (let i = 0; i < 30; i++) { await sleep(500); const t = await inv('player_get', {name: 'time-pos'}); const title = await inv('player_get', {name: 'media-title'}); if (t > 1 && title) return true; } return false;"
 check "movie resumes at 5:00" "$I await inv('player_stop'); const m = (await inv('movies', {query: {limit: 1}})).items[0]; await inv('play', {req: {kind: 'movie', sourceId: m.sourceId, id: m.id, start: 300}}); for (let i = 0; i < 40; i++) { await sleep(500); const t = await inv('player_get', {name: 'time-pos'}); if (t >= 299 && t < 330) return true; } return false;"
 check "progress lands in continue watching" "$I const m = (await inv('movies', {query: {limit: 1}})).items[0]; const d = await inv('player_get', {name: 'duration'}); await inv('history_update', {entry: {kind: 'movie', sourceId: m.sourceId, itemId: m.id, title: m.title, position: 305, duration: d || 6000}}); const cw = await inv('continue_watching', {}); return cw.some(h => h.itemId === m.id);"
+# record 4 s of live TV into the headless profile, then check the file
+REC="$OUT/recordings"
+rm -rf "$REC"
+file=$(js "$I await inv('settings_set', {key: 'recording.dir', value: '$REC'}); const c = (await inv('channels', {query: {withEpg: true, limit: 1}})).items[0]; await inv('play', {req: {kind: 'live', sourceId: c.sourceId, id: c.id, title: c.title}}); for (let i = 0; i < 30; i++) { await sleep(500); if ((await inv('player_get', {name: 'time-pos'})) > 1) break; } await inv('player_record', {on: true}); await sleep(4000); const f = await inv('player_record', {on: false}); await inv('settings_set', {key: 'recording.dir', value: ''}); return f;" | python3 -c 'import json,sys; print(json.load(sys.stdin) or "")' 2>/dev/null || true)
+size=$(stat -c %s "$file" 2>/dev/null || echo 0)
+report "live recording writes MPEG-TS" "$([[ $size -gt 100000 && "$(head -c1 "$file" | od -An -tx1 | tr -d ' ')" == 47 ]] && echo 1 || echo 0)" "file '$file', $size bytes"
 check "stop" "$I await inv('player_stop'); await sleep(500); return (await inv('player_get', {name: 'idle-active'})) === true;"
 # the episode's last seconds through the real UI store (dev builds expose it)
 check "next episode offered at the end" "$S const e = s.eps[1]; await window.__TP__.player.getState().play({kind: 'episode', sourceId: s.d.sourceId, id: e.id, title: e.title, subtitle: s.d.title, ext: e.ext, start: e.duration - 5, seriesId: s.d.id, seriesTitle: s.d.title, season: e.season, episode: e.episode}); location.hash = '#/player'; for (let i = 0; i < 34; i++) { await sleep(500); if (/up next in \\d+s/i.test(document.body.innerText)) return true; } return document.body.innerText.slice(0, 120);"
 curl -s "$DEV/snapshot?path=$OUT/next-episode.png" >/dev/null
 check "finished episode saved as watched" "$S await window.__TP__.player.getState().stop(); location.hash = '#/'; const d = await inv('series_detail', {sourceId: s.d.sourceId, id: s.d.id}); return d.seasons.flatMap(z => z.episodes).find(x => x.id === s.eps[1].id).watched === true;"
 js "$S for (const e of s.eps) await inv('history_remove', {kind: 'episode', sourceId: s.d.sourceId, itemId: e.id}); return 1;" >/dev/null
+
+# VA-API frames go straight to GL (T-029): a local VP9 clip (made once with
+# the system ffmpeg) must decode as hwdec "vaapi", not "vaapi-copy"/"no".
+# Needs a GPU render node and a GPU that decodes VP9 (most since ~2017).
+clip="$OUT/vp9.webm"
+if [[ ! -s "$clip" ]] && command -v ffmpeg >/dev/null; then
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=1280x720:rate=30" -t 6 \
+    -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 2M "$clip" 2>/dev/null || rm -f "$clip"
+fi
+if [[ -s "$clip" ]] && compgen -G "/dev/dri/renderD*" >/dev/null; then
+  python3 -m http.server 18556 --bind 127.0.0.1 --directory "$OUT" >/dev/null 2>&1 &
+  srv=$!
+  trap 'kill $srv 2>/dev/null || true' EXIT
+  for _ in $(seq 1 20); do curl -s -m 1 -o /dev/null "http://127.0.0.1:18556/" && break; sleep 0.1; done
+  check "GPU decodes without copying frames (vaapi)" "$I await inv('player_load', {url: 'http://127.0.0.1:18556/vp9.webm', options: {title: 'vp9'}}); for (let i = 0; i < 30; i++) { await sleep(250); if ((await inv('player_get', {name: 'time-pos'})) > 1) break; } const h = await inv('player_get', {name: 'hwdec-current'}); await inv('player_stop'); return h === 'vaapi' || 'hwdec-current = ' + h;"
+  kill $srv 2>/dev/null || true
+else
+  echo "  - GPU decoding check skipped (no render node or no VP9 encoder)"
+fi
 
 echo "hardening"
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Origin: https://evil.example' --data 'return 1' "$E")

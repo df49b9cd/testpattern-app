@@ -23,7 +23,34 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self'",
+        "img-src": "'self' img: http://img.localhost data: blob:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "media-src": "'none'",
+        "object-src": "'none'",
+        "frame-src": "'none'",
+        "worker-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'unsafe-inline'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' img: http://img.localhost data: blob:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1420",
+        "media-src": "'none'",
+        "object-src": "'none'",
+        "frame-src": "'none'",
+        "worker-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'"
+      }
     }
   },
   "bundle": {
@@ -35,6 +62,9 @@
     ],
     "category": "Video",
     "shortDescription": "IPTV player",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "../LICENSE",
+    "copyright": "Copyright © 2026 the testpattern authors. Licensed under the GPL-3.0-or-later.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -46,22 +76,30 @@
       "rpm": {
         "depends": [
           "libass",
-          "libplacebo",
           "libva",
           "pipewire-libs",
           "pulseaudio-libs",
           "alsa-lib",
-          "libdav1d",
           "uchardet",
           "lcms2",
-          "libdisplay-info",
+          "libstdc++",
           "libdrm",
           "libglvnd-egl",
           "openssl-libs",
-          "libxml2",
           "fribidi",
           "libunibreak"
-        ]
+        ],
+        "files": {
+          "/usr/share/licenses/testpattern/LICENSE": "../LICENSE",
+          "/usr/share/licenses/testpattern/THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md"
+        }
+      },
+      "deb": {
+        "files": {
+          "/usr/share/doc/testpattern/copyright": "../packaging/debian/copyright",
+          "/usr/share/doc/testpattern/LICENSE": "../LICENSE",
+          "/usr/share/doc/testpattern/THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md"
+        }
       }
     }
   }

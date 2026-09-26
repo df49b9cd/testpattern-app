@@ -1,14 +1,15 @@
 import clsx from "clsx";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarSync, CircleAlert, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { CalendarSync, CircleAlert, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { api, errorMessage } from "../lib/api";
 import { ago, date } from "../lib/format";
 import type { Source } from "../lib/types";
 import { useSync } from "../stores/sync";
 import { SourceForm } from "../components/SourceForm";
-import { Badge, Button, Segmented, Spinner, Switch, TextField } from "../components/ui";
+import type { StartPage } from "../app/Root";
+import { Badge, Button, IconButton, Segmented, Spinner, Switch, TextField } from "../components/ui";
 
 export function SettingsPage() {
   const navigate = useNavigate();
@@ -127,6 +128,9 @@ function SourceCard({ source: s }: { source: Source }) {
         <Stat label="Guide updated" value={ago(s.lastEpgSync)} />
         {acct?.expiresAt ? <Stat label="Expires" value={date(acct.expiresAt)} /> : null}
         {acct ? <Stat label="Connections" value={`${acct.maxConnections} allowed`} /> : null}
+        {s.hasPassword ? (
+          <Stat label="Password" value={s.passwordLocked ? "Keyring locked" : s.passwordInKeyring ? "System keyring" : "App database"} />
+        ) : null}
       </div>
       {(s.syncError || sync?.error || error) && (
         <p className="mt-3 flex items-start gap-2 text-[13px] text-live">
@@ -185,6 +189,26 @@ function PlaybackSettings() {
 
   return (
     <>
+      <Section title="General">
+        <Card>
+          <div className="flex items-center justify-between gap-6 px-1 py-2">
+            <span>
+              <span className="block text-[15px] font-medium">Start page</span>
+              <span className="mt-0.5 block text-[13px] text-dim">Where testpattern opens.</span>
+            </span>
+            <Segmented<StartPage>
+              value={(str("ui.startPage") || "home") as StartPage}
+              options={[
+                { value: "home", label: "Home" },
+                { value: "live", label: "Live TV" },
+                { value: "guide", label: "TV Guide" },
+              ]}
+              onChange={(v) => void set("ui.startPage", v)}
+            />
+          </div>
+          <ArtworkCache limitMb={typeof s["cache.imagesMb"] === "number" ? (s["cache.imagesMb"] as number) : 1024} />
+        </Card>
+      </Section>
       <Section title="Playback">
         <Card className="flex flex-col gap-2">
           <Switch
@@ -234,6 +258,39 @@ function PlaybackSettings() {
   );
 }
 
+function ArtworkCache({ limitMb }: { limitMb: number }) {
+  const qc = useQueryClient();
+  const usage = useQuery({ queryKey: ["image-cache"], queryFn: api.imageCache });
+  const [clearing, setClearing] = useState(false);
+  const mb = (bytes: number) => (bytes < 10 << 20 ? (bytes / (1 << 20)).toFixed(1) : Math.round(bytes / (1 << 20)));
+  return (
+    <div className="flex items-center justify-between gap-6 px-1 py-2">
+      <span>
+        <span className="block text-[15px] font-medium">Artwork cache</span>
+        <span className="mt-0.5 block text-[13px] text-dim">
+          {usage.data ? `${mb(usage.data.bytes)} MB in ${usage.data.files.toLocaleString()} images` : "…"} · kept below {limitMb.toLocaleString()} MB,
+          least recently used first.
+        </span>
+      </span>
+      <Button
+        size="sm"
+        loading={clearing}
+        disabled={!usage.data?.files}
+        onClick={async () => {
+          setClearing(true);
+          try {
+            qc.setQueryData(["image-cache"], await api.clearImageCache());
+          } finally {
+            setClearing(false);
+          }
+        }}
+      >
+        Clear
+      </Button>
+    </div>
+  );
+}
+
 function LanguageField({ label, value, onSave }: { label: string; value: string; onSave: (v: string) => void }) {
   const [v, setV] = useState(value);
   return (
@@ -256,6 +313,7 @@ function About() {
     queryFn: async () => ({ mpv: await api.get<string>("mpv-version"), ffmpeg: await api.get<string>("ffmpeg-version") }),
     staleTime: Infinity,
   });
+  const [legal, setLegal] = useState<LegalDoc | null>(null);
   return (
     <Section title="About">
       <Card className="text-[13.5px] leading-relaxed text-dim">
@@ -263,11 +321,67 @@ function About() {
         <p>
           Playback engine: {versions.data?.mpv ?? "mpv"} · FFmpeg {versions.data?.ffmpeg ?? ""} (built in, statically linked).
         </p>
-        <p className="mt-2 text-faint">
-          Licensed under the GPL-3.0-or-later because it includes GPL builds of FFmpeg and mpv. testpattern does not provide any content; add
-          sources you are entitled to use.
+        {/* GPLv3 §0 "Appropriate Legal Notices" */}
+        <p className="mt-2">
+          Copyright © 2026 the testpattern authors. testpattern is free software: you can redistribute it and/or modify it under the terms of
+          the GNU General Public License, version 3 or (at your option) any later version. It comes with ABSOLUTELY NO WARRANTY.
         </p>
+        <p className="mt-2 text-faint">
+          It includes GPL builds of FFmpeg and mpv and other open-source components. testpattern does not provide any content; add sources
+          you are entitled to use.
+        </p>
+        <div className="mt-4 flex gap-2">
+          <Button size="sm" onClick={() => setLegal("license")}>
+            License
+          </Button>
+          <Button size="sm" onClick={() => setLegal("notices")}>
+            Third-party notices
+          </Button>
+        </div>
       </Card>
+      {legal && <LegalDialog doc={legal} onClose={() => setLegal(null)} />}
     </Section>
+  );
+}
+
+type LegalDoc = "license" | "notices";
+
+/** LICENSE / THIRD_PARTY_NOTICES.md, embedded so they travel with the binary. */
+function LegalDialog({ doc, onClose }: { doc: LegalDoc; onClose: () => void }) {
+  const text = useQuery({
+    queryKey: ["legal", doc],
+    // separate chunks: loaded only when opened
+    queryFn: async () =>
+      doc === "license" ? (await import("../../LICENSE?raw")).default : (await import("../../THIRD_PARTY_NOTICES.md?raw")).default,
+    staleTime: Infinity,
+  });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm animate-fade-in" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-label={doc === "license" ? "License" : "Third-party notices"}
+        className="flex h-[82vh] w-full max-w-4xl flex-col rounded-3xl bg-panel ring-1 ring-white/10 animate-rise-in"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 pb-3 pt-5">
+          <h2 className="text-lg font-bold">{doc === "license" ? "GNU General Public License v3" : "Third-party notices"}</h2>
+          <IconButton label="Close" size="sm" onClick={onClose}>
+            <X className="size-4" />
+          </IconButton>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+          {text.data ? (
+            <pre className="select-text whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-fg/80">{text.data}</pre>
+          ) : (
+            <Spinner label="Loading…" />
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

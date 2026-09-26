@@ -9,6 +9,7 @@ mod library;
 mod names;
 mod playback;
 mod player;
+mod secrets;
 mod settings;
 mod sources;
 mod state;
@@ -62,20 +63,36 @@ pub fn run() {
 
             let window = app.get_webview_window("main").expect("main window");
             match player::init(app.handle(), &window) {
-                Ok(()) => settings::apply_player(app.handle(), &st),
+                Ok(()) => settings::apply_player(app.handle(), &st, None),
                 Err(e) => log::error!("native player unavailable: {e}"),
             }
 
             #[cfg(debug_assertions)]
             dev_hooks(app);
 
-            // Keep catalogs and guides fresh: first tick fires immediately.
-            let handle = app.handle().clone();
+            // Artwork cache size limit: shortly after startup, then every 6 h.
+            let cache_state = st.clone();
             tauri::async_runtime::spawn(async move {
-                let mut tick = tokio::time::interval(Duration::from_secs(30 * 60));
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                let mut tick = tokio::time::interval(Duration::from_secs(6 * 3600));
                 loop {
                     tick.tick().await;
+                    images::enforce_limit(cache_state.clone()).await;
+                }
+            });
+
+            // Keep catalogs and guides fresh: a first pass as soon as the
+            // keyring passwords are loaded (secrets.rs), then every 30 min.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                secrets::startup(&st).await;
+                let mut tick = tokio::time::interval(Duration::from_secs(30 * 60));
+                tick.tick().await;
+                loop {
                     sources::sync_stale(&handle, &st, CATALOG_MAX_AGE, EPG_MAX_AGE);
+                    tick.tick().await;
+                    // a keyring that was locked until now (no prompt)
+                    secrets::ensure_loaded(&st, None, secrets::Unlock::Never).await;
                 }
             });
 
@@ -112,8 +129,11 @@ pub fn run() {
             library::continue_watching,
             library::recent_channels,
             playback::play,
+            playback::player_record,
             settings::settings_get,
             settings::settings_set,
+            images::images_cache_info,
+            images::images_cache_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running testpattern");

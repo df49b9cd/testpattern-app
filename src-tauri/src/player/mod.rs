@@ -6,6 +6,7 @@ mod linux;
 pub mod mpv;
 mod mpv_sys;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,8 @@ pub struct LoadOptions {
     pub live: bool,
     pub title: Option<String>,
     pub user_agent: Option<String>,
+    /// HTTP Referer some streams require (M3U playlists).
+    pub referrer: Option<String>,
     #[serde(default)]
     pub paused: bool,
 }
@@ -55,6 +58,36 @@ struct Session {
     reconnects: u32,
     loaded_at: Option<Instant>,
     ever_loaded: bool,
+    recording: Option<Recording>,
+}
+
+/// A live recording (mpv `stream-record`). mpv overwrites the target when a
+/// new file loads, so each automatic reconnect continues in a new part.
+struct Recording {
+    /// Path without extension.
+    base: PathBuf,
+    part: u32,
+}
+
+impl Recording {
+    fn file(&self) -> PathBuf {
+        let name = self.base.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = if self.part <= 1 { format!("{name}.ts") } else { format!("{name} (part {}).ts", self.part) };
+        self.base.with_file_name(name)
+    }
+}
+
+/// A file name from a channel title: no path separators or characters
+/// Windows/FAT can't store, sensible length.
+pub fn file_name_for(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { ' ' } else { c })
+        .collect();
+    let words = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let short: String = words.chars().take(80).collect();
+    let short = short.trim_matches(['.', ' ']).to_owned();
+    if short.is_empty() { "Live TV".to_owned() } else { short }
 }
 
 pub struct Player {
@@ -90,6 +123,8 @@ const OBSERVED: &[(&str, mpv_format)] = &[
     ("audio-delay", MPV_FORMAT_DOUBLE),
     ("video-aspect-override", MPV_FORMAT_STRING),
     ("panscan", MPV_FORMAT_DOUBLE),
+    // "" when not recording (T-035)
+    ("stream-record", MPV_FORMAT_STRING),
 ];
 
 impl Player {
@@ -219,10 +254,18 @@ impl Player {
             s.reconnects = 0;
         }
         if s.reconnects >= 5 {
+            if s.recording.take().is_some() {
+                let _ = mpv.set_string("stream-record", "");
+            }
             return None;
         }
         s.reconnects += 1;
         s.loaded_at = None;
+        // keep recording, in a new part (mpv would overwrite the current one)
+        if let Some(rec) = s.recording.as_mut() {
+            rec.part += 1;
+            let _ = mpv.set_string("stream-record", &rec.file().to_string_lossy());
+        }
         let attempt = s.reconnects;
         let url = s.url.clone();
         let opts = file_options(&s.options);
@@ -246,6 +289,8 @@ impl Player {
         options: LoadOptions,
     ) -> Result<(), mpv::MpvError> {
         let opts = file_options(&options);
+        // a new stream ends any recording (mpv would record it into the same file)
+        let _ = self.mpv.set_string("stream-record", "");
         *self.session.lock() = Some(Session {
             url: url.to_owned(),
             options,
@@ -255,12 +300,36 @@ impl Player {
         self.mpv.command(&["loadfile", url, "replace", "-1", &opts])
     }
 
+    /// Records the playing live stream into `dir/<title> <date time>.ts`.
+    pub fn start_recording(&self, dir: &Path) -> Result<PathBuf, String> {
+        let mut guard = self.session.lock();
+        let s = guard.as_mut().filter(|s| s.options.live && s.ever_loaded).ok_or("No live channel is playing")?;
+        if let Some(rec) = &s.recording {
+            return Ok(rec.file());
+        }
+        let title = file_name_for(s.options.title.as_deref().unwrap_or(""));
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M.%S");
+        let rec = Recording { base: dir.join(format!("{title} {stamp}")), part: 1 };
+        let file = rec.file();
+        self.mpv.set_string("stream-record", &file.to_string_lossy()).map_err(|e| e.to_string())?;
+        s.recording = Some(rec);
+        Ok(file)
+    }
+
+    /// Stops recording; returns the last file written.
+    pub fn stop_recording(&self) -> Option<PathBuf> {
+        let file = self.session.lock().as_mut().and_then(|s| s.recording.take()).map(|r| r.file());
+        let _ = self.mpv.set_string("stream-record", "");
+        file
+    }
+
     pub fn mpv(&self) -> &Mpv {
         &self.mpv
     }
 
     pub fn stop(&self) -> Result<(), mpv::MpvError> {
         *self.session.lock() = None;
+        let _ = self.mpv.set_string("stream-record", "");
         self.mpv.command(&["stop"])
     }
 }
@@ -289,6 +358,9 @@ fn file_options(o: &LoadOptions) -> String {
     }
     if let Some(ua) = &o.user_agent {
         opts.push(format!("user-agent=%{}%{}", ua.len(), ua));
+    }
+    if let Some(referrer) = &o.referrer {
+        opts.push(format!("referrer=%{}%{}", referrer.len(), referrer));
     }
     if o.live {
         // Faster zapping: probe less, keep a modest buffer, no EOF hold.
@@ -407,6 +479,33 @@ mod tests {
         assert!(!command_allowed(&[]));
         assert!(!property_allowed("input-ipc-server"));
         assert!(!readable("path") && !readable("playlist/0/filename") && readable("time-pos"));
+    }
+
+    #[test]
+    fn recording_file_names() {
+        assert_eq!(super::file_name_for("UK: BBC One / HD"), "UK BBC One HD");
+        assert_eq!(super::file_name_for(" <?> "), "Live TV");
+        assert_eq!(super::file_name_for(&"x".repeat(200)).len(), 80);
+        let mut rec = super::Recording { base: "/v/BBC One 2026-09-26 14.00.00".into(), part: 1 };
+        assert_eq!(rec.file().to_string_lossy(), "/v/BBC One 2026-09-26 14.00.00.ts");
+        rec.part = 2;
+        assert_eq!(rec.file().to_string_lossy(), "/v/BBC One 2026-09-26 14.00.00 (part 2).ts");
+    }
+
+    #[test]
+    fn per_file_options_escape_values() {
+        let o = super::LoadOptions {
+            start: Some(300.0),
+            title: Some("Tom, Jerry & Co".into()),
+            user_agent: Some("Mozilla/5.0 (X11; Linux)".into()),
+            referrer: Some("https://site.example/?a=1,b=2".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::file_options(&o),
+            "pause=no,start=300.0,force-media-title=%15%Tom, Jerry & Co,user-agent=%24%Mozilla/5.0 (X11; Linux),\
+             referrer=%29%https://site.example/?a=1,b=2"
+        );
     }
 
     #[test]

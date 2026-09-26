@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   AudioLines,
   ChevronLeft,
+  Circle,
   ChevronDown,
   ChevronUp,
   Gauge,
@@ -11,6 +12,7 @@ import {
   Loader2,
   Maximize,
   Minimize,
+  PictureInPicture2,
   Pause,
   Play,
   RectangleHorizontal,
@@ -65,6 +67,13 @@ export function PlayerPage() {
   const [fullscreen, setFullscreen] = useState(false);
   const [flash, setFlash] = useState<null | "play" | "pause">(null);
   const [digits, setDigits] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimer = useRef(0);
+  const say = useCallback((text: string) => {
+    setNotice(text);
+    window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 4000);
+  }, []);
   const hideTimer = useRef(0);
   const digitTimer = useRef(0);
 
@@ -82,6 +91,8 @@ export function PlayerPage() {
 
   useEffect(() => {
     void isFullscreen().then(setFullscreen);
+    // this is the full-screen player: no picture-in-picture while it's open
+    usePlayer.getState().setPip(false);
   }, []);
 
   const poke = useCallback(() => {
@@ -113,6 +124,20 @@ export function PlayerPage() {
     navigate(-1);
     // live keeps playing (preview on the Live TV page); VOD saves & stops
     if (cur && cur.kind !== "live") await usePlayer.getState().stop();
+  }, [navigate]);
+
+  // Picture-in-picture (T-034): keep playing in a small window while browsing
+  const toPip = useCallback(async () => {
+    if (await isFullscreen()) {
+      await toggleFullscreen();
+      setFullscreen(false);
+    }
+    exiting.current = true;
+    usePlayer.getState().setPip(true);
+    // back to where the user came from (react-router keeps the history index)
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    if (idx > 0) navigate(-1);
+    else navigate("/", { replace: true });
   }, [navigate]);
 
   // Live TV can be paused (mpv keeps buffering). The normal read-ahead gap
@@ -154,6 +179,21 @@ export function PlayerPage() {
     [zapList, zapIndex, zapTo],
   );
 
+  // ---- recording (live TV, T-035)
+  const recordingFile = p.recording;
+  const lastRecording = useRef("");
+  const [recordingSince, setRecordingSince] = useState(0);
+  useEffect(() => {
+    if (recordingFile && !lastRecording.current) setRecordingSince(Date.now());
+    // ended by the user, a channel change or a failed stream: say where it went
+    if (!recordingFile && lastRecording.current) say(`Recording saved: ${lastRecording.current.split("/").pop()}`);
+    lastRecording.current = recordingFile;
+  }, [recordingFile, say]);
+  const toggleRecord = useCallback(() => {
+    const on = !usePlayer.getState().props.recording;
+    api.record(on).catch((e) => say(`Can't record: ${String(e)}`));
+  }, [say]);
+
   // ---- keyboard
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -176,6 +216,8 @@ export function PlayerPage() {
       } else if (k === "a" || k === "A") void api.command("cycle", "audio");
       else if (k === "s" || k === "S") void api.command("cycle", "sub");
       else if (k === "i" || k === "I") setInfo((v) => !v);
+      else if ((k === "r" || k === "R") && live) toggleRecord();
+      else if (k === "p" || k === "P") void toPip();
       else if ((k === "l" || k === "L" || k === "c" || k === "C") && live) setPanel((v) => (v === "channels" ? null : "channels"));
       else if (/^[0-9]$/.test(k) && live) {
         const next = (digits + k).slice(-4);
@@ -194,7 +236,7 @@ export function PlayerPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePause, seekBy, zap, zapList, zapTo, exit, panel, digits, live, poke]);
+  }, [togglePause, seekBy, zap, zapList, zapTo, exit, panel, digits, live, poke, toggleRecord, toPip]);
 
   if (!now) return null;
   const busy = status === "loading" || status === "reconnecting" || (p.buffering && status === "playing");
@@ -266,12 +308,24 @@ export function PlayerPage() {
           {now.subtitle && <p className="truncate text-sm text-white/70">{now.subtitle}</p>}
         </div>
         <div className="flex items-center gap-2">
+          {recordingFile && <RecordingBadge since={recordingSince} />}
           <TechBadges />
           <Clock />
         </div>
       </div>
+      {/* the REC light stays on when the controls hide */}
+      {recordingFile && !visible && (
+        <div className="pointer-events-none absolute right-8 top-7">
+          <RecordingBadge since={recordingSince} />
+        </div>
+      )}
 
       {info && <StatsOverlay />}
+      {notice && (
+        <div className="pointer-events-none absolute left-1/2 top-24 -translate-x-1/2 rounded-xl bg-black/70 px-4 py-2 text-sm text-white backdrop-blur animate-fade-in">
+          {notice}
+        </div>
+      )}
 
       {/* bottom bar */}
       <div
@@ -305,6 +359,15 @@ export function PlayerPage() {
               </IconButton>
             </>
           )}
+          {live && (
+            <IconButton
+              label={recordingFile ? "Stop recording (R)" : "Record (R)"}
+              onClick={toggleRecord}
+              className={clsx("text-white", recordingFile && "bg-live/25")}
+            >
+              <Circle className={clsx("size-5", recordingFile && "fill-live text-live")} />
+            </IconButton>
+          )}
           {live && liveGap !== null && (
             <BehindLive
               gap={liveGap}
@@ -336,6 +399,9 @@ export function PlayerPage() {
               <List className="size-5" />
             </IconButton>
           )}
+          <IconButton label="Picture in picture (P)" onClick={() => void toPip()} className="text-white">
+            <PictureInPicture2 className="size-5" />
+          </IconButton>
           <IconButton label="Info (I)" active={info} onClick={() => setInfo((v) => !v)} className="text-white">
             <Info className="size-5" />
           </IconButton>
@@ -363,6 +429,20 @@ function Clock() {
     return () => window.clearInterval(i);
   }, []);
   return <span className="text-lg font-semibold tabular-nums text-white/85 drop-shadow">{t.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>;
+}
+
+function RecordingBadge({ since }: { since: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const i = window.setInterval(() => tick((x) => x + 1), 1000);
+    return () => window.clearInterval(i);
+  }, []);
+  return (
+    <span className="mr-1 inline-flex items-center gap-1.5 rounded-md bg-live px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
+      <span className="size-1.5 animate-pulse rounded-full bg-white" />
+      Rec {clock((Date.now() - since) / 1000)}
+    </span>
+  );
 }
 
 function TechBadges() {

@@ -6,19 +6,27 @@
 //! (Windows webviews address it as http://img.localhost/?u=...)
 
 use std::io::Cursor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{GenericImageView, ImageReader, Limits};
+use serde::Serialize;
 use tauri::http::{Request, Response, StatusCode};
-use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
+use tauri::{Manager, Runtime, State, UriSchemeContext, UriSchemeResponder};
 use tokio::sync::Semaphore;
 
+use crate::error::{Error, Result};
+use crate::settings;
 use crate::state::AppState;
 use crate::util::fnv1a;
+
+/// Dead links are remembered this long (`<key>.miss` markers).
+const MISS_TTL: Duration = Duration::from_secs(86400);
+/// Default size limit of the artwork cache in MB (setting `cache.imagesMb`).
+pub const DEFAULT_CACHE_MB: u64 = 1024;
 
 /// Bounds concurrent remote downloads so a poster wall can't flood the
 /// provider (or our socket pool).
@@ -94,11 +102,12 @@ pub async fn serve(st: AppState, request: Request<Vec<u8>>) -> Response<Vec<u8>>
     let miss = dir.join(format!("{key}.miss"));
 
     if let Ok(bytes) = tokio::fs::read(&path).await {
+        touch(path);
         return ok(bytes);
     }
     // remember dead links for a day instead of hammering them
     if let Ok(meta) = tokio::fs::metadata(&miss).await
-        && meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age < Duration::from_secs(86400)) {
+        && meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age < MISS_TTL) {
             return status(StatusCode::NOT_FOUND);
         }
 
@@ -164,4 +173,144 @@ fn shrink(original: Vec<u8>, width: u32) -> Vec<u8> {
         JpegEncoder::new_with_quality(&mut out, 84).encode_image(&rgb).is_ok()
     };
     if encoded && !out.is_empty() { out } else { original }
+}
+
+// ------------------------------------------------------------ cache size
+
+/// Marks a cache entry as recently used: eviction goes by modification time
+/// (bumped at most hourly, so scrolling a poster wall doesn't mean a write
+/// per image).
+fn touch(path: PathBuf) {
+    tokio::task::spawn_blocking(move || {
+        let fresh = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age < Duration::from_secs(3600));
+        if !fresh && let Ok(f) = std::fs::File::options().write(true).open(&path) {
+            let _ = f.set_modified(SystemTime::now());
+        }
+    });
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheStats {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Trims the artwork cache in `dir`: leftover temp files and expired
+/// "not found" markers go, then the least recently used images until the
+/// cache is below 90% of `cap` bytes. Returns what is left.
+pub fn prune(dir: &Path, cap: u64, now: SystemTime) -> std::io::Result<CacheStats> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CacheStats::default()),
+        Err(e) => return Err(e),
+    };
+    let mut images = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(now);
+        let age = now.duration_since(modified).unwrap_or_default();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let temp = name.ends_with(".tmp");
+        let marker = name.ends_with(".miss");
+        if (temp && age > Duration::from_secs(3600)) || (marker && age > MISS_TTL) {
+            let _ = std::fs::remove_file(entry.path());
+        } else if !temp && !marker {
+            images.push((modified, meta.len(), entry.path()));
+        }
+    }
+    let mut stats = CacheStats { files: images.len() as u64, bytes: images.iter().map(|i| i.1).sum() };
+    if stats.bytes > cap {
+        images.sort_by_key(|i| i.0); // least recently used first
+        let target = cap / 10 * 9;
+        for (_, len, path) in &images {
+            if stats.bytes <= target {
+                break;
+            }
+            if std::fs::remove_file(path).is_ok() {
+                stats.bytes -= len;
+                stats.files -= 1;
+            }
+        }
+    }
+    Ok(stats)
+}
+
+fn cache_dir(st: &AppState) -> PathBuf {
+    st.cache_dir.join("images")
+}
+
+/// Applies the size limit (setting `cache.imagesMb`) in the background.
+pub async fn enforce_limit(st: AppState) {
+    let cap_mb = {
+        let conn = st.db.read();
+        settings::get(&conn, "cache.imagesMb").as_u64().unwrap_or(DEFAULT_CACHE_MB).max(16)
+    };
+    let dir = cache_dir(&st);
+    match tokio::task::spawn_blocking(move || prune(&dir, cap_mb << 20, SystemTime::now())).await {
+        Ok(Ok(s)) => log::info!("artwork cache: {} images, {} MB (limit {cap_mb} MB)", s.files, s.bytes >> 20),
+        Ok(Err(e)) => log::warn!("artwork cache: {e}"),
+        Err(e) => log::warn!("artwork cache: {e}"),
+    }
+}
+
+#[tauri::command]
+pub async fn images_cache_info(state: State<'_, AppState>) -> Result<CacheStats> {
+    let dir = cache_dir(state.inner());
+    // a cap nothing reaches: just count
+    tokio::task::spawn_blocking(move || prune(&dir, u64::MAX, SystemTime::now()))
+        .await
+        .map_err(|e| Error::msg(e.to_string()))?
+        .map_err(Error::from)
+}
+
+#[tauri::command]
+pub async fn images_cache_clear(state: State<'_, AppState>) -> Result<CacheStats> {
+    let dir = cache_dir(state.inner());
+    tokio::task::spawn_blocking(move || prune(&dir, 0, SystemTime::now()))
+        .await
+        .map_err(|e| Error::msg(e.to_string()))?
+        .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prunes_least_recently_used_first() {
+        let dir = std::env::temp_dir().join(format!("tp-images-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        let file = |name: &str, kb: usize, age_s: u64| {
+            let p = dir.join(name);
+            std::fs::write(&p, vec![0u8; kb * 1024]).unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(now - Duration::from_secs(age_s)).unwrap();
+        };
+        file("old", 40, 3 * 86400);
+        file("mid", 40, 86400);
+        file("new", 40, 60);
+        file("gone.tmp", 1, 7200); // abandoned download
+        file("dead.miss", 0, 2 * 86400); // expired "not found"
+        file("fresh.miss", 0, 60);
+
+        // under the limit: only the leftovers go
+        assert_eq!(prune(&dir, 1 << 30, now).unwrap(), CacheStats { files: 3, bytes: 120 * 1024 });
+        assert!(!dir.join("gone.tmp").exists() && !dir.join("dead.miss").exists() && dir.join("fresh.miss").exists());
+        // 100 KB limit → down to 90 KB: the least recently used image goes
+        assert_eq!(prune(&dir, 100 * 1024, now).unwrap(), CacheStats { files: 2, bytes: 80 * 1024 });
+        assert!(!dir.join("old").exists() && dir.join("mid").exists() && dir.join("new").exists());
+        // clear
+        assert_eq!(prune(&dir, 0, now).unwrap(), CacheStats::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -548,10 +548,10 @@ async fn provider_detail(st: &AppState, source_id: i64, kind: &'static str, id: 
         && now() - c.fetched_at < ttl {
             return Ok(Some(c.json.clone()));
         }
-    let x = sources::xtream_for(&src, http_client(src.user_agent.as_deref()));
-    let fetched = match kind {
-        "movie" => x.vod_info(id).await,
-        _ => x.series_info(id).await,
+    let fetched = match sources::xtream_for(&src, http_client(src.user_agent.as_deref())) {
+        Ok(x) if kind == "movie" => x.vod_info(id).await,
+        Ok(x) => x.series_info(id).await,
+        Err(e) => Err(e),
     };
     match fetched {
         Ok(v) if v.is_object() => {
@@ -684,6 +684,33 @@ pub struct SeriesDetail {
     pub resume: Option<Resume>,
 }
 
+/// Episodes of an M3U series (`episode` table) in the shape of Xtream's
+/// `get_series_info` (`{"episodes": {"1": [...]}}`), so series pages, resume
+/// and Up next treat both source kinds alike.
+pub fn m3u_series_json(conn: &Connection, source_id: i64, series_id: &str) -> Result<Option<Value>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, season, episode, title, image, ext FROM episode
+          WHERE source_id = ?1 AND series_id = ?2 ORDER BY season, episode, position",
+    )?;
+    type Row = (String, i64, i64, String, Option<String>, Option<String>);
+    let rows: Vec<Row> = stmt
+        .query_map(params![source_id, series_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+        .collect::<Result<_, _>>()?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let mut seasons = serde_json::Map::new();
+    for (id, season, episode, title, image, ext) in rows {
+        if let Value::Array(list) = seasons.entry(season.to_string()).or_insert_with(|| Value::Array(Vec::new())) {
+            list.push(serde_json::json!({
+                "id": id, "episode_num": episode, "title": title, "container_extension": ext,
+                "info": { "movie_image": image },
+            }));
+        }
+    }
+    Ok(Some(serde_json::json!({ "episodes": seasons })))
+}
+
 /// Provider `episodes` payload ({"1": [...]} or [[...]]) → seasons in order,
 /// episodes sorted, without watch state.
 fn parse_episodes(detail: &Value, series_title: &str) -> Vec<(i64, Vec<Episode>)> {
@@ -779,8 +806,14 @@ fn up_next_rows(conn: &Connection, limit: usize) -> Result<Vec<UpNext>> {
         else {
             continue;
         };
-        let Some(detail) = cached(conn, sid, "series", &series_id)? else { continue };
-        let flat: Vec<Episode> = parse_episodes(&detail.json, &series.title)
+        let json = match cached(conn, sid, "series", &series_id)? {
+            Some(detail) => detail.json,
+            None => match m3u_series_json(conn, sid, &series_id)? {
+                Some(v) => v,
+                None => continue,
+            },
+        };
+        let flat: Vec<Episode> = parse_episodes(&json, &series.title)
             .into_iter()
             .filter(|(n, _)| *n > 0)
             .flat_map(|(_, eps)| eps)
@@ -876,7 +909,14 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
         .await?
     };
 
-    let detail = provider_detail(&st, source_id, "series", &id, SERIES_DETAIL_TTL).await?.unwrap_or(Value::Null);
+    let detail = match provider_detail(&st, source_id, "series", &id, SERIES_DETAIL_TTL).await? {
+        Some(v) => v,
+        // M3U series: episodes come from the playlist
+        None => {
+            let id = id.clone();
+            blocking(&st, move |conn| m3u_series_json(conn, source_id, &id)).await?.unwrap_or(Value::Null)
+        }
+    };
     let info = &detail["info"];
     let season_meta: Vec<&Value> = detail["seasons"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
 
@@ -993,7 +1033,9 @@ pub async fn epg_channel(
     if src.kind != SourceKind::Xtream {
         return Ok(rows);
     }
-    let x = sources::xtream_for(&src, http_client(src.user_agent.as_deref()));
+    let Ok(x) = sources::xtream_for(&src, http_client(src.user_agent.as_deref())) else {
+        return Ok(rows);
+    };
     let v = match x.short_epg(&channel_id, 24).await {
         Ok(v) => v,
         Err(e) => {
@@ -1181,6 +1223,45 @@ mod tests {
     #[test]
     fn badge_joining() {
         assert_eq!(split_badges("4K DOLBY VISION HEVC".into()), vec!["4K", "DOLBY VISION", "HEVC"]);
+    }
+
+    #[test]
+    fn m3u_series_read_like_xtream_ones() {
+        let c = crate::db::test_conn();
+        c.execute("INSERT INTO series (source_id, id, name, title, position) VALUES (1, 'sh', 'Show', 'Show', 0)", [])
+            .unwrap();
+        for (id, season, ep, title) in [("a", 1, 2, "Second"), ("b", 1, 1, ""), ("c", 2, 1, "Premiere")] {
+            c.execute(
+                "INSERT INTO episode (source_id, series_id, id, season, episode, title, url, ext, position)
+                 VALUES (1, 'sh', ?1, ?2, ?3, ?4, 'http://h/x.mkv', 'mkv', 0)",
+                params![id, season, ep, title],
+            )
+            .unwrap();
+        }
+        let json = m3u_series_json(&c, 1, "sh").unwrap().unwrap();
+        let seasons = parse_episodes(&json, "Show");
+        type Shape = Vec<(i64, Vec<(String, i64, String)>)>;
+        let shape: Shape = seasons
+            .into_iter()
+            .map(|(n, eps)| (n, eps.into_iter().map(|e| (e.id, e.episode, e.title)).collect()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (1, vec![("b".into(), 1, "Episode 1".into()), ("a".into(), 2, "Second".into())]),
+                (2, vec![("c".into(), 1, "Premiere".into())]),
+            ]
+        );
+        assert!(m3u_series_json(&c, 1, "missing").unwrap().is_none());
+        // Up next works without a provider detail cache
+        c.execute(
+            "INSERT INTO history (source_id, kind, item_id, series_id, season, episode, title, watched, updated_at)
+             VALUES (1, 'episode', 'a', 'sh', 1, 2, 'Show', 1, 100)",
+            [],
+        )
+        .unwrap();
+        let next: Vec<String> = up_next_rows(&c, 20).unwrap().into_iter().map(|u| u.episode.id).collect();
+        assert_eq!(next, vec!["c"]);
     }
 
     #[test]

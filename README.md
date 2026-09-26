@@ -9,7 +9,9 @@ search, for **Xtream Codes** accounts and **M3U** playlists (+ XMLTV).
 - **Playback:** libmpv + FFmpeg built from source and **statically linked**, rendered
   through OpenGL underneath the web UI — plays H.264/HEVC/AV1, AAC/AC3/EAC3/DTS,
   MPEG-TS/HLS/MKV regardless of the distro's codec packages
-- **Ships as one executable** (~57 MB) — see `bun run tauri build`
+- **Ships as one executable** (~62 MB) — see `bun run tauri build`
+- **Hardware decoding** through VA-API with zero-copy on Wayland; **source
+  passwords** live in the desktop keyring (KWallet, GNOME Keyring)
 
 ## Build (Fedora)
 
@@ -22,6 +24,20 @@ bun run tauri build --bundles rpm,deb   # release binary + rpm/deb
 ```
 
 If you used the rootless sysroot, run `. .deps/env.sh` before building.
+
+**GPU decoding on Fedora:** the stock Mesa drivers decode AV1 and VP9 on AMD
+GPUs but not H.264/HEVC — which most IPTV streams use, so those are decoded
+in software (fine on current CPUs). RPM Fusion's driver adds them — enable
+its *free* repository first (Fedora's preinstalled RPM Fusion entries only
+cover NVIDIA and Steam), see
+[rpmfusion.org/Howto/Multimedia](https://rpmfusion.org/Howto/Multimedia):
+
+```bash
+sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install mesa-va-drivers-freeworld
+```
+
+The player's stats show which decoder is in use.
 
 ## Test
 

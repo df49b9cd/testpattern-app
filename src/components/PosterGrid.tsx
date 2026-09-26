@@ -7,6 +7,16 @@ import { EmptyState, Spinner } from "./ui";
 const PAGE = 120;
 const GAP = 22;
 const CAPTION = 46;
+const PAD_X = 40;
+
+/** Columns and sizes for a grid `width` px wide (0 = not measured yet). */
+export function gridLayout(width: number, minItemWidth: number) {
+  const inner = Math.max(0, width - PAD_X * 2);
+  const cols = Math.max(2, Math.floor((inner + GAP) / (minItemWidth + GAP)));
+  // before the first measurement assume the minimum instead of a negative size
+  const itemWidth = inner > 0 ? Math.max(0, (inner - GAP * (cols - 1)) / cols) : minItemWidth;
+  return { cols, itemWidth, rowHeight: itemWidth * 1.5 + CAPTION + GAP };
+}
 
 /**
  * Virtualized, infinitely paged poster grid. Columns adapt to the width;
@@ -53,11 +63,7 @@ export function PosterGrid<T>({
   const items = q.data?.pages.flatMap((p) => p.items) ?? [];
   const total = q.data?.pages[0]?.total ?? 0;
 
-  const padX = 40;
-  const inner = Math.max(0, width - padX * 2);
-  const cols = Math.max(2, Math.floor((inner + GAP) / (minItemWidth + GAP)));
-  const itemWidth = cols > 0 ? (inner - GAP * (cols - 1)) / cols : minItemWidth;
-  const rowHeight = itemWidth * 1.5 + CAPTION + GAP;
+  const { cols, itemWidth, rowHeight } = gridLayout(width, minItemWidth);
   const rows = Math.ceil(total / cols);
 
   const virtualizer = useVirtualizer({

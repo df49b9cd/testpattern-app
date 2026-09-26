@@ -7,7 +7,7 @@ use tauri::{Runtime, State};
 
 use crate::error::{Error, Result};
 use crate::player::{LoadOptions, Player};
-use crate::sources::{self, SourceKind};
+use crate::sources::{self, SourceKind, m3u};
 use crate::state::{AppState, http_client};
 use crate::util::json::i64_of;
 use crate::{library, settings};
@@ -39,23 +39,29 @@ pub async fn play<R: Runtime>(
     req: PlayRequest,
 ) -> Result<()> {
     let st = state.inner().clone();
-    let (url, alternates, live, user_agent) = {
+    let (url, alternates, live, user_agent, referrer) = {
         let conn = st.db.read();
         let src = sources::load(&conn, req.source_id)?;
         let live_format = settings::get_str(&conn, "player.liveFormat");
         let fmt = if live_format == "m3u8" { "m3u8" } else { "ts" };
-        let x = (src.kind == SourceKind::Xtream).then(|| sources::xtream_for(&src, http_client(None)));
+        let x = match src.kind {
+            SourceKind::Xtream => Some(sources::xtream_for(&src, http_client(None))?),
+            SourceKind::M3u => None,
+        };
 
+        // request headers of M3U items (user agent, referrer); none for Xtream
+        let mut headers: (Option<String>, Option<String>) = (None, None);
         let (url, live) = match req.kind.as_str() {
             "live" => {
-                let (title, logo, direct): (String, Option<String>, Option<String>) = conn
+                let (title, logo, direct, ua, referrer): (String, Option<String>, Option<String>, Option<String>, Option<String>) = conn
                     .query_row(
-                        "SELECT title, logo, url FROM channel WHERE source_id = ?1 AND id = ?2",
+                        "SELECT title, logo, url, user_agent, referrer FROM channel WHERE source_id = ?1 AND id = ?2",
                         params![req.source_id, req.id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                     )
                     .optional()?
                     .ok_or_else(|| Error::NotFound(format!("channel {}", req.id)))?;
+                headers = (ua, referrer);
                 drop(conn);
                 {
                     let w = st.db.write();
@@ -69,14 +75,15 @@ pub async fn play<R: Runtime>(
                 (url, true)
             }
             "movie" => {
-                let (ext, direct): (Option<String>, Option<String>) = conn
+                let (ext, direct, ua, referrer): (Option<String>, Option<String>, Option<String>, Option<String>) = conn
                     .query_row(
-                        "SELECT ext, url FROM movie WHERE source_id = ?1 AND id = ?2",
+                        "SELECT ext, url, user_agent, referrer FROM movie WHERE source_id = ?1 AND id = ?2",
                         params![req.source_id, req.id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()?
                     .ok_or_else(|| Error::NotFound(format!("movie {}", req.id)))?;
+                headers = (ua, referrer);
                 let url = match (&x, direct) {
                     (_, Some(u)) => u,
                     (Some(x), None) => x.movie_url(&req.id, ext.as_deref().unwrap_or("mp4")),
@@ -84,24 +91,61 @@ pub async fn play<R: Runtime>(
                 };
                 (url, false)
             }
-            "episode" => {
-                let x = x.as_ref().ok_or_else(|| Error::msg("episodes need an Xtream source"))?;
-                (x.episode_url(&req.id, req.ext.as_deref().unwrap_or("mp4")), false)
-            }
+            "episode" => match &x {
+                Some(x) => (x.episode_url(&req.id, req.ext.as_deref().unwrap_or("mp4")), false),
+                // M3U series (sources::write_m3u): the playlist's own URL
+                None => {
+                    let (url, ua, referrer): (String, Option<String>, Option<String>) = conn
+                        .query_row(
+                            "SELECT url, user_agent, referrer FROM episode WHERE source_id = ?1 AND id = ?2",
+                            params![req.source_id, req.id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .optional()?
+                        .ok_or_else(|| Error::NotFound(format!("episode {}", req.id)))?;
+                    headers = (ua, referrer);
+                    (url, false)
+                }
+            },
             "catchup" => {
-                let x = x.as_ref().ok_or_else(|| Error::msg("catch-up needs an Xtream source"))?;
                 let start = req.catchup_start.ok_or_else(|| Error::msg("missing catch-up start"))?;
                 let minutes = req.catchup_minutes.unwrap_or(60).max(1);
-                let offset = src.account.as_ref().and_then(|a| i64_of(&a["serverUtcOffset"])).unwrap_or(0);
-                let local = chrono::DateTime::from_timestamp(start + offset, 0)
-                    .ok_or_else(|| Error::msg("bad catch-up time"))?
-                    .naive_utc();
-                (x.timeshift_url(&req.id, local, minutes), false)
+                let url = match &x {
+                    Some(x) => {
+                        let offset = src.account.as_ref().and_then(|a| i64_of(&a["serverUtcOffset"])).unwrap_or(0);
+                        let local = chrono::DateTime::from_timestamp(start + offset + src.catchup_shift_minutes * 60, 0)
+                            .ok_or_else(|| Error::msg("bad catch-up time"))?
+                            .naive_utc();
+                        x.timeshift_url(&req.id, local, minutes)
+                    }
+                    // M3U: the playlist's catch-up scheme (sources::m3u::catchup_url)
+                    None => {
+                        type Row = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+                        let (stream, mode, template, ua, referrer): Row = conn
+                            .query_row(
+                                "SELECT url, catchup_mode, catchup_source, user_agent, referrer
+                                   FROM channel WHERE source_id = ?1 AND id = ?2",
+                                params![req.source_id, req.id],
+                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                            )
+                            .optional()?
+                            .ok_or_else(|| Error::NotFound(format!("channel {}", req.id)))?;
+                        headers = (ua, referrer);
+                        stream
+                            .zip(mode)
+                            .and_then(|(stream, mode)| {
+                                let shift = src.catchup_shift_minutes * 60;
+                                m3u::catchup_url(&mode, template.as_deref(), &stream, start, minutes * 60, crate::db::now(), shift)
+                            })
+                            .ok_or_else(|| Error::msg("This channel does not offer catch-up"))?
+                    }
+                };
+                (url, false)
             }
             other => return Err(Error::msg(format!("cannot play {other}"))),
         };
         let alternates = x.as_ref().map(|x| x.alternates_for(&url)).unwrap_or_default();
-        (url, alternates, live, src.user_agent)
+        (url, alternates, live, headers.0.or(src.user_agent), headers.1)
     };
 
     log::info!("play {} {}:{} (live={live}, mirrors={})", req.kind, req.source_id, req.id, alternates.len());
@@ -109,7 +153,37 @@ pub async fn play<R: Runtime>(
         .load_with_fallbacks(
             &url,
             alternates,
-            LoadOptions { start: req.start, live, title: req.title, user_agent, paused: req.paused },
+            LoadOptions { start: req.start, live, title: req.title, user_agent, referrer, paused: req.paused },
         )
         .map_err(|e| Error::msg(e.to_string()))
+}
+
+/// Starts (`on`) or stops recording the playing live channel into the
+/// recordings folder (setting `recording.dir`, else ~/Videos/testpattern).
+/// Returns the file being / last written.
+#[tauri::command]
+pub async fn player_record<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    player: State<'_, Player>,
+    on: bool,
+) -> Result<Option<String>> {
+    if !on {
+        return Ok(player.stop_recording().map(|p| p.display().to_string()));
+    }
+    let dir = recording_dir(&app, state.inner())?;
+    tokio::fs::create_dir_all(&dir).await?;
+    let file = player.start_recording(&dir).map_err(Error::msg)?;
+    log::info!("recording to {}", file.display());
+    Ok(Some(file.display().to_string()))
+}
+
+fn recording_dir<R: Runtime>(app: &tauri::AppHandle<R>, st: &AppState) -> Result<std::path::PathBuf> {
+    use tauri::Manager;
+    let configured = settings::get_str(&st.db.read(), "recording.dir");
+    if !configured.trim().is_empty() {
+        return Ok(configured.trim().into());
+    }
+    let videos = app.path().video_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Videos")))?;
+    Ok(videos.join("testpattern"))
 }

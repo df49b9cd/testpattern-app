@@ -236,6 +236,29 @@ fn format_episode(v: &str) -> String {
     v.to_owned()
 }
 
+/// Opens a downloaded guide file, transparently gunzipping `.xml.gz`
+/// payloads — parsed straight from disk, never held in memory whole.
+pub fn open_guide(path: &std::path::Path) -> Result<Box<dyn BufRead + Send>> {
+    let mut reader = std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(path)?);
+    let gzip = reader.fill_buf()?.starts_with(&[0x1f, 0x8b]);
+    Ok(if gzip {
+        Box::new(std::io::BufReader::new(flate2::read::MultiGzDecoder::new(reader)))
+    } else {
+        Box::new(reader)
+    })
+}
+
+/// Days of past programmes to keep: enough for the longest catch-up archive
+/// of the source's channels (2..=7 days).
+pub fn history_days(conn: &Connection, source_id: i64) -> Result<i64> {
+    let longest: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(archive_days), 0) FROM channel WHERE source_id = ?1 AND archive = 1",
+        [source_id],
+        |r| r.get(0),
+    )?;
+    Ok(longest.clamp(2, 7))
+}
+
 /// Decompresses gzip payloads (".xml.gz" guides) transparently.
 pub fn maybe_gunzip(bytes: Vec<u8>) -> Result<Vec<u8>> {
     if bytes.starts_with(&[0x1f, 0x8b]) {
@@ -247,42 +270,88 @@ pub fn maybe_gunzip(bytes: Vec<u8>) -> Result<Vec<u8>> {
     }
 }
 
-/// Replaces a source's programmes with a fresh XMLTV import.
-pub fn import(conn: &mut Connection, source_id: i64, xml: &[u8], wanted: &HashSet<String>) -> Result<usize> {
+/// Result of an XMLTV import.
+#[derive(Debug)]
+pub struct Imported {
+    pub programmes: usize,
+    /// The document broke off (IPTV panels generate guides on the fly and a
+    /// malformed or truncated tail is common): everything before the error
+    /// was imported, channels after it keep their previous programmes.
+    pub incomplete: Option<Error>,
+}
+
+/// Refreshes a source's programmes from an XMLTV document, keeping
+/// `past_days` of history (catch-up) and 8 days ahead. Channels are
+/// replaced one at a time as they appear, so a document that breaks off
+/// still updates every channel it contains; only a complete document drops
+/// the channels that are no longer in it.
+pub fn import(
+    conn: &mut Connection,
+    source_id: i64,
+    xml: impl BufRead,
+    wanted: &HashSet<String>,
+    past_days: i64,
+) -> Result<Imported> {
     let now = crate::db::now();
-    let (from, to) = (now - 2 * 86400, now + 8 * 86400);
+    let (from, to) = (now - past_days * 86400, now + 8 * 86400);
     let tx = conn.transaction()?;
-    tx.execute("DELETE FROM programme WHERE source_id = ?1", [source_id])?;
-    let count = {
-        let mut stmt = tx.prepare(
+    let mut replaced: HashSet<String> = HashSet::new();
+    let mut count = 0usize;
+    let parsed = {
+        let mut clear = tx.prepare("DELETE FROM programme WHERE source_id = ?1 AND epg_id = ?2")?;
+        let mut insert = tx.prepare(
             "INSERT OR REPLACE INTO programme
                (source_id, epg_id, start, stop, title, subtitle, description, category, episode, icon)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
-        let mut err = None;
-        let n = parse_xmltv(
+        let mut db_err = None;
+        let parsed = parse_xmltv(
             xml,
             from,
             to,
             |id| wanted.is_empty() || wanted.contains(id),
             |p| {
-                if err.is_some() {
+                if db_err.is_some() {
                     return;
                 }
-                if let Err(e) = stmt.execute(params![
+                if !replaced.contains(&p.epg_id) {
+                    if let Err(e) = clear.execute(params![source_id, p.epg_id]) {
+                        db_err = Some(e);
+                        return;
+                    }
+                    replaced.insert(p.epg_id.clone());
+                }
+                match insert.execute(params![
                     source_id, p.epg_id, p.start, p.stop, p.title, p.subtitle, p.description, p.category, p.episode, p.icon
                 ]) {
-                    err = Some(e);
+                    Ok(_) => count += 1,
+                    Err(e) => db_err = Some(e),
                 }
             },
-        )?;
-        if let Some(e) = err {
-            return Err(e.into());
+        );
+        if let Some(e) = db_err {
+            return Err(e.into()); // rolls back: the previous guide stays
         }
-        n
+        parsed
+    };
+    let incomplete = match parsed {
+        Ok(_) => {
+            // complete document: channels it no longer lists lose their guide
+            let stale: Vec<String> = {
+                let mut stmt = tx.prepare("SELECT DISTINCT epg_id FROM programme WHERE source_id = ?1")?;
+                let ids = stmt.query_map([source_id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                ids.into_iter().filter(|id| !replaced.contains(id)).collect()
+            };
+            for id in stale {
+                tx.execute("DELETE FROM programme WHERE source_id = ?1 AND epg_id = ?2", params![source_id, id])?;
+            }
+            None
+        }
+        Err(e) if count > 0 => Some(e),
+        Err(e) => return Err(e),
     };
     tx.commit()?;
-    Ok(count)
+    Ok(Imported { programmes: count, incomplete })
 }
 
 pub fn programmes(
@@ -346,5 +415,76 @@ mod tests {
         assert_eq!(out[0].description.as_deref(), Some("Cat & mouse"));
         assert_eq!(out[0].episode.as_deref(), Some("S02E05"));
         assert_eq!(out[0].category.as_deref(), Some("Kids"));
+    }
+
+    #[test]
+    fn broken_documents_update_what_they_contain() {
+        let mut c = crate::db::test_conn();
+        let now = crate::db::now();
+        let at = |offset: i64| {
+            chrono::DateTime::from_timestamp(now + offset, 0).unwrap().format("%Y%m%d%H%M%S +0000").to_string()
+        };
+        let prog = |ch: &str, title: &str, offset: i64| {
+            format!(r#"<programme start="{}" stop="{}" channel="{ch}"><title>{title}</title></programme>"#, at(offset), at(offset + 1800))
+        };
+        let titles = |c: &Connection| -> Vec<String> {
+            let mut s = c.prepare("SELECT epg_id || ':' || title FROM programme ORDER BY epg_id, start").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+        };
+        let all = HashSet::new();
+        let doc = format!("<tv>{}{}{}</tv>", prog("a", "old a", 0), prog("b", "old b", 0), prog("c", "old c", 0));
+        assert!(import(&mut c, 1, doc.as_bytes(), &all, 2).unwrap().incomplete.is_none());
+        assert_eq!(titles(&c), ["a:old a", "b:old b", "c:old c"]);
+
+        // breaks off after channel a (a truncated desc, like the provider's)
+        let broken = format!("<tv>{}<programme start=\"{}\" stop=\"{}\" channel=\"b\"><title>x</title><desc>cut</tv>", prog("a", "new a", 60), at(0), at(60));
+        let r = import(&mut c, 1, broken.as_bytes(), &all, 2).unwrap();
+        assert!(r.incomplete.is_some() && r.programmes == 1);
+        assert_eq!(titles(&c), ["a:new a", "b:old b", "c:old c"]);
+
+        // a complete document drops channels it no longer lists
+        let doc = format!("<tv>{}{}</tv>", prog("a", "a again", 0), prog("b", "new b", 0));
+        import(&mut c, 1, doc.as_bytes(), &all, 2).unwrap();
+        assert_eq!(titles(&c), ["a:a again", "b:new b"]);
+
+        // nothing usable at all: an error, and the guide stays
+        assert!(import(&mut c, 1, &b"<tv><programme"[..], &all, 2).is_err());
+        assert_eq!(titles(&c).len(), 2);
+    }
+
+    #[test]
+    fn keeps_history_for_the_longest_archive() {
+        let mut c = crate::db::test_conn();
+        let now = crate::db::now();
+        let at = |days_ago: i64| {
+            chrono::DateTime::from_timestamp(now - days_ago * 86400, 0).unwrap().format("%Y%m%d%H%M%S +0000").to_string()
+        };
+        let doc: String = (1..=8)
+            .map(|d| format!(r#"<programme start="{}" stop="{}" channel="a"><title>{d} days ago</title></programme>"#, at(d), at(d)))
+            .collect();
+        let doc = format!("<tv>{doc}</tv>");
+        assert_eq!(history_days(&c, 1).unwrap(), 2);
+        c.execute(
+            "INSERT INTO channel (source_id, id, name, title, archive, archive_days, position) VALUES (1, 'x', 'X', 'X', 1, 5, 0)",
+            [],
+        )
+        .unwrap();
+        let days = history_days(&c, 1).unwrap();
+        assert_eq!(days, 5);
+        // 1..=5 days ago still end inside the window (stop = start + 30 min); 6..=8 don't
+        assert_eq!(import(&mut c, 1, doc.as_bytes(), &HashSet::new(), days).unwrap().programmes, 5);
+        // the old fixed 2-day window kept only 1..=2
+        assert_eq!(import(&mut c, 1, doc.as_bytes(), &HashSet::new(), 2).unwrap().programmes, 2);
+    }
+
+    /// Diagnostic for a real guide: `TP_XMLTV=/path/guide.xml cargo test --lib -- --ignored xmltv_file`
+    #[test]
+    #[ignore]
+    fn xmltv_file() {
+        let path = std::env::var("TP_XMLTV").expect("set TP_XMLTV to an XMLTV file");
+        let data = maybe_gunzip(std::fs::read(path).unwrap()).unwrap();
+        let n = parse_xmltv(&data[..], 0, i64::MAX, |_| true, |_| {}).unwrap();
+        println!("{n} programmes");
+        assert!(n > 0);
     }
 }

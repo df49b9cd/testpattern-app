@@ -38,6 +38,12 @@ export interface Source {
   lastEpgSync?: number | null;
   syncError?: string | null;
   account?: AccountInfo | null;
+  /** Catch-up time correction (minutes). */
+  catchupShiftMinutes: number;
+  /** The password is in the system keyring, not the app database. */
+  passwordInKeyring: boolean;
+  /** …but the keyring was locked or unavailable so far. */
+  passwordLocked: boolean;
   syncing: boolean;
   counts: Counts;
 }
@@ -51,6 +57,7 @@ export interface SourceInput {
   password?: string;
   epgUrl?: string;
   userAgent?: string;
+  catchupShiftMinutes?: number;
 }
 
 export type TestResult =
@@ -331,6 +338,12 @@ export type PlayerEvent =
   | { type: "log"; level: string; prefix: string; text: string };
 
 export type Settings = Record<string, unknown>;
+
+/** Artwork cache usage (src-tauri/src/images.rs). */
+export interface CacheStats {
+  files: number;
+  bytes: number;
+}
 
 export interface UpNext {
   series: Series;

@@ -62,6 +62,8 @@ export interface PlaybackProps {
   subDelay: number;
   audioDelay: number;
   chapters: Chapter[];
+  /** file a live recording is written to; "" when not recording */
+  recording: string;
 }
 
 export type PlayerStatus = "idle" | "loading" | "playing" | "reconnecting" | "ended" | "error";
@@ -94,6 +96,7 @@ const initialProps: PlaybackProps = {
   subDelay: 0,
   audioDelay: 0,
   chapters: [],
+  recording: "",
 };
 
 interface PlayerStore {
@@ -102,6 +105,9 @@ interface PlayerStore {
   error: string | null;
   reconnectAttempt: number;
   props: PlaybackProps;
+  /** playing on in a floating window while browsing (components/PipPlayer.tsx) */
+  pip: boolean;
+  setPip: (on: boolean) => void;
   play: (np: NowPlaying) => Promise<void>;
   stop: () => Promise<void>;
   onEvent: (e: PlayerEvent) => void;
@@ -110,10 +116,11 @@ interface PlayerStore {
 const num = (v: unknown, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 const bool = (v: unknown) => v === true;
 const str = (v: unknown) => (typeof v === "string" ? v : "");
-const trackId = (v: unknown): number | false | null =>
+export const trackId = (v: unknown): number | false | null =>
   typeof v === "number" ? v : v === false || v === "no" ? false : null;
 
-function applyProp(p: PlaybackProps, name: string, v: unknown): Partial<PlaybackProps> | null {
+/** mpv property change → the store fields it updates (null: not tracked). */
+export function applyProp(p: PlaybackProps, name: string, v: unknown): Partial<PlaybackProps> | null {
   switch (name) {
     case "pause":
       return { pause: bool(v) };
@@ -169,6 +176,8 @@ function applyProp(p: PlaybackProps, name: string, v: unknown): Partial<Playback
       return { audioDelay: num(v) };
     case "chapter-list":
       return { chapters: Array.isArray(v) ? (v as Chapter[]) : [] };
+    case "stream-record":
+      return { recording: str(v) };
     default:
       return null;
   }
@@ -180,6 +189,8 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   error: null,
   reconnectAttempt: 0,
   props: initialProps,
+  pip: false,
+  setPip: (on) => set({ pip: on && !!get().now }),
 
   play: async (np) => {
     const prev = get().now;
@@ -211,7 +222,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   stop: async () => {
     const { now, props } = get();
     const saved = !!now && (await saveProgress(now, props));
-    set({ now: null, status: "idle", error: null });
+    set({ now: null, status: "idle", error: null, pip: false });
     await api.stop().catch(() => {});
     // the page we return to may show this item's progress
     if (saved) invalidateWatchState();
@@ -221,6 +232,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     switch (e.type) {
       case "prop": {
         const patch = applyProp(get().props, e.name, e.value);
+        if (patch?.volume !== undefined && patch.volume !== get().props.volume) rememberVolume(patch.volume);
         if (patch) set({ props: { ...get().props, ...patch } });
         break;
       }
@@ -245,6 +257,13 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     }
   },
 }));
+
+let volumeTimer = 0;
+/** Persists the volume (applied at startup, settings.rs) once it settles. */
+function rememberVolume(volume: number) {
+  window.clearTimeout(volumeTimer);
+  volumeTimer = window.setTimeout(() => void api.setSetting("player.volume", Math.round(volume)).catch(() => {}), 1000);
+}
 
 /**
  * Stores VOD resume positions (movies / episodes); true when saved. Without a

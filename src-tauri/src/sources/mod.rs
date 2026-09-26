@@ -58,6 +58,10 @@ pub struct SourceRow {
     pub last_epg_sync: Option<i64>,
     pub sync_error: Option<String>,
     pub account: Option<Value>,
+    /// Catch-up time correction (T-048).
+    pub catchup_shift_minutes: i64,
+    /// The password lives in the desktop keyring (secrets.rs), not here.
+    pub password_in_keyring: bool,
 }
 
 /// What the UI sees (no password).
@@ -78,6 +82,10 @@ pub struct SourceView {
     pub last_epg_sync: Option<i64>,
     pub sync_error: Option<String>,
     pub account: Option<Value>,
+    pub catchup_shift_minutes: i64,
+    pub password_in_keyring: bool,
+    /// In the keyring, but the keyring was locked or unavailable so far.
+    pub password_locked: bool,
     pub syncing: bool,
     pub counts: Counts,
 }
@@ -103,6 +111,8 @@ pub struct SourceInput {
     pub password: Option<String>,
     pub epg_url: Option<String>,
     pub user_agent: Option<String>,
+    /// Catch-up time correction in minutes; `None` keeps the stored value.
+    pub catchup_shift_minutes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,19 +125,22 @@ pub enum SyncProgress {
 }
 
 const SOURCE_COLS: &str = "id, kind, name, url, alt_urls, username, password, epg_url, user_agent, \
-     created_at, last_sync, last_epg_sync, sync_error, account_json";
+     created_at, last_sync, last_epg_sync, sync_error, account_json, catchup_shift_minutes, password_in_keyring";
 
 fn row_to_source(r: &rusqlite::Row) -> rusqlite::Result<SourceRow> {
     let alt: String = r.get(4)?;
     let account: Option<String> = r.get(13)?;
+    let id: i64 = r.get(0)?;
+    let password_in_keyring: bool = r.get(15)?;
     Ok(SourceRow {
-        id: r.get(0)?,
+        id,
         kind: SourceKind::parse(&r.get::<_, String>(1)?),
         name: r.get(2)?,
         url: r.get(3)?,
         alt_urls: serde_json::from_str(&alt).unwrap_or_default(),
         username: r.get(5)?,
-        password: r.get(6)?,
+        // keyring passwords come from the cache secrets::startup filled
+        password: if password_in_keyring { crate::secrets::cached(id) } else { r.get(6)? },
         epg_url: r.get(7)?,
         user_agent: r.get(8)?,
         created_at: r.get(9)?,
@@ -135,6 +148,8 @@ fn row_to_source(r: &rusqlite::Row) -> rusqlite::Result<SourceRow> {
         last_epg_sync: r.get(11)?,
         sync_error: r.get(12)?,
         account: account.and_then(|a| serde_json::from_str(&a).ok()),
+        catchup_shift_minutes: r.get(14)?,
+        password_in_keyring,
     })
 }
 
@@ -169,7 +184,7 @@ fn view(conn: &Connection, s: SourceRow, syncing: bool) -> Result<SourceView> {
         url: s.url,
         alt_urls: s.alt_urls,
         username: s.username,
-        has_password: s.password.as_deref().is_some_and(|p| !p.is_empty()),
+        has_password: s.password_in_keyring || s.password.as_deref().is_some_and(|p| !p.is_empty()),
         epg_url: s.epg_url,
         user_agent: s.user_agent,
         created_at: s.created_at,
@@ -177,6 +192,9 @@ fn view(conn: &Connection, s: SourceRow, syncing: bool) -> Result<SourceView> {
         last_epg_sync: s.last_epg_sync,
         sync_error: s.sync_error,
         account: s.account,
+        catchup_shift_minutes: s.catchup_shift_minutes,
+        password_in_keyring: s.password_in_keyring,
+        password_locked: s.password_in_keyring && s.password.is_none(),
         syncing,
         counts,
     })
@@ -254,8 +272,11 @@ pub async fn source_test(state: State<'_, AppState>, input: SourceInput, id: Opt
     if let Some(id) = id
         && input.password.as_deref().is_none_or(str::is_empty)
     {
-        let conn = state.db.read();
-        input.password = load(&conn, id)?.password;
+        let src = load(&state.db.read(), id)?;
+        if src.password_in_keyring && src.password.is_none() {
+            return Err(Error::msg(crate::secrets::UNAVAILABLE));
+        }
+        input.password = src.password;
     }
     match input.kind {
         SourceKind::Xtream => {
@@ -299,8 +320,9 @@ pub async fn source_add<R: Runtime>(
     let id = {
         let conn = st.db.write();
         conn.execute(
-            "INSERT INTO source (kind, name, url, alt_urls, username, password, epg_url, user_agent, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO source (kind, name, url, alt_urls, username, password, epg_url, user_agent, created_at,
+                                 catchup_shift_minutes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 input.kind.as_str(),
                 name.trim(),
@@ -310,11 +332,15 @@ pub async fn source_add<R: Runtime>(
                 input.password,
                 input.epg_url.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                 input.user_agent.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                now()
+                now(),
+                input.catchup_shift_minutes.unwrap_or(0)
             ],
         )?;
         conn.last_insert_rowid()
     };
+    if let Some(password) = input.password.as_deref().filter(|p| !p.is_empty()) {
+        crate::secrets::move_to_keyring(&st, id, password, crate::secrets::Unlock::Prompt).await;
+    }
     spawn_sync(app, st.clone(), id, SyncScope::Full);
     let conn = st.db.read();
     view(&conn, load(&conn, id)?, true)
@@ -324,26 +350,42 @@ pub async fn source_add<R: Runtime>(
 pub async fn source_update(state: State<'_, AppState>, id: i64, input: SourceInput) -> Result<SourceView> {
     let input = normalize_input(input)?;
     let st = state.inner().clone();
-    {
+    // an empty password field means "keep the stored one" (wherever it lives)
+    let new_password = input.password.clone().filter(|p| !p.is_empty());
+    let (renamed, was_in_keyring) = {
         let conn = st.db.write();
         let current = load(&conn, id)?;
-        // an empty password field means "keep the stored one"
-        let password = input.password.filter(|p| !p.is_empty()).or(current.password);
+        let name = input.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&current.name);
         conn.execute(
-            "UPDATE source SET kind = ?2, name = ?3, url = ?4, alt_urls = ?5, username = ?6, password = ?7,
-                    epg_url = ?8, user_agent = ?9 WHERE id = ?1",
+            "UPDATE source SET kind = ?2, name = ?3, url = ?4, alt_urls = ?5, username = ?6,
+                    password = CASE WHEN ?7 IS NULL THEN password ELSE ?7 END,
+                    password_in_keyring = CASE WHEN ?7 IS NULL THEN password_in_keyring ELSE 0 END,
+                    epg_url = ?8, user_agent = ?9, catchup_shift_minutes = ?10 WHERE id = ?1",
             params![
                 id,
                 input.kind.as_str(),
-                input.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&current.name),
+                name,
                 input.url,
                 serde_json::to_string(&input.alt_urls)?,
                 input.username.as_deref().map(str::trim),
-                password,
+                new_password,
                 input.epg_url.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                 input.user_agent.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                input.catchup_shift_minutes.unwrap_or(current.catchup_shift_minutes),
             ],
         )?;
+        (name != current.name, current.password_in_keyring)
+    };
+    if let Some(password) = &new_password {
+        // the database copy is the current one until the keyring has it
+        crate::secrets::uncache(id);
+        crate::secrets::move_to_keyring(&st, id, password, crate::secrets::Unlock::Prompt).await;
+    } else if renamed
+        && was_in_keyring
+        && let Some(password) = crate::secrets::cached(id)
+    {
+        // the keyring entry's label names the source
+        crate::secrets::move_to_keyring(&st, id, &password, crate::secrets::Unlock::Never).await;
     }
     let conn = st.db.read();
     let busy = st.syncing.lock().contains(&id);
@@ -353,8 +395,10 @@ pub async fn source_update(state: State<'_, AppState>, id: i64, input: SourceInp
 #[tauri::command]
 pub async fn source_remove(state: State<'_, AppState>, id: i64) -> Result<()> {
     let st = state.inner().clone();
+    let in_keyring = load(&st.db.read(), id)?.password_in_keyring;
+    let db = st.clone();
     tokio::task::spawn_blocking(move || -> Result<()> {
-        let mut conn = st.db.write();
+        let mut conn = db.db.write();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM search WHERE source_id = ?1", [id])?;
         tx.execute("DELETE FROM source WHERE id = ?1", [id])?;
@@ -362,7 +406,12 @@ pub async fn source_remove(state: State<'_, AppState>, id: i64) -> Result<()> {
         Ok(())
     })
     .await
-    .map_err(|e| Error::msg(e.to_string()))?
+    .map_err(|e| Error::msg(e.to_string()))??;
+    if in_keyring {
+        // a locked keyring asks first; the source is gone either way
+        tauri::async_runtime::spawn(async move { crate::secrets::forget(&st, id).await });
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -373,7 +422,10 @@ pub async fn source_sync<R: Runtime>(
     epg_only: Option<bool>,
 ) -> Result<()> {
     let scope = if epg_only.unwrap_or(false) { SyncScope::Epg } else { SyncScope::Full };
-    spawn_sync(app, state.inner().clone(), id, scope);
+    let st = state.inner().clone();
+    // the user asked for this: a keyring locked so far may prompt now
+    crate::secrets::ensure_loaded(&st, Some(id), crate::secrets::Unlock::Prompt).await;
+    spawn_sync(app, st, id, scope);
     Ok(())
 }
 
@@ -441,7 +493,7 @@ async fn run_sync<R: Runtime>(app: &AppHandle<R>, st: &AppState, id: i64, scope:
     if scope == SyncScope::Full {
         match src.kind {
             SourceKind::Xtream => {
-                let x = xtream_for(&src, client.clone());
+                let x = xtream_for(&src, client.clone())?;
                 step(app, id, "Signing in…");
                 let account = x.account().await?;
                 if !account.status.eq_ignore_ascii_case("active") {
@@ -499,7 +551,7 @@ async fn run_sync<R: Runtime>(app: &AppHandle<R>, st: &AppState, id: i64, scope:
         conn.execute("UPDATE source SET last_sync = ?2, sync_error = NULL WHERE id = ?1", params![id, now()])?;
     } else if epg_urls.is_empty() {
         match src.kind {
-            SourceKind::Xtream => epg_urls.push(xtream_for(&src, client.clone()).xmltv_url()),
+            SourceKind::Xtream => epg_urls.push(xtream_for(&src, client.clone())?.xmltv_url()),
             SourceKind::M3u => {
                 // the playlist header may name a guide
                 if let Ok(text) = download_text(&client, &src.url).await {
@@ -527,7 +579,10 @@ async fn run_sync<R: Runtime>(app: &AppHandle<R>, st: &AppState, id: i64, scope:
     counts(&conn, id)
 }
 
-pub fn xtream_for(src: &SourceRow, client: reqwest::Client) -> Xtream {
+pub fn xtream_for(src: &SourceRow, client: reqwest::Client) -> Result<Xtream> {
+    if src.password_in_keyring && src.password.is_none() {
+        return Err(Error::msg(crate::secrets::UNAVAILABLE));
+    }
     // prefer the mirror that answered last time
     let preferred = src.account.as_ref().and_then(|a| str_of(&a["baseUrl"]));
     let mut alts = src.alt_urls.clone();
@@ -537,13 +592,13 @@ pub fn xtream_for(src: &SourceRow, client: reqwest::Client) -> Xtream {
         alts.insert(0, primary);
         primary = p;
     }
-    Xtream::new(
+    Ok(Xtream::new(
         &primary,
         &alts,
         src.username.as_deref().unwrap_or(""),
         src.password.as_deref().unwrap_or(""),
         client,
-    )
+    ))
 }
 
 async fn download_text(client: &reqwest::Client, url: &str) -> Result<String> {
@@ -557,37 +612,62 @@ async fn download_text(client: &reqwest::Client, url: &str) -> Result<String> {
 
 async fn sync_epg(st: &AppState, id: i64, client: &reqwest::Client, urls: &[String]) -> Result<usize> {
     let mut last_err = None;
+    // guides reach 70+ MB: stream them to disk and parse from there
+    let file = st.cache_dir.join(format!("guide-{id}.part"));
     for url in urls {
         let res = async {
-            let r = client.get(url).timeout(Duration::from_secs(600)).send().await?;
-            if !r.status().is_success() {
-                return Err(Error::msg(format!("guide server answered {}", r.status())));
-            }
-            let bytes = crate::epg::maybe_gunzip(r.bytes().await?.to_vec())?;
+            download_to(client, url, &file, Duration::from_secs(600)).await?;
             let st2 = st.clone();
+            let file2 = file.clone();
             tokio::task::spawn_blocking(move || -> Result<usize> {
-                let wanted: HashSet<String> = {
+                let (wanted, past_days) = {
                     let conn = st2.db.read();
                     let mut stmt = conn.prepare(
                         "SELECT DISTINCT epg_id FROM channel WHERE source_id = ?1 AND epg_id IS NOT NULL",
                     )?;
-                    stmt.query_map([id], |r| r.get(0))?.collect::<Result<_, _>>()?
+                    let wanted: HashSet<String> = stmt.query_map([id], |r| r.get(0))?.collect::<Result<_, _>>()?;
+                    (wanted, crate::epg::history_days(&conn, id)?)
                 };
+                let guide = crate::epg::open_guide(&file2)?;
                 let mut conn = st2.db.write();
-                let n = crate::epg::import(&mut conn, id, &bytes, &wanted)?;
+                let imported = crate::epg::import(&mut conn, id, guide, &wanted, past_days)?;
+                if let Some(e) = &imported.incomplete {
+                    log::warn!("source {id}: guide document incomplete ({e}); kept {} programmes", imported.programmes);
+                }
                 conn.execute("UPDATE source SET last_epg_sync = ?2 WHERE id = ?1", params![id, now()])?;
-                Ok(n)
+                Ok(imported.programmes)
             })
             .await
             .map_err(|e| Error::msg(e.to_string()))?
         }
         .await;
+        let _ = tokio::fs::remove_file(&file).await;
         match res {
             Ok(n) => return Ok(n),
             Err(e) => last_err = Some(e),
         }
     }
     Err(last_err.unwrap_or_else(|| Error::msg("no guide url")))
+}
+
+/// Streams a download into `path` (constant memory).
+async fn download_to(client: &reqwest::Client, url: &str, path: &std::path::Path, timeout: Duration) -> Result<u64> {
+    use tokio::io::AsyncWriteExt;
+    let mut r = client.get(url).timeout(timeout).send().await?;
+    if !r.status().is_success() {
+        return Err(Error::msg(format!("guide server answered {}", r.status())));
+    }
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let mut f = tokio::fs::File::create(path).await?;
+    let mut size = 0u64;
+    while let Some(chunk) = r.chunk().await? {
+        f.write_all(&chunk).await?;
+        size += chunk.len() as u64;
+    }
+    f.flush().await?;
+    Ok(size)
 }
 
 // ------------------------------------------------------------ catalog writes
@@ -607,7 +687,7 @@ fn is_adult_name(name: &str) -> bool {
 }
 
 fn clear_catalog(tx: &Transaction, id: i64) -> Result<()> {
-    for table in ["category", "channel", "movie", "series"] {
+    for table in ["category", "channel", "movie", "series", "episode"] {
         tx.execute(&format!("DELETE FROM {table} WHERE source_id = ?1"), [id])?;
     }
     tx.execute("DELETE FROM search WHERE source_id = ?1", [id])?;
@@ -792,19 +872,34 @@ fn write_m3u(conn: &mut Connection, id: i64, pl: &m3u::Playlist) -> Result<()> {
     )?;
     let mut ch_stmt = tx.prepare(
         "INSERT OR REPLACE INTO channel (source_id, id, num, name, title, logo, epg_id, category_id,
-            archive, archive_days, url, separator, badges, adult, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            archive, archive_days, url, separator, badges, adult, position, catchup_mode, catchup_source,
+            user_agent, referrer)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
     )?;
     let mut mv_stmt = tx.prepare(
-        "INSERT OR REPLACE INTO movie (source_id, id, name, title, tag, year, poster, category_id, ext, url, adult, position)
+        "INSERT OR REPLACE INTO movie (source_id, id, name, title, tag, year, poster, category_id, ext, url, adult, position,
+            user_agent, referrer)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+    )?;
+    let mut sr_stmt = tx.prepare(
+        "INSERT OR REPLACE INTO series (source_id, id, name, title, tag, year, cover, category_id, adult, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    let mut ep_stmt = tx.prepare(
+        "INSERT OR REPLACE INTO episode (source_id, series_id, id, season, episode, title, image, ext, url,
+            user_agent, referrer, position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )?;
     let mut search = tx.prepare("INSERT INTO search (title, kind, source_id, item_id) VALUES (?1, ?2, ?3, ?4)")?;
     let mut seen: HashSet<String> = HashSet::new();
+    let mut series_seen: HashSet<String> = HashSet::new();
 
     for (pos, e) in pl.entries.iter().enumerate() {
+        // "Show S01E02" / Xtream `/series/` entries become series + episodes
+        let episode = e.episode_info();
         let kind = match e.kind() {
             m3u::EntryKind::Live => "live",
+            _ if episode.is_some() => "series",
             _ => "movie",
         };
         let group = e.group.clone().unwrap_or_else(|| "Uncategorized".into());
@@ -843,6 +938,8 @@ fn write_m3u(conn: &mut Connection, id: i64, pl: &m3u::Playlist) -> Result<()> {
         if kind == "live" {
             let separator = names::is_separator(&e.name);
             let cleaned = names::channel(&e.name);
+            // offered only when `play` can build the catch-up URL
+            let days = e.catchup_window();
             ch_stmt.execute(params![
                 id,
                 item_id,
@@ -852,29 +949,56 @@ fn write_m3u(conn: &mut Connection, id: i64, pl: &m3u::Playlist) -> Result<()> {
                 e.logo,
                 e.tvg_id,
                 cat_id,
-                // `play` can't build M3U catch-up URLs yet (WORKLOG T-039), so
-                // don't offer it; the advertised days are kept for later.
-                false,
-                e.catchup_days.unwrap_or(0),
+                days > 0,
+                days,
                 e.url,
                 separator,
                 names::badges_str(&cleaned.badges),
                 adult,
-                pos as i64
+                pos as i64,
+                e.catchup,
+                e.catchup_source,
+                e.user_agent,
+                e.referrer
             ])?;
             if !separator {
                 search.execute(params![cleaned.title, "live", id, item_id])?;
             }
+        } else if let Some(info) = episode {
+            let t = names::title(&info.series);
+            let series_id = format!("{:x}", fnv1a(format!("series\0{group}\0{}", t.title.to_lowercase()).as_bytes()));
+            if series_seen.insert(series_id.clone()) {
+                sr_stmt.execute(params![
+                    id, series_id, info.series, t.title, t.tag, t.year, e.logo, cat_id, adult, pos as i64
+                ])?;
+                search.execute(params![t.title, "series", id, series_id])?;
+            }
+            let ext = e.url.split(['?', '#']).next().and_then(|p| p.rsplit_once('.')).map(|(_, x)| x.to_owned());
+            ep_stmt.execute(params![
+                id,
+                series_id,
+                item_id,
+                info.season,
+                info.episode,
+                info.title,
+                e.logo,
+                ext,
+                e.url,
+                e.user_agent,
+                e.referrer,
+                pos as i64
+            ])?;
         } else {
             let t = names::title(&e.name);
             let ext = e.url.split(['?', '#']).next().and_then(|p| p.rsplit_once('.')).map(|(_, x)| x.to_owned());
             mv_stmt.execute(params![
-                id, item_id, e.name, t.title, t.tag, t.year, e.logo, cat_id, ext, e.url, adult, pos as i64
+                id, item_id, e.name, t.title, t.tag, t.year, e.logo, cat_id, ext, e.url, adult, pos as i64,
+                e.user_agent, e.referrer
             ])?;
             search.execute(params![t.title, "movie", id, item_id])?;
         }
     }
-    drop((cat_stmt, ch_stmt, mv_stmt, search));
+    drop((cat_stmt, ch_stmt, mv_stmt, sr_stmt, ep_stmt, search));
     prune_detail_cache(&tx, id)?;
     tx.commit()?;
     Ok(())
@@ -915,11 +1039,75 @@ mod tests {
     }
 
     #[test]
-    fn m3u_channels_do_not_offer_catchup_yet() {
+    fn m3u_episodes_become_series() {
         let mut c = test_conn();
-        let pl = m3u::parse("#EXTM3U\n#EXTINF:-1 catchup-days=\"7\" group-title=\"News\",News 24\nhttp://h/news.m3u8\n");
+        let pl = m3u::parse(concat!(
+            "#EXTM3U\n",
+            "#EXTINF:-1 tvg-logo=\"http://i/slow.jpg\" group-title=\"Series: Apple\",EN - Slow Horses (2022) S01E02 - Failure's Contagious\n",
+            "http://h/series/u/p/12.mkv\n",
+            "#EXTINF:-1 group-title=\"Series: Apple\",EN - Slow Horses (2022) S01E01\n",
+            "http://h/series/u/p/11.mkv\n",
+            "#EXTINF:-1 group-title=\"Series: Apple\",EN - Slow Horses (2022) S02E01 - Last Stop\n",
+            "http://h/series/u/p/21.mkv\n",
+            "#EXTINF:-1 group-title=\"Series: Nordic\",Borgen S01 E01\n",
+            "http://h/borgen/101.mp4\n",
+            "#EXTINF:-1 group-title=\"Movies\",Heat (1995)\n",
+            "http://h/movie/u/p/7.mkv\n",
+        ));
         write_m3u(&mut c, 1, &pl).unwrap();
-        let row: (bool, i64) = c.query_row("SELECT archive, archive_days FROM channel", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
-        assert_eq!(row, (false, 7));
+        fn count(c: &Connection, sql: &str) -> i64 {
+            c.query_row(sql, [], |r| r.get(0)).unwrap()
+        }
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM series"), 2);
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM episode"), 4);
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM movie"), 1);
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM category WHERE kind = 'series'"), 2);
+        let (sid, title, year, cover): (String, String, Option<i64>, Option<String>) = c
+            .query_row("SELECT id, title, year, cover FROM series WHERE title = 'Slow Horses'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+        assert_eq!((title.as_str(), year, cover.as_deref()), ("Slow Horses", Some(2022), Some("http://i/slow.jpg")));
+        let eps: Vec<(i64, i64, String)> = c
+            .prepare("SELECT season, episode, title FROM episode WHERE series_id = ?1 ORDER BY season, episode")
+            .unwrap()
+            .query_map([&sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(eps, [(1, 1, "".into()), (1, 2, "Failure's Contagious".into()), (2, 1, "Last Stop".into())]);
+        // ids survive a re-sync (history and favorites key on them)
+        write_m3u(&mut c, 1, &pl).unwrap();
+        assert_eq!(count(&c, &format!("SELECT COUNT(*) FROM series WHERE id = '{sid}'")), 1);
+    }
+
+    #[test]
+    fn m3u_channels_offer_catchup_only_when_playable() {
+        let mut c = test_conn();
+        let pl = m3u::parse(concat!(
+            "#EXTM3U\n",
+            "#EXTINF:-1 catchup-days=\"7\" group-title=\"News\",No scheme\n",
+            "http://h/news.m3u8\n",
+            "#EXTINF:-1 catchup=\"append\" catchup-source=\"?utc={utc}\" catchup-days=\"3\" group-title=\"News\",Append\n",
+            "http://h/sport.m3u8\n",
+            "#EXTINF:-1 catchup=\"default\" catchup-days=\"3\" group-title=\"News\",No template\n",
+            "http://h/film.m3u8\n",
+        ));
+        write_m3u(&mut c, 1, &pl).unwrap();
+        let rows: Vec<(String, bool, i64, Option<String>)> = c
+            .prepare("SELECT name, archive, archive_days, catchup_mode FROM channel ORDER BY position")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("No scheme".into(), false, 0, None),
+                ("Append".into(), true, 3, Some("append".into())),
+                ("No template".into(), false, 0, Some("default".into())),
+            ]
+        );
     }
 }
