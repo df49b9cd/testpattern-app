@@ -216,11 +216,15 @@ pub async fn check_key(key: &str) -> Result<()> {
     }
 }
 
-/// The configured API key, if any.
+/// The configured API key, if any — from the system keyring (secrets.rs),
+/// or the database where there is none. None while the keyring is locked.
 pub fn key(conn: &Connection) -> Option<String> {
-    let k = crate::settings::get_str(conn, KEY_SETTING).trim().to_owned();
-    (!k.is_empty()).then_some(k)
+    crate::secrets::named(conn, KEY_SETTING)
 }
+
+/// Shown while the key is in a keyring that is locked or not available.
+const KEY_LOCKED: &str = "The TMDB key is stored in the system keyring, which is locked or not available. \
+     Unlock it (KWallet, GNOME Keyring) and refresh, or enter the key again.";
 
 // ------------------------------------------------------------------ status
 
@@ -261,15 +265,17 @@ pub fn status(conn: &Connection) -> Result<Status> {
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    let configured = crate::secrets::named_configured(conn, KEY_SETTING);
+    let locked = configured && key(conn).is_none();
     let p = PROGRESS.lock();
     Ok(Status {
-        configured: key(conn).is_some(),
+        configured,
         running: p.running,
         done: p.done,
         total: p.total,
         known,
         titles,
-        error: p.error.clone(),
+        error: p.error.clone().or_else(|| locked.then(|| KEY_LOCKED.to_owned())),
         last_run: p.last_run,
     })
 }
@@ -436,16 +442,12 @@ pub async fn tmdb_set_key<R: Runtime>(app: AppHandle<R>, state: State<'_, AppSta
     if !key.is_empty() {
         check_key(&key).await?;
     }
-    {
-        let conn = state.db.write();
-        if key.is_empty() {
-            conn.execute("DELETE FROM setting WHERE key = ?1", [KEY_SETTING])?;
-        } else {
-            conn.execute(
-                "INSERT INTO setting (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![KEY_SETTING, serde_json::to_string(&key)?],
-            )?;
-        }
+    // the system keyring when there is one (it may ask to be unlocked: the
+    // user just typed the key), else the database
+    if key.is_empty() {
+        crate::secrets::forget_named(state.inner(), KEY_SETTING)?;
+    } else {
+        crate::secrets::store_named(state.inner(), KEY_SETTING, &key, crate::secrets::Unlock::Prompt).await?;
     }
     PROGRESS.lock().error = None;
     spawn(app, state.inner().clone());
@@ -454,6 +456,8 @@ pub async fn tmdb_set_key<R: Runtime>(app: AppHandle<R>, state: State<'_, AppSta
 
 #[tauri::command]
 pub async fn tmdb_refresh<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>) -> Result<Status> {
+    // the user asked: a keyring locked so far may prompt now
+    crate::secrets::ensure_loaded(state.inner(), None, crate::secrets::Unlock::Prompt).await;
     spawn(app, state.inner().clone());
     status(&state.db.read())
 }
@@ -522,6 +526,17 @@ mod tests {
         assert_eq!(back, t);
         let old: Info = serde_json::from_str(r#"{"title":"X"}"#).unwrap();
         assert!(old.genres.is_empty());
+    }
+
+    #[test]
+    fn a_key_in_a_locked_keyring_is_reported() {
+        let c = crate::db::test_conn();
+        assert!(!status(&c).unwrap().configured);
+        c.execute("INSERT INTO setting (key, value) VALUES ('tmdb.key.inKeyring', 'true')", []).unwrap();
+        let s = status(&c).unwrap();
+        assert!(s.configured);
+        assert_eq!(s.error.as_deref(), Some(KEY_LOCKED));
+        assert_eq!(key(&c), None);
     }
 
     #[test]

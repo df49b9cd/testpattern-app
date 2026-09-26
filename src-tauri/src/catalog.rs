@@ -489,17 +489,20 @@ pub struct LiveNav {
     pub cells: Vec<LiveCell>,
 }
 
-/// `ORDER BY` for channel groups: genres in `LIVE_GENRES` order.
+/// `ORDER BY` for channel groups: genres in `LIVE_GENRES` order; within one,
+/// channels with guide data first — the linear channels (BBC One, ITV, …)
+/// ahead of a provider's 24/7 and FAST feeds, which rarely have any.
 fn genre_order() -> String {
     let cases: String = crate::works::genre::LIVE_GENRES
         .iter()
         .enumerate()
         .map(|(i, g)| format!(" WHEN '{}' THEN {i}", g.replace('\'', "''")))
         .collect();
-    format!("CASE g.genre{cases} ELSE 99 END, g.position")
+    format!("CASE g.genre{cases} ELSE 99 END, g.epg_id IS NULL, g.position")
 }
 
-/// `ORDER BY` for channel groups: countries as `live_nav` lists them.
+/// `ORDER BY` for channel groups: countries as `live_nav` lists them, each
+/// with its guide channels first.
 fn country_order_sql(conn: &Connection) -> Result<String> {
     let cases: String = live_nav_for(conn)?
         .countries
@@ -507,7 +510,7 @@ fn country_order_sql(conn: &Connection) -> Result<String> {
         .enumerate()
         .filter_map(|(i, c)| c.code.as_ref().map(|code| format!(" WHEN '{}' THEN {i}", code.replace('\'', "''"))))
         .collect();
-    Ok(format!("CASE g.country{cases} ELSE 9999 END, g.position"))
+    Ok(format!("CASE g.country{cases} ELSE 9999 END, g.epg_id IS NULL, g.position"))
 }
 
 pub fn live_nav_for(conn: &Connection) -> Result<LiveNav> {
@@ -2187,6 +2190,34 @@ mod tests {
         assert_eq!((u[0].episode.id.as_str(), u[0].episode.season, u[0].episode.episode), ("f51", 5, 1));
         assert_eq!(u[0].series.title, "Show");
         assert_eq!(u[0].series.work.version_count, 2);
+    }
+
+    #[test]
+    fn a_country_lists_its_guide_channels_first() {
+        let c = crate::db::test_conn();
+        c.execute(
+            "INSERT INTO category (source_id, kind, id, name, title, region, position)
+             VALUES (1, 'live', 'ent', 'UK| ENTERTAINMENT', 'ENTERTAINMENT', 'UK', 0)",
+            [],
+        )
+        .unwrap();
+        // the provider lists its 24/7 feeds (no guide data) before BBC One
+        for (id, title, epg, pos) in [("fast", "BAYWATCH", None, 0), ("bbc1", "BBC ONE", Some("BBCOne.uk"), 1)] {
+            c.execute(
+                "INSERT INTO channel (source_id, id, name, title, category_id, epg_id, position)
+                 VALUES (1, ?1, ?2, ?2, 'ent', ?3, ?4)",
+                params![id, title, epg, pos],
+            )
+            .unwrap();
+        }
+        crate::works::rebuild(&c).unwrap();
+        let titles = |q: ChannelQuery| -> Vec<String> {
+            query_channels(&c, &q).unwrap().items.into_iter().map(|i| i.title).collect()
+        };
+        let uk = ChannelQuery { grouped: true, country: Some("UK".into()), ..Default::default() };
+        assert_eq!(titles(uk), ["BBC ONE", "BAYWATCH"]);
+        let genre = ChannelQuery { grouped: true, genre: Some("Entertainment".into()), ..Default::default() };
+        assert_eq!(titles(genre), ["BBC ONE", "BAYWATCH"]);
     }
 
     #[test]

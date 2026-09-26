@@ -54,8 +54,9 @@ fn all(conn: &Connection) -> Result<Map<String, Value>> {
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     for row in rows {
         let (k, v) = row?;
-        // the TMDB key stays in the backend (tmdb.rs)
-        if k == crate::tmdb::KEY_SETTING {
+        // secrets stay in the backend (secrets.rs, tmdb.rs), and so does the
+        // note that one lives in the keyring
+        if crate::secrets::NAMED.iter().any(|(name, _)| k == *name) || k.ends_with(".inKeyring") {
             continue;
         }
         if let Ok(v) = serde_json::from_str(&v) {

@@ -138,8 +138,10 @@ lists the app's entries (prints secrets — test profile only).
 template: `.env.example`). The user's **TMDB** credentials are there too
 (`TP_TMDB_TOKEN` = v4 read access token, `TP_TMDB_KEY` = v3 API key);
 `scripts/headless.sh tmdb` (also run by `seed`) gives the token to the
-headless profile over stdin. In the app the key is a setting (Settings →
-Metadata), never shown back to the UI or logged.
+headless profile over stdin. In the app it is entered in Settings →
+Metadata and kept in the system keyring like the source passwords (the
+database only where there is no keyring); it is never shown back to the UI
+or logged.
 **Each account allows ONE concurrent stream** — never play/probe two streams on
 the same account at once. Never commit or print credentials.
 
@@ -769,8 +771,8 @@ UHF/Infuse feature, **P2** = later.
 - **T-037 CI pipeline** — `.github/workflows/ci.yml` on the private repo
   `df49b9cd/testpattern-app`: `scripts/check.sh` on Ubuntu 24.04 for pushes
   and pull requests, portable bundles for `v*` tags and manual runs. First
-  green run on PR #1 (T-049 + T-037, 2026-09-26), which the user merged;
-  the push run on `main` after the merge was still running when checked.
+  green run on PR #1 (T-049 + T-037, 2026-09-26), which the user merged
+  (`7bb128d`); the push run on `main` after the merge was green as well.
 
 - **T-050 Works: one entry per movie/series** — the provider lists films
   and shows several times: series 11,069 entries = 7,802 TMDB ids (2,220
@@ -862,7 +864,10 @@ UHF/Infuse feature, **P2** = later.
   MOVIES/CINEMA, DOCUMENTARY, MUSIC, ENTERTAINMENT) else its name. Live page:
   Countries | Genres | Provider switch; countries (the viewer's languages
   first) unfold into genres and vice versa; a country lists its regular
-  channels first, event feeds last; Favorites/Recent/All and the country/
+  channels first, event feeds last, and within a genre the channels with
+  guide data first (UK: BBC One, BBC 2, ITV 1 … rather than the provider's
+  24/7 "PRIME" feeds, which sort first by position); Favorites/Recent/All
+  and the country/
   genre lists show one row per channel playing its chosen feed (the user's
   pick → a favorited feed → best quality: FHD > HD > RAW > none > 4K,
   HEVC −10, SD −20, EPG breaks ties); the preview pane lists the feeds as
@@ -885,7 +890,12 @@ UHF/Infuse feature, **P2** = later.
   entries carry another title's id). Detail pages show original language,
   collection (links to the filtered grid), network, country. Status +
   progress in Settings (`tmdb_status`, `tmdb://progress`); removing the key
-  stops a run. Attribution line as TMDB's terms ask (Settings, README).
+  stops a run. The key lives in the system keyring (`secrets::NAMED`, entry
+  "testpattern: TMDB API key"; database setting `tmdb.key` only without a
+  keyring): a key stored in the database moves over at startup while the
+  keyring is unlocked (secure delete + the one-time file rebuild), and a
+  locked keyring shows as an error in the status instead of "no key".
+  Attribution line as TMDB's terms ask (Settings, README).
   First full run on the test catalog: 33,163 titles in ~23 min at 24/s (it
   resumes after a restart), 32,964 found, 199 not on TMDB, no errors.
   Effect: movies with a genre 44% → 98% (series 97%); new facets: 1,900
@@ -1043,3 +1053,22 @@ _(nothing)_
   first track check returned nothing because mpv drops a file with neither
   audio nor video selected. New follow-ups: T-055, T-056. Tests: 64 Rust
   unit tests, 35 vitest, smoke 30 checks.
+- **2026-09-26 (session 4)** — User asked again for a status check; the
+  parallel session 3 had run out of quota with its work (T-050…T-054)
+  uncommitted in this checkout. Taken over: backed up the diff
+  (`.deps/takeover-2158/`), read its last steps (it had finished: smoke
+  30/30, TMDB fill done, worklog written), then re-verified everything
+  independently — `scripts/check.sh` (68 Rust unit tests incl. 4 new,
+  35 vitest), smoke 30/30, CSP clean across all pages, and the new UI by
+  hand (Series facet panel: 8,022 works; For All Mankind: 6 versions with
+  tracks, 5 seasons as a union; Live TV: countries/genres, 19,921 feeds →
+  17,425 channels). CI: PR #1 merged, main green. Found and fixed: the TMDB
+  key sat in the database in plaintext although T-046 moved credentials to
+  the keyring → now a keyring secret too (`secrets.rs` entries are generic:
+  source passwords + `NAMED`); verified in the headless session (plaintext
+  moved over, the DB and WAL no longer contain it, keyring value = the
+  `.env.local` one, setting it again stays in the keyring, status
+  unchanged). A country's channel list opened with 24/7 FAST feeds
+  (provider order) → guide channels first per genre (UK now opens with BBC
+  One London, BBC 1, BBC 2, ITV 1 …). Tests added for both. Nothing
+  committed yet (branch `content-grouping`, based on the merged PR #1).
