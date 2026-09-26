@@ -60,16 +60,23 @@ fi
 # after (re)building a component, its dependents are stale
 rebuilt() { for d in ${DEPENDENTS[$1]}; do invalidate "$d"; done; }
 
-fetch() { # name url tag [git clone options] — re-clones (and forces a rebuild) when the tag changes
-  local name=$1 url=$2 tag=$3 stamp="$SRC/$1.tag"
-  shift 3
-  if [[ -d "$SRC/$name" && "$(cat "$stamp" 2>/dev/null)" != "$tag" ]]; then
+fetch() { # name url tag [submodules] — re-fetches (and forces a rebuild) when the tag changes
+  local name=$1 url=$2 tag=$3 submodules=${4:-} stamp="$SRC/$1.tag" dir="$SRC/$1"
+  if [[ -d "$dir" && "$(cat "$stamp" 2>/dev/null)" != "$tag" ]]; then
     echo "==> $name: switching to $tag"
     rm -rf "${SRC:?}/$name" "${BUILD:?}/$name"
     invalidate "$name"
   fi
-  if [[ ! -d "$SRC/$name" ]]; then
-    git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$@" "$url" "$SRC/$name"
+  if [[ ! -d "$dir" ]]; then
+    # Only the tag's commit, and no local tag ref: `clone --depth 1 --branch
+    # <annotated tag>` makes git ≥ 2.55 warn "refs/tags/… is not a commit!"
+    git init -q "$dir"
+    git -C "$dir" remote add origin "$url"
+    git -C "$dir" fetch -q --depth 1 --no-tags origin "refs/tags/$tag"
+    git -C "$dir" -c advice.detachedHead=false checkout -q FETCH_HEAD
+    if [[ -n "$submodules" ]]; then
+      git -C "$dir" submodule -q update --init --recursive --depth 1
+    fi
     echo "$tag" > "$stamp"
     invalidate "$name"
   fi
@@ -77,7 +84,7 @@ fetch() { # name url tag [git clone options] — re-clones (and forces a rebuild
 fetch dav1d https://code.videolan.org/videolan/dav1d.git "$DAV1D_TAG"
 fetch libxml2 https://gitlab.gnome.org/GNOME/libxml2.git "$LIBXML2_TAG"
 fetch ffmpeg https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_TAG"
-fetch libplacebo https://code.videolan.org/videolan/libplacebo.git "$LIBPLACEBO_TAG" --recurse-submodules --shallow-submodules
+fetch libplacebo https://code.videolan.org/videolan/libplacebo.git "$LIBPLACEBO_TAG" submodules
 fetch libdisplay-info https://gitlab.freedesktop.org/emersion/libdisplay-info.git "$LIBDISPLAYINFO_TAG"
 fetch mpv https://github.com/mpv-player/mpv.git "$MPV_TAG"
 
