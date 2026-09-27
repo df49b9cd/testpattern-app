@@ -30,7 +30,7 @@ use crate::error::Result;
 use variant::Variant;
 
 /// Bump whenever grouping/facet rules change: startup then rebuilds.
-pub const RULES_VERSION: i64 = 4;
+pub const RULES_VERSION: i64 = 6;
 
 /// Title for grouping: lower case, diacritics folded, `&` = "and",
 /// punctuation dropped ("Love & Anarchy" = "love and anarchy").
@@ -128,8 +128,9 @@ impl Member {
 
 /// Group keys: TMDB id; an entry without one joins the TMDB group with the
 /// same normalized title + year when that is unambiguous, otherwise groups by
-/// title + year; without a year it stays on its own.
-fn assign_keys(members: &[Member]) -> Vec<String> {
+/// title + year; without a year it stays on its own. `found` maps those
+/// fallback keys to the TMDB id a search found for them (`tmdb_match`).
+fn assign_keys(members: &[Member], found: &HashMap<String, String>) -> Vec<String> {
     let mut by_title_year: HashMap<(String, i64), BTreeSet<String>> = HashMap::new();
     for m in members {
         if let (Some(t), Some(y)) = (valid_tmdb(m.tmdb.as_deref()), m.year) {
@@ -143,15 +144,27 @@ fn assign_keys(members: &[Member]) -> Vec<String> {
                 return format!("tmdb:{t}");
             }
             let norm = norm_title(&m.title);
-            match m.year {
+            let key = match m.year {
                 Some(y) => match by_title_year.get(&(norm.clone(), y)) {
-                    Some(keys) if keys.len() == 1 => keys.iter().next().unwrap().clone(),
+                    Some(keys) if keys.len() == 1 => return keys.iter().next().unwrap().clone(),
                     _ => format!("title:{norm}|{y}"),
                 },
                 None => format!("item:{}:{}", m.source_id, m.id),
+            };
+            match found.get(&key) {
+                Some(id) => format!("tmdb:{id}"),
+                None => key,
             }
         })
         .collect()
+}
+
+/// TMDB ids that searches found for keys without one (`tmdb.rs`).
+fn load_found(conn: &Connection, kind: &str) -> Result<HashMap<String, String>> {
+    Ok(conn
+        .prepare("SELECT key, tmdb_id FROM tmdb_match WHERE kind = ?1 AND tmdb_id IS NOT NULL")?
+        .query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?)
 }
 
 fn most_common<T: Eq + std::hash::Hash + Clone>(items: impl Iterator<Item = (T, i64)>) -> Option<T> {
@@ -225,7 +238,7 @@ pub fn tmdb_fits(info: &crate::tmdb::Info, titles: &[&str], year: Option<i64>) -
 
 fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
     let members = load_members(conn, kind)?;
-    let keys = assign_keys(&members);
+    let keys = assign_keys(&members, &load_found(conn, kind)?);
     let table = if kind == "movie" { "movie" } else { "series" };
     let tmdb = load_tmdb(conn, kind)?;
 
@@ -438,6 +451,15 @@ pub fn channel_key(country: Option<&str>, title: &str) -> String {
     format!("{}|{}", country.unwrap_or("-"), t)
 }
 
+/// Hours a timeshift channel ("ITV 1 +1", "ITV 2+1") runs behind the channel
+/// it repeats: "+1" or "+2" at the end of its name. Other numbers name event
+/// feeds ("… +45", "TENNIS CHANNEL PLUS 9").
+pub fn timeshift_hours(title: &str) -> Option<i64> {
+    static SUFFIX: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\+\s*([12])\s*$").unwrap());
+    SUFFIX.captures(title).and_then(|c| c[1].parse().ok())
+}
+
 /// Chip text for one variant of a channel: its own badges ("RAW HEVC"),
 /// else its category's, plus the category's extras ("VIP", "Dolby Audio").
 pub fn channel_variant_label(channel_badges: &str, category_badges: &str) -> String {
@@ -520,9 +542,23 @@ fn rebuild_channel_groups(conn: &Connection) -> Result<usize> {
         .query_map([], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?
         .collect::<Result<_, _>>()?;
 
+    // a feed without an EPG id uses its channel's (the most common one)
+    let group_epg: HashMap<&str, Option<String>> = groups
+        .iter()
+        .map(|(k, cs)| (k.as_str(), most_common(cs.iter().filter_map(|c| c.epg_id.clone()).map(|e| (e, 1)))))
+        .collect();
+    let epg_of = |c: &Ch, key: &str| c.epg_id.clone().or_else(|| group_epg[key].clone());
+    // guides of regular channels: a "+1" channel sharing one runs behind it
+    let regular: BTreeSet<(i64, String)> = groups
+        .iter()
+        .flat_map(|(k, cs)| cs.iter().map(move |c| (k, c)))
+        .filter(|(_, c)| timeshift_hours(&c.title).is_none())
+        .filter_map(|(k, c)| epg_of(c, k).map(|e| (c.source_id, e)))
+        .collect();
+
     conn.execute("DELETE FROM channel_group", [])?;
-    conn.execute("UPDATE channel SET group_key = NULL WHERE separator = 1", [])?;
-    let mut set_key = conn.prepare("UPDATE channel SET group_key = ?3 WHERE source_id = ?1 AND id = ?2")?;
+    conn.execute("UPDATE channel SET group_key = NULL, epg_shift = 0 WHERE separator = 1", [])?;
+    let mut set_key = conn.prepare("UPDATE channel SET group_key = ?3, epg_shift = ?4 WHERE source_id = ?1 AND id = ?2")?;
     let mut insert = conn.prepare(
         "INSERT INTO channel_group (key, title, country, genre, logo, epg_id, variants, adult, position, source_id, item_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -530,7 +566,10 @@ fn rebuild_channel_groups(conn: &Connection) -> Result<usize> {
     for (pos, key) in order.iter().enumerate() {
         let cs = &groups[key];
         for c in cs {
-            set_key.execute(params![c.source_id, c.id, key])?;
+            let shift = timeshift_hours(&c.title)
+                .filter(|_| epg_of(c, key).is_some_and(|e| regular.contains(&(c.source_id, e))))
+                .map_or(0, |h| h * 3600);
+            set_key.execute(params![c.source_id, c.id, key, shift])?;
         }
         let best = cs
             .iter()
@@ -548,7 +587,7 @@ fn rebuild_channel_groups(conn: &Connection) -> Result<usize> {
         let category_genre =
             most_common(cs.iter().filter_map(|c| c.category_title.as_deref().and_then(genre::live_from_category)).map(|g| (g, 1)));
         let genre = category_genre.unwrap_or_else(|| genre::live_from_title(&title));
-        let epg_id = most_common(cs.iter().filter_map(|c| c.epg_id.clone()).map(|e| (e, 1)));
+        let epg_id = group_epg[key.as_str()].clone();
         let logo = chosen.logo.clone().or_else(|| best.logo.clone()).or_else(|| cs.iter().find_map(|c| c.logo.clone()));
         insert.execute(params![
             key,
@@ -678,6 +717,32 @@ mod tests {
     }
 
     #[test]
+    fn titles_found_on_tmdb_join_their_work() {
+        let c = setup();
+        insert_series(&c, "1", "NF", "For All Mankind", Some(2019), Some("87917"), "nf");
+        // no id, and a year the copy with an id doesn't share
+        insert_series(&c, "2", "SC", "For All Mankind", Some(2020), None, "sc");
+        // no id, no year: two copies of one show, and one TMDB doesn't know
+        insert_series(&c, "3", "DK", "De eftersøgte", None, None, "dk");
+        insert_series(&c, "4", "SC", "De eftersøgte", None, None, "sc");
+        insert_series(&c, "5", "SC", "Hämta håven", None, None, "sc");
+        rebuild(&c).unwrap();
+        let key = |id: &str| -> String { c.query_row("SELECT work_key FROM series WHERE id = ?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!((key("2"), key("3")), ("title:for all mankind|2020".into(), "item:1:3".into()));
+
+        // what tmdb.rs stores after searching
+        for (k, id) in [("title:for all mankind|2020", Some("87917")), ("item:1:3", Some("555")), ("item:1:4", Some("555")), ("item:1:5", None)] {
+            c.execute("INSERT INTO tmdb_match (kind, key, tmdb_id, checked_at) VALUES ('series', ?1, ?2, 0)", params![k, id])
+                .unwrap();
+        }
+        rebuild(&c).unwrap();
+        assert_eq!(key("2"), "tmdb:87917");
+        assert_eq!((key("3"), key("4"), key("5")), ("tmdb:555".into(), "tmdb:555".into(), "item:1:5".into()));
+        let versions = |k: &str| -> i64 { c.query_row("SELECT versions FROM work WHERE key = ?1", [k], |r| r.get(0)).unwrap() };
+        assert_eq!((versions("tmdb:87917"), versions("tmdb:555")), (2, 2));
+    }
+
+    #[test]
     fn channel_variants_group_per_country() {
         let c = crate::db::test_conn();
         for (id, title, region) in [("sp", "SPORT", "UK"), ("now", "NOW TV SPORT", "UK"), ("att", "AT&T", "US")] {
@@ -788,6 +853,37 @@ mod tests {
         assert_eq!(channel_variant_label("", "HD RAW"), "HD · RAW");
         assert_eq!(channel_variant_label("RAW 50FPS", "RAW"), "RAW · 50fps");
         assert_eq!(channel_variant_label("", ""), "Standard");
+    }
+
+    #[test]
+    fn timeshift_channels_run_behind_the_guide_they_share() {
+        assert_eq!(timeshift_hours("ITV 1 +1"), Some(1));
+        assert_eq!(timeshift_hours("ITV 2+1 "), Some(1));
+        assert_eq!(timeshift_hours("DRAMA + 1"), Some(1));
+        assert_eq!(timeshift_hours("FILM4 +2"), Some(2));
+        // numbered feeds, not timeshifts
+        for t in ["PPV +12", "EVENT +45", "TENNIS CHANNEL PLUS 9", "SKY SPORTS+", "ITV 1"] {
+            assert_eq!(timeshift_hours(t), None, "{t}");
+        }
+
+        let c = crate::db::test_conn();
+        c.execute("INSERT INTO category (source_id, kind, id, name, title, region, position) VALUES (1, 'live', 'e', 'ENT', 'ENT', 'UK', 0)", [])
+            .unwrap();
+        for (id, title, epg) in [
+            ("itv", "ITV 1", Some("ITV1.uk")),
+            ("itv1", "ITV 1 +1", Some("ITV1.uk")),
+            ("itv1b", "ITV 1 +1", None), // a feed without an id uses its channel's
+            ("ev", "EVENT +1", Some("Event1.uk")), // its own guide: no timeshift
+        ] {
+            c.execute(
+                "INSERT INTO channel (source_id, id, name, title, category_id, epg_id, position) VALUES (1, ?1, ?2, ?2, 'e', ?3, 0)",
+                params![id, title, epg],
+            )
+            .unwrap();
+        }
+        rebuild(&c).unwrap();
+        let shift = |id: &str| -> i64 { c.query_row("SELECT epg_shift FROM channel WHERE id = ?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!((shift("itv"), shift("itv1"), shift("itv1b"), shift("ev")), (0, 3600, 3600, 0));
     }
 
     #[test]

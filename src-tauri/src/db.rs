@@ -368,6 +368,22 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (kind, id)
     ) WITHOUT ROWID;
     "#,
+    // v9: TMDB ids found by searching TMDB for works the provider lists
+    // without one (tmdb.rs); works::assign_keys groups them by that id
+    r#"
+    CREATE TABLE tmdb_match (
+        kind       TEXT NOT NULL,                -- work kind: 'movie' | 'series'
+        key        TEXT NOT NULL,                -- work key without an id: 'title:…' | 'item:…'
+        tmdb_id    TEXT,                         -- NULL = no single exact match
+        checked_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, key)
+    ) WITHOUT ROWID;
+    "#,
+    // v10: seconds a timeshift channel ("ITV 1 +1") runs behind the channel
+    // whose guide it shares (works::rebuild)
+    r#"
+    ALTER TABLE channel ADD COLUMN epg_shift INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 fn migrate(c: &Connection) -> Result<()> {

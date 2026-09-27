@@ -209,6 +209,24 @@ fn on_render(area: &gtk::GLArea, _ctx: &gdk::GLContext) -> glib::Propagation {
     glib::Propagation::Stop
 }
 
+/// Redraws the video area without a new frame. mpv closes its video output
+/// when playback stops (idle) but asks for no redraw, so the area would keep
+/// showing the last frame — e.g. through the Live TV preview window. After
+/// the output closed, mpv renders an empty (black) frame. Any thread.
+pub fn redraw() {
+    glib::idle_add_full(glib::Priority::HIGH_IDLE, || {
+        SURFACE.with(|s| {
+            if let Ok(s) = s.try_borrow()
+                && let Some(surface) = s.as_ref()
+                && !surface.ctx.is_null()
+            {
+                surface.area.queue_render();
+            }
+        });
+        glib::ControlFlow::Break
+    });
+}
+
 /// Called by mpv from arbitrary threads whenever a new frame is due.
 unsafe extern "C" fn on_mpv_update(_: *mut c_void) {
     if REDRAW_PENDING.swap(true, Ordering::AcqRel) {

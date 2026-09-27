@@ -292,7 +292,8 @@ function Metadata() {
           <span className="block text-[15px] font-medium">TMDB</span>
           <span className="mt-0.5 block text-[13px] leading-relaxed text-dim">
             Genres for every movie, original languages, movie collections and TV networks — for the titles your provider lists
-            with a TMDB id. Uses your own free API key or read access token from themoviedb.org.
+            with a TMDB id, and those TMDB finds by their exact title. Uses your own free API key or read access token from
+            themoviedb.org.
           </span>
         </div>
         {s?.configured ? (
@@ -300,7 +301,14 @@ function Metadata() {
             <div className="flex items-center justify-between gap-4 text-[13.5px]">
               <span className="text-dim">
                 Details for <span className="font-semibold text-fg">{s.known.toLocaleString()}</span> of {s.titles.toLocaleString()} titles
-                {s.running ? ` · fetching ${s.done.toLocaleString()} of ${s.total.toLocaleString()}…` : s.lastRun ? ` · checked ${ago(s.lastRun)}` : ""}
+                {s.found > 0 && ` (${s.found.toLocaleString()} found by title)`}
+                {s.running
+                  ? s.total > 0
+                    ? ` · fetching ${s.done.toLocaleString()} of ${s.total.toLocaleString()}…`
+                    : " · checking TMDB for changes…"
+                  : s.lastRun
+                    ? ` · checked ${ago(s.lastRun)}`
+                    : ""}
               </span>
               <span className="flex shrink-0 gap-2">
                 <Button size="sm" icon={<RefreshCw className="size-4" />} disabled={s.running} loading={busy} onClick={() => void run(() => api.tmdbRefresh())}>

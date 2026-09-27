@@ -427,6 +427,8 @@ export interface TmdbStatus {
   /** catalog titles with TMDB details, of `titles` that have a TMDB id */
   known: number;
   titles: number;
+  /** titles the provider lists without a TMDB id that a search found */
+  found: number;
   error?: string | null;
   lastRun?: number | null;
 }

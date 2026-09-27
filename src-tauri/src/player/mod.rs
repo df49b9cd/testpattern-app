@@ -239,7 +239,13 @@ impl Player {
                             log::debug!("mpv[{prefix}] {level}: {text}");
                             PlayerEvent::Log { level, prefix, text }
                         }
-                        Event::Idle | Event::VideoReconfig | Event::Other => continue,
+                        // stopped: don't leave the last frame on screen
+                        Event::Idle => {
+                            #[cfg(target_os = "linux")]
+                            linux::redraw();
+                            continue;
+                        }
+                        Event::VideoReconfig | Event::Other => continue,
                     };
                     let _ = app.emit(EVENT, out);
                 }

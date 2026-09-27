@@ -274,6 +274,8 @@ pub fn maybe_gunzip(bytes: Vec<u8>) -> Result<Vec<u8>> {
 #[derive(Debug)]
 pub struct Imported {
     pub programmes: usize,
+    /// overlapping programmes dropped or shortened (`untangle`)
+    pub untangled: usize,
     /// The document broke off (IPTV panels generate guides on the fly and a
     /// malformed or truncated tail is common): everything before the error
     /// was imported, channels after it keep their previous programmes.
@@ -284,7 +286,8 @@ pub struct Imported {
 /// `past_days` of history (catch-up) and 8 days ahead. Channels are
 /// replaced one at a time as they appear, so a document that breaks off
 /// still updates every channel it contains; only a complete document drops
-/// the channels that are no longer in it.
+/// the channels that are no longer in it. Overlapping programmes of the
+/// replaced channels are untangled afterwards (`untangle`).
 pub fn import(
     conn: &mut Connection,
     source_id: i64,
@@ -350,25 +353,99 @@ pub fn import(
         Err(e) if count > 0 => Some(e),
         Err(e) => return Err(e),
     };
+    let untangled = tidy(&tx, source_id, &replaced)?;
     tx.commit()?;
-    Ok(Imported { programmes: count, incomplete })
+    Ok(Imported { programmes: count, untangled, incomplete })
 }
 
+/// What `untangle` changes about a channel's programmes.
+#[derive(Debug, PartialEq)]
+enum Fix {
+    /// the same slot listed again, a little shifted: dropped
+    Drop(i64),
+    /// the next programme starts before this one ends: it ends there
+    End(i64, i64),
+}
+
+/// Overlaps in one channel's programmes (sorted by start). Providers merge
+/// schedules from two sources — "Hygge i hagen" 13:30–14:29 and again
+/// 13:31–14:30 — or list overlapping slots, which a guide grid can't show:
+/// an overlapping entry with the same title is dropped, a different one
+/// ends the programme before it.
+fn untangle(programmes: &[(i64, i64, String)]) -> Vec<Fix> {
+    let mut fixes = Vec::new();
+    let mut prev: Option<(i64, i64, &str)> = None;
+    for (start, stop, title) in programmes {
+        if let Some((p_start, p_stop, p_title)) = prev
+            && *start < p_stop
+        {
+            if title.trim().eq_ignore_ascii_case(p_title.trim()) {
+                fixes.push(Fix::Drop(*start));
+                continue;
+            }
+            fixes.push(Fix::End(p_start, *start));
+        }
+        prev = Some((*start, *stop, title));
+    }
+    fixes
+}
+
+/// Untangles the programmes of the channels an import replaced.
+fn tidy(conn: &Connection, source_id: i64, epg_ids: &HashSet<String>) -> Result<usize> {
+    let mut load = conn.prepare("SELECT start, stop, title FROM programme WHERE source_id = ?1 AND epg_id = ?2 ORDER BY start")?;
+    let mut drop = conn.prepare("DELETE FROM programme WHERE source_id = ?1 AND epg_id = ?2 AND start = ?3")?;
+    let mut end = conn.prepare("UPDATE programme SET stop = ?4 WHERE source_id = ?1 AND epg_id = ?2 AND start = ?3")?;
+    let mut fixed = 0;
+    for id in epg_ids {
+        let programmes: Vec<(i64, i64, String)> = load
+            .query_map(params![source_id, id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        for fix in untangle(&programmes) {
+            fixed += match fix {
+                Fix::Drop(start) => drop.execute(params![source_id, id, start])?,
+                Fix::End(start, stop) => end.execute(params![source_id, id, start, stop])?,
+            };
+        }
+    }
+    Ok(fixed)
+}
+
+/// The guide ids of a source's channels worth importing. An id that dozens
+/// of channels from several countries share is a provider placeholder
+/// (this provider's "TS": 76 channels, "TimeShift 04" around the clock), not
+/// their guide — they show none instead.
+pub fn wanted_ids(conn: &Connection, source_id: i64) -> Result<HashSet<String>> {
+    let rows: Vec<(String, i64, i64)> = conn
+        .prepare(
+            "SELECT c.epg_id, COUNT(DISTINCT c.group_key), COUNT(DISTINCT g.country)
+               FROM channel c LEFT JOIN channel_group g ON g.key = c.group_key
+              WHERE c.source_id = ?1 AND c.epg_id IS NOT NULL
+              GROUP BY c.epg_id",
+        )?
+        .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(rows.into_iter().filter(|(_, channels, countries)| *channels <= 20 || *countries <= 1).map(|(id, ..)| id).collect())
+}
+
+/// A channel's programmes between `from` and `to`. `shift`: seconds the
+/// channel runs behind the one whose guide it shares ("ITV 1 +1"); the
+/// programmes come at the channel's own times.
 pub fn programmes(
     conn: &Connection,
     source_id: i64,
     epg_id: &str,
     from: i64,
     to: i64,
+    shift: i64,
 ) -> Result<Vec<ProgrammeRow>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT epg_id, start, stop, title, subtitle, description, category, episode, icon
+        "SELECT epg_id, start + ?5, stop + ?5, title, subtitle, description, category, episode, icon
            FROM programme
-          WHERE source_id = ?1 AND epg_id = ?2 AND stop > ?3 AND start < ?4
+          WHERE source_id = ?1 AND epg_id = ?2 AND stop > ?3 - ?5 AND start < ?4 - ?5
           ORDER BY start",
     )?;
     let rows = stmt
-        .query_map(params![source_id, epg_id, from, to], row_to_programme)?
+        .query_map(params![source_id, epg_id, from, to, shift], row_to_programme)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -415,6 +492,76 @@ mod tests {
         assert_eq!(out[0].description.as_deref(), Some("Cat & mouse"));
         assert_eq!(out[0].episode.as_deref(), Some("S02E05"));
         assert_eq!(out[0].category.as_deref(), Some("Kids"));
+    }
+
+    #[test]
+    fn placeholder_guide_ids_are_left_out() {
+        let c = crate::db::test_conn();
+        for (cat, region) in [("uk", "UK"), ("se", "SE")] {
+            c.execute(
+                "INSERT INTO category (source_id, kind, id, name, title, region, position) VALUES (1, 'live', ?1, ?1, ?1, ?2, 0)",
+                params![cat, region],
+            )
+            .unwrap();
+        }
+        let channel = |id: String, title: String, cat: &str, epg: &str| {
+            c.execute(
+                "INSERT INTO channel (source_id, id, name, title, category_id, epg_id, position) VALUES (1, ?1, ?2, ?2, ?3, ?4, 0)",
+                params![id, title, cat, epg],
+            )
+            .unwrap();
+        };
+        // 21 unrelated channels of two countries share "TS"…
+        for n in 0..21 {
+            channel(format!("ts{n}"), format!("Channel {n}"), if n % 2 == 0 { "uk" } else { "se" }, "TS");
+        }
+        // …22 regional ones of one country share their network's guide
+        for n in 0..22 {
+            channel(format!("svt{n}"), format!("SVT1 Region {n}"), "se", "svt1.se");
+        }
+        channel("bbc".into(), "BBC ONE".into(), "uk", "BBCOne.uk");
+        crate::works::rebuild(&c).unwrap();
+        let mut ids: Vec<String> = wanted_ids(&c, 1).unwrap().into_iter().collect();
+        ids.sort();
+        assert_eq!(ids, ["BBCOne.uk", "svt1.se"]);
+    }
+
+    #[test]
+    fn overlapping_programmes_are_untangled() {
+        let p = |start: i64, stop: i64, title: &str| (start, stop, title.to_owned());
+        // the same slot again a minute later (two schedules merged): dropped
+        let merged = [p(0, 3540, "Hygge i hagen"), p(60, 3600, "hygge i hagen "), p(3540, 7080, "Bakemesterskapet")];
+        assert_eq!(untangle(&merged), vec![Fix::Drop(60)]);
+        // another programme starting early ends the one before
+        let early = [p(0, 3300, "Couples Come Dine with Me"), p(300, 1800, "The Simpsons"), p(1800, 3300, "The Simpsons")];
+        assert_eq!(untangle(&early), vec![Fix::End(0, 300)]);
+        assert!(untangle(&[p(0, 60, "A"), p(60, 120, "B")]).is_empty());
+
+        // the import applies it to the channels it replaced
+        let mut c = crate::db::test_conn();
+        let now = crate::db::now();
+        let at = |offset: i64| {
+            chrono::DateTime::from_timestamp(now + offset, 0).unwrap().format("%Y%m%d%H%M%S +0000").to_string()
+        };
+        let prog = |title: &str, start: i64, stop: i64| {
+            format!(r#"<programme start="{}" stop="{}" channel="c4"><title>{title}</title></programme>"#, at(start), at(stop))
+        };
+        let doc = format!(
+            "<tv>{}{}{}</tv>",
+            prog("Couples Come Dine with Me", 0, 3300),
+            prog("The Simpsons", 300, 1800),
+            prog("The Simpsons", 360, 1860)
+        );
+        let r = import(&mut c, 1, doc.as_bytes(), &HashSet::new(), 2).unwrap();
+        assert_eq!((r.programmes, r.untangled), (3, 2));
+        let rows: Vec<(i64, i64, String)> = c
+            .prepare("SELECT start - ?1, stop - ?1, title FROM programme ORDER BY start")
+            .unwrap()
+            .query_map([now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(rows, vec![(0, 300, "Couples Come Dine with Me".into()), (300, 1800, "The Simpsons".into())]);
     }
 
     #[test]
