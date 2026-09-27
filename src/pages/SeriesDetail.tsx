@@ -9,6 +9,7 @@ import { openExternal, youtubeUrl } from "../lib/open";
 import { playEpisode } from "../lib/play";
 import type { Episode, SeriesDetail } from "../lib/types";
 import { DetailHero, Facts, MetaDot } from "../components/DetailHero";
+import { VersionPill, Versions } from "../components/Versions";
 import { Artwork } from "../components/media";
 import { Badge, Button, EmptyState, IconButton, ProgressBar, Spinner } from "../components/ui";
 
@@ -22,6 +23,8 @@ export function SeriesDetailPage() {
     queryKey: ["series-detail", sid, id],
     queryFn: () => api.seriesDetail(sid, id!),
     enabled: !!id,
+    // other versions' episode lists still loading: ask again a few times
+    refetchInterval: (query) => (query.state.data?.versionsPending && query.state.dataUpdateCount < 6 ? 3000 : false),
   });
   const s = q.data;
   const [season, setSeason] = useState<number | null>(() => (params.get("season") ? Number(params.get("season")) : null));
@@ -81,6 +84,7 @@ export function SeriesDetailPage() {
             ) : null}
           </>
         }
+        badges={s.versions.length > 1 ? <VersionPill versions={s.versions} /> : undefined}
         actions={
           <>
             {resumeEp && (
@@ -110,9 +114,10 @@ export function SeriesDetailPage() {
       />
 
       {s.seasons.length === 0 ? (
-        <EmptyState title="No episodes available" text="The provider has not published any episodes for this series yet." />
+        <EmptyState className="relative" title="No episodes available" text="The provider has not published any episodes for this series yet." />
       ) : (
-        <section className="px-10">
+        // positioned: the hero's backdrop reaches down here and would cover the tabs
+        <section className="relative px-10">
           <div className="no-scrollbar mb-5 flex gap-2 overflow-x-auto">
             {s.seasons.map((x) => (
               <button
@@ -136,9 +141,10 @@ export function SeriesDetailPage() {
                 highlighted={e.id === s.resume?.episodeId}
                 onPlay={() => void playEpisode(s, e, navigate)}
                 onToggleWatched={async () => {
-                  // same fields as a playback save (stores/player.ts saveProgress)
-                  await api.markWatched("episode", s.sourceId, e.id, !e.watched, {
-                    seriesId: s.id,
+                  // same fields as a playback save (stores/player.ts saveProgress);
+                  // the episode's own copy of the series
+                  await api.markWatched("episode", e.sourceId, e.id, !e.watched, {
+                    seriesId: e.seriesId,
                     season: e.season,
                     episode: e.episode,
                     title: s.title,
@@ -155,6 +161,17 @@ export function SeriesDetailPage() {
           </div>
         </section>
       )}
+      <div className="relative mt-10">
+        <Versions
+          kind="series"
+          versions={s.versions}
+          pending={s.versionsPending}
+          onPicked={() => {
+            void qc.invalidateQueries({ queryKey: ["series-detail", sid, id] });
+            void qc.invalidateQueries({ queryKey: ["continue"] });
+          }}
+        />
+      </div>
       <div className="mt-10">
         <Facts
           items={[
@@ -162,6 +179,20 @@ export function SeriesDetailPage() {
             ["Cast", s.cast],
             ["Genre", s.genre],
             ["First aired", s.releaseDate],
+            [
+              "Network",
+              s.tmdb?.networks.length ? (
+                <span className="flex flex-wrap gap-x-3">
+                  {s.tmdb.networks.map((n) => (
+                    <button key={n} className="font-medium text-accent-strong hover:text-fg" onClick={() => navigate(`/series?network=${encodeURIComponent(n)}`)}>
+                      {n}
+                    </button>
+                  ))}
+                </span>
+              ) : null,
+            ],
+            ["Country", s.tmdb?.countries.length ? s.tmdb.countries.join(", ") : null],
+            ["Original language", s.tmdb?.originalLanguage],
           ]}
         />
       </div>
@@ -205,6 +236,14 @@ function EpisodeRow({
           <span className="text-sm font-semibold text-faint">{e.episode}</span>
           <span className="truncate text-[15px] font-semibold">{e.title}</span>
           {res && <Badge>{res}</Badge>}
+          {e.version && (
+            <span
+              title={`Not in the chosen version: plays from ${e.version}`}
+              className="shrink-0 truncate rounded-[5px] bg-gold/15 px-1.5 text-[11.5px] font-semibold leading-5 text-gold"
+            >
+              {e.version}
+            </span>
+          )}
         </div>
         <div className="mt-0.5 flex items-center gap-2 text-[13px] text-faint">
           {e.duration ? <span>{duration(e.duration)}</span> : null}

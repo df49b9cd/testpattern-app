@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ago, clock, duration, elapsed, initials, resolutionLabel } from "./format";
+import { ago, channelsLabel, clock, duration, elapsed, initials, languageName, resolutionLabel, seasonsLabel } from "./format";
 
 describe("clock", () => {
   it("shows minutes, and hours when needed", () => {
@@ -67,5 +67,24 @@ describe("resolutionLabel", () => {
     expect(resolutionLabel(1280, 720)).toBe("720p");
     expect(resolutionLabel(720, 576)).toBe("SD");
     expect(resolutionLabel(null, 1080)).toBeNull();
+  });
+});
+
+describe("track labels", () => {
+  it("names track languages from 2- and 3-letter codes", () => {
+    expect(languageName("dan")).toBe("Danish");
+    expect(languageName("da")).toBe("Danish");
+    expect(languageName("ger")).toBe("German");
+    expect(languageName("swe")).toBe("Swedish");
+    expect(languageName("und")).toBeNull();
+    expect(languageName(null)).toBeNull();
+    expect(languageName("qqq")).toBe("QQQ");
+  });
+  it("labels channels and season coverage", () => {
+    expect(channelsLabel(6)).toBe("5.1");
+    expect(channelsLabel(2)).toBe("Stereo");
+    expect(seasonsLabel([5])).toBe("Season 5");
+    expect(seasonsLabel([3, 1, 2, 5])).toBe("Seasons 1–3, 5");
+    expect(seasonsLabel([])).toBe("");
   });
 });

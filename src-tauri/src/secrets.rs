@@ -1,13 +1,15 @@
-//! Source passwords in the desktop keyring — the Secret Service API that
-//! KWallet and GNOME Keyring provide — with the database as the fallback
-//! when no keyring is available (T-046).
+//! Source passwords and other app secrets (the TMDB key, `NAMED`) in the
+//! desktop keyring — the Secret Service API that KWallet and GNOME Keyring
+//! provide — with the database as the fallback when no keyring is available
+//! (T-046).
 //!
-//! The rest of the app keeps reading passwords through `sources::load`: this
-//! module fills an in-memory cache from the keyring (`startup`,
-//! `ensure_loaded`) and whenever a password is stored. Prompts: storing a
-//! password the user just typed, or a sync the user started, may show the
-//! keyring's unlock prompt; background work never does — existing plaintext
-//! passwords are moved over only while the keyring is unlocked.
+//! The rest of the app keeps reading passwords through `sources::load` and
+//! secrets through `named`: this module fills in-memory caches from the
+//! keyring (`startup`, `ensure_loaded`) and whenever a secret is stored.
+//! Prompts: storing a secret the user just typed, or a sync the user started,
+//! may show the keyring's unlock prompt; background work never does —
+//! existing plaintext secrets are moved over only while the keyring is
+//! unlocked.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -24,8 +26,21 @@ use crate::state::AppState;
 pub const UNAVAILABLE: &str = "The password is stored in the system keyring, which is locked or not available. \
      Unlock the keyring (KWallet, GNOME Keyring) and sync again, or enter the password again.";
 
+/// App secrets besides source passwords that belong in the keyring: the
+/// setting that holds one when there is no keyring → the entry's label.
+pub const NAMED: &[(&str, &str)] = &[(crate::tmdb::KEY_SETTING, "TMDB API key")];
+
 /// Passwords read from the keyring, by source id.
 static CACHE: LazyLock<Mutex<HashMap<i64, String>>> = LazyLock::new(Default::default);
+/// `NAMED` secrets read from the keyring, by setting key.
+static NAMED_CACHE: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+
+/// What a keyring entry belongs to.
+#[derive(Debug, Clone, Copy)]
+enum Entry<'a> {
+    Source(i64),
+    Named(&'a str),
+}
 
 /// Password of a source whose secret lives in the keyring (None: not loaded —
 /// keyring locked or unavailable).
@@ -93,15 +108,23 @@ mod backend {
 
     use secret_service::{EncryptionType, SecretService};
 
-    use super::Unlock;
+    use super::{Entry, Unlock};
     use crate::error::{Error, Result};
 
     fn err(e: secret_service::Error) -> Error {
         Error::msg(format!("keyring: {e}"))
     }
 
-    fn attributes<'a>(profile: &'a str, source: &'a str) -> HashMap<&'a str, &'a str> {
-        HashMap::from([("application", "testpattern"), ("profile", profile), ("source", source)])
+    fn attributes(profile: &str, entry: Entry) -> Vec<(&'static str, String)> {
+        let (key, value) = match entry {
+            Entry::Source(id) => ("source", id.to_string()),
+            Entry::Named(name) => ("name", name.to_owned()),
+        };
+        vec![("application", "testpattern".into()), ("profile", profile.into()), (key, value)]
+    }
+
+    fn map<'a>(attrs: &'a [(&'static str, String)]) -> HashMap<&'a str, &'a str> {
+        attrs.iter().map(|(k, v)| (*k, v.as_str())).collect()
     }
 
     /// Encrypted transfer where the keyring offers it; plain otherwise (the
@@ -115,7 +138,7 @@ mod backend {
 
     /// Stores (replaces) the secret; Ok(false) when the keyring is locked and
     /// `unlock` forbids prompting.
-    pub async fn store(profile: &str, source_id: i64, label: &str, password: &str, unlock: Unlock) -> Result<bool> {
+    pub async fn store(profile: &str, entry: Entry<'_>, label: &str, password: &str, unlock: Unlock) -> Result<bool> {
         let ss = connect().await?;
         let collection = ss.get_default_collection().await.map_err(err)?;
         if collection.is_locked().await.map_err(err)? {
@@ -124,9 +147,8 @@ mod backend {
             }
             collection.unlock().await.map_err(err)?;
         }
-        let source = source_id.to_string();
         collection
-            .create_item(label, attributes(profile, &source), password.as_bytes(), true, "text/plain")
+            .create_item(label, map(&attributes(profile, entry)), password.as_bytes(), true, "text/plain")
             .await
             .map_err(err)?;
         Ok(true)
@@ -134,10 +156,9 @@ mod backend {
 
     /// The secret, or Ok(None) when there is no entry. A locked keyring is
     /// unlocked when `unlock` allows it.
-    pub async fn load(profile: &str, source_id: i64, unlock: Unlock) -> Result<Option<String>> {
+    pub async fn load(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<Option<String>> {
         let ss = connect().await?;
-        let source = source_id.to_string();
-        let found = ss.search_items(attributes(profile, &source)).await.map_err(err)?;
+        let found = ss.search_items(map(&attributes(profile, entry))).await.map_err(err)?;
         let item = match (found.unlocked.first(), found.locked.first()) {
             (Some(item), _) => item,
             (None, Some(_)) if unlock == Unlock::Never => return Err(Error::msg("keyring: locked")),
@@ -152,10 +173,9 @@ mod backend {
     }
 
     /// Removes the entry, unlocking the keyring first when `unlock` allows it.
-    pub async fn delete(profile: &str, source_id: i64, unlock: Unlock) -> Result<()> {
+    pub async fn delete(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<()> {
         let ss = connect().await?;
-        let source = source_id.to_string();
-        let found = ss.search_items(attributes(profile, &source)).await.map_err(err)?;
+        let found = ss.search_items(map(&attributes(profile, entry))).await.map_err(err)?;
         if !found.locked.is_empty() {
             if unlock == Unlock::Never {
                 return Err(Error::msg("keyring: locked"));
@@ -171,17 +191,17 @@ mod backend {
 
 #[cfg(not(target_os = "linux"))]
 mod backend {
-    //! No keyring integration yet (T-028): passwords stay in the database.
-    use super::Unlock;
+    //! No keyring integration yet (T-028): secrets stay in the database.
+    use super::{Entry, Unlock};
     use crate::error::{Error, Result};
 
-    pub async fn store(_: &str, _: i64, _: &str, _: &str, _: Unlock) -> Result<bool> {
+    pub async fn store(_: &str, _: Entry<'_>, _: &str, _: &str, _: Unlock) -> Result<bool> {
         Err(Error::msg("keyring: not supported on this platform"))
     }
-    pub async fn load(_: &str, _: i64, _: Unlock) -> Result<Option<String>> {
+    pub async fn load(_: &str, _: Entry<'_>, _: Unlock) -> Result<Option<String>> {
         Err(Error::msg("keyring: not supported on this platform"))
     }
-    pub async fn delete(_: &str, _: i64, _: Unlock) -> Result<()> {
+    pub async fn delete(_: &str, _: Entry<'_>, _: Unlock) -> Result<()> {
         Ok(())
     }
 }
@@ -198,7 +218,7 @@ pub async fn move_to_keyring(st: &AppState, source_id: i64, password: &str, unlo
         (profile, name)
     };
     let label = format!("testpattern: {name}");
-    match timed(unlock, backend::store(&profile, source_id, &label, password, unlock)).await {
+    match timed(unlock, backend::store(&profile, Entry::Source(source_id), &label, password, unlock)).await {
         Ok(true) => {
             remember(source_id, password);
             match clear_plaintext(&st.db.write(), source_id) {
@@ -238,7 +258,7 @@ fn scrub(conn: &Connection) {
     let t = std::time::Instant::now();
     match conn.execute_batch("VACUUM").and_then(|()| conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())))
     {
-        Ok(()) => log::info!("database rebuilt without old password copies ({} ms)", t.elapsed().as_millis()),
+        Ok(()) => log::info!("database rebuilt without old copies of secrets ({} ms)", t.elapsed().as_millis()),
         Err(e) => log::warn!("could not rebuild the database: {e}"),
     }
 }
@@ -248,13 +268,115 @@ fn scrub(conn: &Connection) {
 pub async fn forget(st: &AppState, source_id: i64) {
     uncache(source_id);
     let Ok(profile) = profile_id(&st.db.write()) else { return };
-    if let Err(e) = timed(Unlock::Prompt, backend::delete(&profile, source_id, Unlock::Prompt)).await {
+    if let Err(e) = timed(Unlock::Prompt, backend::delete(&profile, Entry::Source(source_id), Unlock::Prompt)).await {
         log::warn!("keyring: could not delete the entry of source {source_id}: {e}");
     }
 }
 
+// ------------------------------------------------------------ named secrets
+
+/// The setting marking that a `NAMED` secret lives in the keyring.
+fn flag(name: &str) -> String {
+    format!("{name}.inKeyring")
+}
+
+fn setting(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+        .and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s),
+            serde_json::Value::Bool(true) => Some("true".into()),
+            _ => None,
+        })
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// Is the `NAMED` secret stored (keyring or database)?
+pub fn named_configured(conn: &Connection, name: &str) -> bool {
+    setting(conn, &flag(name)).is_some() || setting(conn, name).is_some()
+}
+
+/// A `NAMED` secret: from the keyring cache when it lives there (None while
+/// the keyring is locked), else the database setting.
+pub fn named(conn: &Connection, name: &str) -> Option<String> {
+    if setting(conn, &flag(name)).is_some() {
+        NAMED_CACHE.lock().get(name).cloned()
+    } else {
+        setting(conn, name).map(|s| s.trim().to_owned())
+    }
+}
+
+fn label_of(name: &str) -> &'static str {
+    NAMED.iter().find(|(k, _)| *k == name).map_or("secret", |(_, l)| l)
+}
+
+/// Stores a `NAMED` secret: in the keyring (the database keeps no copy), or
+/// — without one — in the database setting `name`. Returns whether it went
+/// into the keyring.
+pub async fn store_named(st: &AppState, name: &str, secret: &str, unlock: Unlock) -> Result<bool> {
+    let profile = profile_id(&st.db.write())?;
+    let label = format!("testpattern: {}", label_of(name));
+    match timed(unlock, backend::store(&profile, Entry::Named(name), &label, secret, unlock)).await {
+        Ok(true) => {
+            NAMED_CACHE.lock().insert(name.to_owned(), secret.to_owned());
+            clear_plaintext_setting(&st.db.write(), name)?;
+            Ok(true)
+        }
+        stored => {
+            match stored {
+                Ok(_) => log::info!("{name}: keyring locked, stored in the database for now"),
+                Err(e) => log::info!("{name}: stored in the database ({e})"),
+            }
+            let conn = st.db.write();
+            conn.execute("DELETE FROM setting WHERE key = ?1", [flag(name)])?;
+            conn.execute(
+                "INSERT INTO setting (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![name, serde_json::to_string(secret)?],
+            )?;
+            NAMED_CACHE.lock().remove(name);
+            Ok(false)
+        }
+    }
+}
+
+/// Removes a `NAMED` secret everywhere; the keyring entry goes in the
+/// background (a locked keyring asks first).
+pub fn forget_named(st: &AppState, name: &str) -> Result<()> {
+    {
+        let conn = st.db.write();
+        clear_plaintext_setting(&conn, name)?;
+        conn.execute("DELETE FROM setting WHERE key = ?1", [flag(name)])?;
+    }
+    NAMED_CACHE.lock().remove(name);
+    let (st, name) = (st.clone(), name.to_owned());
+    tauri::async_runtime::spawn(async move {
+        let Ok(profile) = profile_id(&st.db.write()) else { return };
+        if let Err(e) = timed(Unlock::Prompt, backend::delete(&profile, Entry::Named(&name), Unlock::Prompt)).await {
+            log::warn!("keyring: could not delete {name}: {e}");
+        }
+    });
+    Ok(())
+}
+
+/// Deletes the database copy of a `NAMED` secret (freed space zeroed, WAL
+/// truncated) and marks it as living in the keyring.
+fn clear_plaintext_setting(conn: &Connection, name: &str) -> Result<()> {
+    conn.query_row("PRAGMA secure_delete = ON", [], |_| Ok(()))?;
+    let done = conn.execute("DELETE FROM setting WHERE key = ?1", [name]).and_then(|_| {
+        conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?1, 'true')", [flag(name)])
+    });
+    conn.query_row("PRAGMA secure_delete = OFF", [], |_| Ok(()))?;
+    done?;
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    Ok(())
+}
+
 /// Loads the keyring passwords that aren't in the cache yet (at startup, and
 /// again later when the keyring was locked then) — all, or `only` one source.
+/// Without `only`, the `NAMED` secrets that live in the keyring too.
 pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
     let (profile, missing) = {
         let conn = st.db.write();
@@ -262,7 +384,18 @@ pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
             .prepare("SELECT id FROM source WHERE password_in_keyring = 1 AND (?1 IS NULL OR id = ?1)")
             .and_then(|mut s| s.query_map([only], |r| r.get(0))?.collect())
             .unwrap_or_default();
-        let missing: Vec<i64> = ids.into_iter().filter(|id| cached(*id).is_none()).collect();
+        let mut missing: Vec<Entry<'static>> =
+            ids.into_iter().filter(|id| cached(*id).is_none()).map(Entry::Source).collect();
+        if only.is_none() {
+            missing.extend(
+                NAMED
+                    .iter()
+                    .filter(|(name, _)| {
+                        setting(&conn, &flag(name)).is_some() && !NAMED_CACHE.lock().contains_key(*name)
+                    })
+                    .map(|(name, _)| Entry::Named(name)),
+            );
+        }
         if missing.is_empty() {
             return;
         }
@@ -270,12 +403,15 @@ pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
         (profile, missing)
     };
     let mut unlock = unlock;
-    for id in missing {
-        match timed(unlock, backend::load(&profile, id, unlock)).await {
-            Ok(Some(password)) => remember(id, &password),
-            Ok(None) => log::warn!("keyring: no password stored for source {id}"),
-            Err(e) => {
-                log::warn!("keyring: password of source {id} unavailable ({e})");
+    for entry in missing {
+        match (timed(unlock, backend::load(&profile, entry, unlock)).await, entry) {
+            (Ok(Some(secret)), Entry::Source(id)) => remember(id, &secret),
+            (Ok(Some(secret)), Entry::Named(name)) => {
+                NAMED_CACHE.lock().insert(name.to_owned(), secret);
+            }
+            (Ok(None), _) => log::warn!("keyring: nothing stored for {entry:?}"),
+            (Err(e), _) => {
+                log::warn!("keyring: {entry:?} unavailable ({e})");
                 // one prompt per attempt: the user said no (or isn't there)
                 unlock = Unlock::Never;
             }
@@ -295,12 +431,27 @@ pub async fn startup(st: &AppState) {
             .unwrap_or_default()
     };
     let mut moved = 0;
+    let mut blocked = false;
     for (id, password) in plaintext {
         if !move_to_keyring(st, id, &password, Unlock::Never).await {
-            break; // locked or unavailable: the others would fail the same way
+            blocked = true; // locked or unavailable: the others would fail the same way
+            break;
         }
         log::info!("source {id}: password moved to the system keyring");
         moved += 1;
+    }
+    for (name, _) in NAMED {
+        let plain = setting(&st.db.read(), name).filter(|_| setting(&st.db.read(), &flag(name)).is_none());
+        if blocked || plain.is_none() {
+            continue;
+        }
+        match store_named(st, name, plain.as_deref().unwrap_or_default().trim(), Unlock::Never).await {
+            Ok(true) => {
+                log::info!("{name}: moved to the system keyring");
+                moved += 1;
+            }
+            _ => blocked = true,
+        }
     }
     if moved > 0 {
         let st = st.clone();
@@ -331,6 +482,58 @@ mod tests {
         let ss = SecretService::connect(EncryptionType::Dh).await.expect("encrypted session");
         let default = ss.get_default_collection().await.expect("default collection");
         println!("default collection {:?}, locked: {:?}", default.get_label().await, default.is_locked().await);
+    }
+
+    #[test]
+    fn named_secrets_come_from_the_keyring_once_moved() {
+        let c = crate::db::test_conn();
+        let name = "test.secret";
+        assert!(!named_configured(&c, name));
+        c.execute("INSERT INTO setting (key, value) VALUES (?1, '\"abc123\"')", [name]).unwrap();
+        assert!(named_configured(&c, name));
+        assert_eq!(named(&c, name).as_deref(), Some("abc123"));
+        clear_plaintext_setting(&c, name).unwrap();
+        assert!(named_configured(&c, name), "still configured: it lives in the keyring");
+        assert_eq!(named(&c, name), None, "not loaded from the keyring yet (locked)");
+        NAMED_CACHE.lock().insert(name.to_owned(), "abc123".into());
+        assert_eq!(named(&c, name).as_deref(), Some("abc123"));
+        NAMED_CACHE.lock().remove(name);
+    }
+
+    #[test]
+    fn moving_a_named_secret_leaves_no_copy_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("tp-secrets-named-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("library.db");
+        let db = crate::db::Db::open(&path).unwrap();
+        let (old, new) = (format!("old-{}", "5e2a7c91".repeat(10)), format!("new-{}", "b04f13d6".repeat(12)));
+        {
+            let conn = db.write();
+            let set = |v: &str| {
+                conn.execute(
+                    "INSERT INTO setting (key, value) VALUES ('test.secret', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [serde_json::to_string(v).unwrap()],
+                )
+                .unwrap()
+            };
+            set(&old);
+            // settings saved later sit in front of it on the page
+            conn.execute("INSERT INTO setting (key, value) VALUES ('ui.zzz', '1')", []).unwrap();
+            set(&new); // the user entered another key
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
+            clear_plaintext_setting(&conn, "test.secret").unwrap();
+            scrub(&conn);
+            assert!(named_configured(&conn, "test.secret"));
+        }
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend(std::fs::read(dir.join("library.db-wal")).unwrap_or_default());
+        for secret in [&old, &new] {
+            let piece = &secret.as_bytes()[20..40];
+            assert!(!bytes.windows(piece.len()).any(|w| w == piece), "plaintext still on disk");
+        }
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

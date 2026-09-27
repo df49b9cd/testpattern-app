@@ -58,6 +58,17 @@ import, image proxy, libmpv control. UI talks to it via Tauri commands/events.
   since 2026-09-26: libva loads `/usr/lib64/dri-freeworld/…`, so H.264/HEVC
   channels show `vaapi` here). GLX (X11) sessions can't import dmabufs →
   `vaapi-copy`.
+- **One entry per title ("works"), one row per channel.** Providers list
+  the same film/show several times (per service, market language, quality)
+  and the same channel in several feeds (RAW/HD/SD/HEVC/4K). The catalog
+  keeps every provider entry; `src-tauri/src/works/` groups them after each
+  sync (`works::rebuild`, ~2 s): movies/series by TMDB id (else normalized
+  title + year) into `work` rows with browse facets (`work_facet`), live
+  feeds by country + normalized name into `channel_group`. Lists, search,
+  Home, favorites, continue watching and Up next work on these groups;
+  detail pages list the copies as **versions** (T-050…T-053). Optional TMDB
+  details (user's own API key, `tmdb.rs`, T-054) add genres, original
+  language, collections and TV networks.
 - **Credentials stay in the backend.** The UI refers to items by
   `(sourceId, itemId)`; stream URLs (which embed credentials) are built in Rust.
   At rest, source passwords live in the desktop keyring (Secret Service:
@@ -107,7 +118,7 @@ FFmpeg files, a nasm GP fault in libc) while the same files compile fine
 alone — likely hardware instability under all-core load. Build with
 `TP_JOBS=16 CARGO_BUILD_JOBS=16` (`build-media.sh` reads `TP_JOBS`).
 
-`scripts/smoke.sh` (~35 s, 22 checks) plays at most one stream at a time and
+`scripts/smoke.sh` (~45 s, 30 checks) plays at most one stream at a time and
 runs one full catalog sync of the headless profile. Its GPU-decoding check
 serves a local VP9 clip (made once with the system ffmpeg) from a temporary
 server on 127.0.0.1:18556 and is skipped where that isn't possible.
@@ -124,7 +135,13 @@ lists the app's entries (prints secrets — test profile only).
 
 **Test accounts** live in the gitignored `.env.local` (keys
 `TP_XTREAM_SERVER`, `TP_XTREAM_USER_1/PASS_1`, `..._2`, `TP_XTREAM_MIRRORS`;
-template: `.env.example`).
+template: `.env.example`). The user's **TMDB** credentials are there too
+(`TP_TMDB_TOKEN` = v4 read access token, `TP_TMDB_KEY` = v3 API key);
+`scripts/headless.sh tmdb` (also run by `seed`) gives the token to the
+headless profile over stdin. In the app it is entered in Settings →
+Metadata and kept in the system keyring like the source passwords (the
+database only where there is no keyring); it is never shown back to the UI
+or logged.
 **Each account allows ONE concurrent stream** — never play/probe two streams on
 the same account at once. Never commit or print credentials.
 
@@ -238,9 +255,12 @@ Every dependency must be on its **latest stable** release. Audited
 | `src-tauri/src/db.rs` | SQLite pool + schema migrations (+ `test_conn()` for unit tests) |
 | `src-tauri/src/sources/` | `xtream.rs` API client (+ mirrors) · `m3u.rs` parser · `mod.rs` CRUD + sync |
 | `src-tauri/src/epg.rs` | XMLTV streaming import + programme queries |
-| `src-tauri/src/catalog.rs` | Browse/detail/guide/search/up-next commands |
+| `src-tauri/src/catalog.rs` | Browse/detail/guide/search/up-next commands; works queries + facets, channel groups (`live_nav`, `channel_variants`), versions on detail pages |
+| `src-tauri/src/works/` | Grouping: `mod.rs` keys + `rebuild` (works, facets, channel groups, TMDB fold-in) · `variant.rs` what a copy is (service/origin/language/quality from tag + category, ranking) · `versions.rs` members, version choice, `work_prefer`, learned tracks · `genre.rs` genre words (several languages), live genres, countries · `lang.rs` ISO 639-1 names |
+| `src-tauri/src/tmdb.rs` | Optional TMDB details (user's key): background fetch (25 req/s), `tmdb` table, status/key commands |
+| `src-tauri/src/probe.rs` | "Check audio & subtitles": opens one version briefly in a second, silent mpv (only while nothing plays) |
 | `src-tauri/src/library.rs` | Favorites, history, watched state, continue watching, recent channels |
-| `src-tauri/src/playback.rs` | `play` command (URL building, catch-up, failover) |
+| `src-tauri/src/playback.rs` | `play` command (URL building via `resolve`, catch-up, failover; tells the player what plays so it can learn its tracks) |
 | `src-tauri/src/images.rs` | `img://` artwork proxy with disk cache/resize |
 | `src-tauri/src/settings.rs` | Settings store + mpv application |
 | `src-tauri/src/secrets.rs` | Source passwords in the desktop keyring (Secret Service), database fallback, one-time migration |
@@ -248,8 +268,8 @@ Every dependency must be on its **latest stable** release. Audited
 | `src/main.tsx` | Entry; dev builds expose `window.__TP__` for automation |
 | `src/app/` | `App.tsx` providers · `router.tsx` routes · `Root.tsx` first-run redirect + global effects · `Layout.tsx` sidebar |
 | `src/pages/` | `Home` `Live` `Guide` `Movies` `MovieDetail` `Series` `SeriesDetail` `Search` `Settings` `Onboarding` `Player` |
-| `src/components/` | `ui.tsx` primitives · `media.tsx` artwork/cards/shelves · `PosterGrid.tsx` · `LibraryBrowser.tsx` · `DetailHero.tsx` · `SourceForm.tsx` · `PipPlayer.tsx` · `ErrorBoundary.tsx` |
-| `src/lib/` | `types.ts` (mirrors Rust JSON) · `api.ts` · `bridge.ts` · `queryClient.ts` · `img.ts` · `format.ts` · `play.ts` · `open.ts` |
+| `src/components/` | `ui.tsx` primitives · `media.tsx` artwork/cards/shelves · `PosterGrid.tsx` · `LibraryBrowser.tsx` (facet panel) · `Versions.tsx` (version picker) · `DetailHero.tsx` · `SourceForm.tsx` · `PipPlayer.tsx` · `ErrorBoundary.tsx` |
+| `src/lib/` | `types.ts` (mirrors Rust JSON) · `api.ts` · `bridge.ts` · `queryClient.ts` · `img.ts` · `format.ts` · `play.ts` · `open.ts` · `liveLists.ts` (Live/Guide list keys) |
 | `src/stores/` | `player.ts` (now playing, mpv props, progress saving, viewport) · `sync.ts` |
 | `src/hooks/` | `useBackendEvents` · `useProgressSaver` · `useVideoViewport` · `useSpatialNav` |
 
@@ -748,26 +768,174 @@ UHF/Infuse feature, **P2** = later.
   (AppImage only via the portable build). Not tested: Debian 13 itself (its
   t64 package names match Ubuntu 24.04's).
 
+- **T-037 CI pipeline** — `.github/workflows/ci.yml` on the private repo
+  `df49b9cd/testpattern-app`: `scripts/check.sh` on Ubuntu 24.04 for pushes
+  and pull requests, portable bundles for `v*` tags and manual runs. First
+  green run on PR #1 (T-049 + T-037, 2026-09-26), which the user merged
+  (`7bb128d`); the push run on `main` after the merge was green as well.
+
+- **T-050 Works: one entry per movie/series** — the provider lists films
+  and shows several times: series 11,069 entries = 7,802 TMDB ids (2,220
+  shows 2–6×), movies 39,236 = 25,365 ids (7,745 films 2–9×); 97% have a
+  TMDB id. `works::rebuild` (after every sync, source removal, and at
+  startup when `works::RULES_VERSION` ≠ setting `works.rules`) groups them:
+  key `tmdb:<id>`; an entry without id joins the TMDB group whose
+  normalized title + year match exactly once, else `title:<norm>|<year>`,
+  without a year `item:<source>:<id>` (`assign_keys`). Schema v7: `work_key`
+  on movie/series, `work` (title by weighted vote — English/service copies
+  count 3×, CAM 0 —, year, artwork, rating, genre, newest `added`, number of
+  versions, quality badges, services, representative copy), `work_facet`.
+  `movies`/`series_list`/`search`/Home return works (JSON: representative
+  `sourceId`/`id` + `key`, `versionCount`, `quality`, `services`); filters
+  match any copy (`w.key IN (SELECT work_key …)`), text filter on any copy's
+  title ("kastanjemanden" → The Chestnut Man). Favorites, continue watching
+  and Up next count a title once (`library::toggle_favorite` clears every
+  copy; `continue_watching` partitions history by work). Test catalog: 26,238
+  movies / 8,031 series works (1 s–2 s regroup in a debug build); lists
+  25–30 ms, search 2 ms ("for all mankind" → 1 result, 6 versions; "top
+  gun" → Top Gun (5), Top Gun: Maverick (6)). Unit tests in `works/` and
+  `catalog.rs`/`library.rs` (grouping, keys, favorites, continue watching).
+
+- **T-051 Versions and seasons on detail pages** — `movie_detail` /
+  `series_detail` list every copy as `versions` (`works/versions.rs`
+  `VersionInfo`: label from tag + category via `variant.rs` — service NF
+  Netflix, AMZ Prime Video, A+ Apple TV+, D+ Disney+/Discovery+ (by
+  category), VP Viaplay, P+ Paramount+, PCOK, SHWT, CR, SKY, NICK, MRVL,
+  PRMT, UNV, DWA; origin WEB/Blu-ray (`TOP`)/CAM; market EN/SC Nordic/SE/DK/
+  NO, "(SUB EN)", "(MULTI-SUBS)"; quality `4K-`, Dolby Vision, Dolby Audio
+  (`-DO`), HEVC — plus provider category, resolution/codec/channels/
+  duration/container from the provider detail, seasons + episode count, and
+  audio/subtitle tracks). Provider details of all copies are fetched at
+  once with a 2.5 s deadline (`details_of`; a copy that stalls — the
+  provider sometimes takes ~9 s — finishes into the cache and the page says
+  `versionsPending`, the UI refetches). **Which copy plays** (`choose`): the
+  user's pick (`work_pref`, `work_prefer` command) > the copy last watched >
+  best fit for the player's audio/subtitle languages (affinity 80/60/40/20
+  by preference rank; services, Blu-ray and multi-subs count as English) +
+  quality score (4K +6, DV +3, DA +2, Blu-ray +5, WEB +4, CAM −1000) +
+  completeness (series: share of episodes; movies: a copy much shorter than
+  the rest — trailers, cut-offs — loses). **Series:** seasons/episodes are
+  the union of all copies, each episode from the chosen copy when it has
+  it, else from the next best (the UI marks it with the copy's label);
+  watched state, resume and Up next match across copies by (season,
+  episode); `playEpisode` plays `ep.sourceId`/`ep.seriesId`; the player's
+  next-episode countdown finds the current episode by number. **Movies:**
+  the position carries over from the latest unfinished copy. **Tracks:** the
+  player stores what mpv sees in a movie/episode file (`track-list` +
+  HDR from `video-params`) in `media_info` (`player/mod.rs learn_tracks`);
+  copies nobody played get a "Check audio & subtitles" button, and the list
+  a "Check … of all" that checks them one after another (`probe.rs`: a
+  second mpv with `vo=null`, `ao=null`, `vid=no` opens the stream for ~1–2 s
+  and reads `track-list`; series try their first two episodes; refused
+  while anything plays — one stream per account — and `play` cancels a
+  running check first). A copy the server can't open is remembered
+  (`media_info` `{"unavailable":true}`): its card says so with "Check
+  again", and the automatic choice avoids it (`versions::BROKEN`). UI:
+  `components/Versions.tsx` (hero badge "Apple TV+ · 4K Dolby Vision · 6
+  versions", cards with picture/sound, seasons, languages — the viewer's
+  own first). Verified on For All Mankind: 6 copies (Nordic 4K DA and
+  Nordic: S5 only; Netflix: S1; Apple TV+ 4K DV and Apple TV+: S1–5; English
+  SD: S1–5) → 5 seasons; default Apple TV+ 4K DV; choosing Nordic plays S5
+  from it and S1–4 from Apple TV+ (marked); the 4K DV check found 10 audio
+  and 42 subtitle tracks in 1.2 s; "check all" did the other five in ~6 s:
+  Nordic 4K DA = English audio + 5 Nordic/English subtitle tracks, Netflix =
+  37 subtitle tracks, English SD = no subtitles, Nordic 1080p = its files
+  don't open on the provider (both servers). Detail 24 ms warm.
+
+- **T-052 Browse Movies and Series by facets** — `LibraryBrowser.tsx`: a
+  left panel instead of the 83/67-chip row: All · Favorites · Services ·
+  Genres · Networks · Collections · Languages · Original language ·
+  Quality · Decades · Provider categories (grouped by service/language,
+  names via `names::display_category`). Facets combine (AND, one value per
+  facet, in the URL: `?service=Netflix&genre=Crime&fav=1`), with sort and the
+  text filter; counts are works and follow the other active filters
+  (`work_facets(kind, query)` counts each facet without its own choice);
+  removable filter chips above the grid; poster cards show "4K"/"DV" and
+  "6 versions". Genres: series from the provider's (TMDB-style, partly
+  Swedish/Danish/Norwegian) genre text, movies from category names — the
+  movie list has no genre field, so only 44% of movies had one before
+  TMDB (T-054, now 98%). Facet queries 70–95 ms.
+
+- **T-053 Live TV: channels, feeds, countries and genres** — 19,921 feeds →
+  17,425 channels (`channel_group`, key `<region>|<name>` with quality words
+  and "*MULTI-AUDIO*" folded, "+" kept: "Sky Sports+" ≠ "Sky Sports"); e.g.
+  UK "SKY SPORTS F1" = 16 feeds. Genre per channel from its categories
+  (`live_from_category`: PPV/EVENT → Events & PPV, NEWS, KIDS, SPORT, 24/7,
+  MOVIES/CINEMA, DOCUMENTARY, MUSIC, ENTERTAINMENT) else its name. Live page:
+  Countries | Genres | Provider switch; countries (the viewer's languages
+  first) unfold into genres and vice versa; a country lists its regular
+  channels first, event feeds last, and within a genre the channels with
+  guide data first (UK: BBC One, BBC 2, ITV 1 … rather than the provider's
+  24/7 "PRIME" feeds, which sort first by position); Favorites/Recent/All
+  and the country/
+  genre lists show one row per channel playing its chosen feed (the user's
+  pick → a favorited feed → best quality: FHD > HD > RAW > none > 4K,
+  HEVC −10, SD −20, EPG breaks ties); the preview pane lists the feeds as
+  chips ("RAW · HEVC · VIP · Dolby Audio", "4K", …) and remembers a pick
+  (`channel_prefer`, survives syncs). Provider mode keeps the raw
+  categories. Feeds without an EPG id use their channel's. Guide: countries
+  + genre selector, one row per channel; search and "recently watched" list
+  a channel once; zapping moves over channels. 7–50 ms per list.
+
+- **T-054 TMDB metadata** — with the user's TMDB key (Settings → Metadata;
+  v4 token as Bearer, or v3 key) `tmdb.rs` fetches `/3/movie/{id}` and
+  `/3/tv/{id}` for every work with a TMDB id — newest first, 25 requests/s,
+  8 at a time, 429s waited out, a 401 stops the run — into `tmdb` (schema
+  v8; 404 remembered; refetched after 30 days); runs 20 s after start, after
+  each full sync and when the key is saved (checked first with
+  `/3/authentication`). `works::rebuild` folds in genres (TMDB names through
+  `genre::from_text`), original language, collection (movies), networks
+  (series), and rating/year/poster/backdrop where the provider has none —
+  only when TMDB's title or year fits the provider's (`tmdb_fits`: some
+  entries carry another title's id). Detail pages show original language,
+  collection (links to the filtered grid), network, country. Status +
+  progress in Settings (`tmdb_status`, `tmdb://progress`); removing the key
+  stops a run. The key lives in the system keyring (`secrets::NAMED`, entry
+  "testpattern: TMDB API key"; database setting `tmdb.key` only without a
+  keyring): a key stored in the database moves over at startup while the
+  keyring is unlocked (secure delete + the one-time file rebuild), and a
+  locked keyring shows as an error in the status instead of "no key".
+  Attribution line as TMDB's terms ask (Settings, README).
+  First full run on the test catalog: 33,163 titles in ~23 min at 24/s (it
+  resumes after a restart), 32,964 found, 199 not on TMDB, no errors.
+  Effect: movies with a genre 44% → 98% (series 97%); new facets: 1,900
+  movie collections on 3,910 movies (Beck, Carry On, James Bond, …), 681 TV
+  networks on 7,550 shows (Netflix 1,848, Prime Video, BBC One, Apple TV,
+  …), 53 original languages (English 20,810 movies, Swedish 588, Danish 527,
+  …). Verified in the app: Series → Network "Apple TV" + Original language
+  English = 180 shows, other facet counts follow.
+
 ### 🟨 In progress
 
-- **T-037 (P2) CI pipeline** — started 2026-09-26: private repo
-  `df49b9cd/testpattern-app` created, `main` pushed, workflow written; first
-  run goes through a pull request (card below).
+_(nothing)_
 
 ### 🟦 To do
+
+#### T-055 (P2) TMDB: keep current, cover titles without an id
+- Refresh with TMDB's change lists instead of refetching everything after
+  30 days: `GET /3/movie/changes` and `/3/tv/changes` (`start_date`, at most
+  14 days back, paged) list ids changed since the last run; mark those
+  `tmdb` rows stale (`fetched_at = 0`) before `todo()` (`tmdb.rs`). Store the
+  last run date in a setting.
+- ~1,100 works have no TMDB id (`title:` keys). Look them up with
+  `GET /3/search/movie?query=<title>&year=<year>` / `/3/search/tv?query=…
+  &first_air_date_year=…`; accept a single exact normalized-title match
+  (`works::norm_title`), store it as a mapping table (title key → TMDB id)
+  so `assign_keys` can put them into the TMDB group. Spec:
+  https://developer.themoviedb.org/openapi/tmdb-api.json.
+
+#### T-056 (P2) Versions: HDR in track checks
+- The track check (`probe.rs`) doesn't decode, so `hdr` is only set when
+  mpv lists `dolby-vision-profile` for the track (For All Mankind's "4K
+  Dolby Vision" copy reported none). HDR10/DV need `video-params` (decode
+  one frame: `vid=auto`, `hwdec=no`, paused, wait for `video-params` gamma
+  `pq`/`hlg`, then stop) — measure the time/CPU on a 4K HEVC stream first;
+  playback already records it (`learn_tracks`).
 
 #### T-028 (P2) Other platforms
 - Windows/macOS: libmpv render API with WGL/CGL contexts or `wid` embedding;
   build FFmpeg/mpv statically per platform. Mobile: HTML5 fallback player
   (hls.js) fed by a local Rust HTTP proxy that remuxes TS → HLS/fMP4.
-
-#### T-037 (P2) CI pipeline
-- GitHub Actions (or similar) on Fedora container: install the packages from
-  `scripts/fedora-sysroot.sh --print-packages` with dnf, cache
-  `third_party/prefix` keyed on the FFmpeg/mpv tags in
-  `scripts/build-media.sh`, run `scripts/check.sh`. The smoke test needs a
-  provider account → store `TP_XTREAM_*` as secrets and write `.env.local` in
-  the job; run inside `xvfb`/headless KWin (see `scripts/headless.sh`).
 
 ### ⛔ Blocked / needs the user
 - Pushing: only when the user asks (remote and project notes in §3 "Git").
@@ -867,3 +1035,40 @@ UHF/Infuse feature, **P2** = later.
   (after enabling rpmfusion-free — "No match" before; README/WORKLOG now
   say so). Verified: H.264 and 4K HEVC live channels decode as `vaapi`
   (numbers in T-029).
+- **2026-09-26 (session 3)** — User asked to check the project status, the
+  worklog and the finished work, "especially grouping of content": shows
+  exist several times per source (web-rip, Blu-ray…) with different
+  quality, subtitles and audio, have seasons, live channels should be
+  categorized, "actually all content should be categorized and grouped".
+  Status check first: `scripts/check.sh` and smoke (22/22) green; PR #1 (CI)
+  merged by the user, its CI run green (T-037 → Done). Built T-050…T-053
+  (works, versions with season union and version choice, facet browser,
+  channel groups with feeds and country/genre navigation) — see Done.
+  Mid-session the user supplied TMDB credentials (stored in `.env.local`,
+  never printed) and the TMDB OpenAPI URL → T-054. Bugs found on the way and
+  fixed: detail-page season tabs were hidden under the hero backdrop (the
+  backdrop overflows the hero; content below it is now positioned);
+  `+` dropped from channel keys merged "Sky Sports+" into "Sky Sports";
+  duplicated `versions` JSON key (count vs list) → `versionCount`; the
+  first track check returned nothing because mpv drops a file with neither
+  audio nor video selected. New follow-ups: T-055, T-056. Tests: 64 Rust
+  unit tests, 35 vitest, smoke 30 checks.
+- **2026-09-26 (session 4)** — User asked again for a status check; the
+  parallel session 3 had run out of quota with its work (T-050…T-054)
+  uncommitted in this checkout. Taken over: backed up the diff
+  (`.deps/takeover-2158/`), read its last steps (it had finished: smoke
+  30/30, TMDB fill done, worklog written), then re-verified everything
+  independently — `scripts/check.sh` (68 Rust unit tests incl. 4 new,
+  35 vitest), smoke 30/30, CSP clean across all pages, and the new UI by
+  hand (Series facet panel: 8,022 works; For All Mankind: 6 versions with
+  tracks, 5 seasons as a union; Live TV: countries/genres, 19,921 feeds →
+  17,425 channels). CI: PR #1 merged, main green. Found and fixed: the TMDB
+  key sat in the database in plaintext although T-046 moved credentials to
+  the keyring → now a keyring secret too (`secrets.rs` entries are generic:
+  source passwords + `NAMED`); verified in the headless session (plaintext
+  moved over, the DB and WAL no longer contain it, keyring value = the
+  `.env.local` one, setting it again stays in the keyring, status
+  unchanged). A country's channel list opened with 24/7 FAST feeds
+  (provider order) → guide channels first per genre (UK now opens with BBC
+  One London, BBC 1, BBC 2, ITV 1 …). Tests added for both. Nothing
+  committed yet (branch `content-grouping`, based on the merged PR #1).

@@ -1,31 +1,40 @@
 import clsx from "clsx";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, Clock, Heart, History, LayoutList, Maximize2, Search, Tv } from "lucide-react";
+import { ChevronDown, Clock, Heart, History, Layers, LayoutList, Maximize2, Search, Tv } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
 import { browserPreview } from "../lib/bridge";
 import { elapsed, hhmm, nowUnix } from "../lib/format";
+import { keyString, parseKey, queryFor, titleFor, type ListKey } from "../lib/liveLists";
 import { playChannel } from "../lib/play";
-import type { Category, Channel } from "../lib/types";
+import type { Category, Channel, LiveNav } from "../lib/types";
 import { usePlayer } from "../stores/player";
 import { useVideoViewport } from "../hooks/useVideoViewport";
 import { ChannelLogo } from "../components/media";
-import { Badge, Button, EmptyState, IconButton, LiveDot, ProgressBar, Spinner } from "../components/ui";
-
-export type ListKey = { type: "favorites" } | { type: "recent" } | { type: "all" } | { type: "cat"; sourceId: number; id: string };
-
-export function parseKey(v: string | null): ListKey {
-  if (!v || v === "favorites") return { type: "favorites" };
-  if (v === "recent" || v === "all") return { type: v };
-  const [sid, ...rest] = v.split(":");
-  return { type: "cat", sourceId: Number(sid), id: rest.join(":") };
-}
-export const keyString = (k: ListKey) => (k.type === "cat" ? `${k.sourceId}:${k.id}` : k.type);
+import { Badge, Button, EmptyState, IconButton, LiveDot, ProgressBar, Segmented, Spinner } from "../components/ui";
 
 const PAGE = 1000;
 const ROW = 68;
+
+type Mode = "countries" | "genres" | "provider";
+
+function stored<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : (JSON.parse(v) as T);
+  } catch {
+    return fallback;
+  }
+}
+function store(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* per-viewer convenience only */
+  }
+}
 
 export function LivePage() {
   const [params, setParams] = useSearchParams();
@@ -35,59 +44,83 @@ export function LivePage() {
   const [selected, setSelected] = useState<Channel | null>(null);
 
   const categories = useQuery({ queryKey: ["categories", "live"], queryFn: () => api.categories("live") });
+  const nav = useQuery({ queryKey: ["channels", "nav"], queryFn: api.liveNav });
 
-  // default to Favorites, or the first category when there are none
-  const favCount = useQuery({ queryKey: ["channels", "fav-count"], queryFn: () => api.channels({ favorites: true, limit: 1 }) });
+  // default to Favorites, or the viewer's first country when there are none
+  const favCount = useQuery({ queryKey: ["channels", "fav-count"], queryFn: () => api.channels({ grouped: true, favorites: true, limit: 1 }) });
   useEffect(() => {
-    if (!params.get("list") && favCount.data && favCount.data.total === 0 && categories.data?.length) {
-      const c = categories.data[0];
-      setKey({ type: "cat", sourceId: c.sourceId, id: c.id });
+    if (!params.get("list") && favCount.data && favCount.data.total === 0 && nav.data?.countries.length) {
+      setKey({ type: "nav", country: nav.data.countries[0].code ?? "" });
     }
-  }, [favCount.data, categories.data]);
+  }, [favCount.data, nav.data]);
 
   return (
     <div className="flex h-full">
-      <CategoryPane categories={categories.data ?? []} loading={categories.isLoading} active={key} onSelect={setKey} />
-      <ChannelPane listKey={key} categories={categories.data ?? []} filter={filter} setFilter={setFilter} selected={selected} onSelect={setSelected} />
-      <PreviewPane channel={selected} />
+      <ListPane categories={categories.data ?? []} nav={nav.data} loading={categories.isLoading || nav.isLoading} active={key} onSelect={setKey} />
+      <ChannelPane
+        listKey={key}
+        title={titleFor(key, nav.data, categories.data)}
+        filter={filter}
+        setFilter={setFilter}
+        selected={selected}
+        onSelect={setSelected}
+      />
+      <PreviewPane channel={selected} onChannel={setSelected} />
     </div>
   );
 }
 
-// ------------------------------------------------------------ categories
+// ----------------------------------------------------------------- lists
 
-function CategoryPane({
+function ListPane({
   categories,
+  nav,
   loading,
   active,
   onSelect,
 }: {
   categories: Category[];
+  nav?: LiveNav;
   loading: boolean;
   active: ListKey;
   onSelect: (k: ListKey) => void;
 }) {
+  const [mode, setModeState] = useState<Mode>(() => (active.type === "cat" ? "provider" : stored<Mode>("live.mode", "countries")));
+  const setMode = (m: Mode) => {
+    setModeState(m);
+    store("live.mode", m);
+  };
   const [q, setQ] = useState("");
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("live.collapsed") ?? "{}");
-    } catch {
-      return {};
-    }
-  });
-  const toggle = (region: string) =>
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => stored("live.collapsed", {}));
+  const toggle = (name: string) =>
     setCollapsed((c) => {
-      const next = { ...c, [region]: !c[region] };
-      try {
-        localStorage.setItem("live.collapsed", JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
+      const next = { ...c, [name]: !(c[name] ?? defaultCollapsed(name)) };
+      store("live.collapsed", next);
       return next;
     });
+  // countries/genres start folded, except the first country and the open list's
+  const firstCountry = nav?.countries[0]?.code ?? "";
+  const openCountry = active.type === "nav" && active.country !== undefined ? `country:${active.country}` : null;
+  const openGenre = active.type === "nav" && active.genre ? `genre:${active.genre}` : null;
+  const defaultCollapsed = (name: string) =>
+    name === openCountry || name === openGenre
+      ? false
+      : name.startsWith("country:")
+        ? name !== `country:${firstCountry}`
+        : name.startsWith("genre:");
+  const isCollapsed = (name: string) => !q && (collapsed[name] ?? defaultCollapsed(name));
 
-  const groups = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+  const needle = q.trim().toLowerCase();
+  const matches = (...texts: (string | null | undefined)[]) => !needle || texts.some((t) => t?.toLowerCase().includes(needle));
+
+  const isActive = (k: ListKey) => keyString(k) === keyString(active);
+  const special: { key: ListKey; label: string; icon: typeof Heart; count?: number }[] = [
+    { key: { type: "favorites" }, label: "Favorites", icon: Heart },
+    { key: { type: "recent" }, label: "Recently watched", icon: History },
+    { key: { type: "all" }, label: "All channels", icon: LayoutList, count: nav?.cells.reduce((n, c) => n + c.count, 0) },
+  ];
+
+  const providerGroups = useMemo(() => {
     const map = new Map<string, Category[]>();
     for (const c of categories) {
       if (needle && !`${c.region ?? ""} ${c.title}`.toLowerCase().includes(needle)) continue;
@@ -96,74 +129,202 @@ function CategoryPane({
       map.get(g)!.push(c);
     }
     return [...map.entries()];
-  }, [categories, q]);
+  }, [categories, needle]);
 
-  const isActive = (k: ListKey) => keyString(k) === keyString(active);
-  const special: { key: ListKey; label: string; icon: typeof Heart }[] = [
-    { key: { type: "favorites" }, label: "Favorites", icon: Heart },
-    { key: { type: "recent" }, label: "Recently watched", icon: History },
-    { key: { type: "all" }, label: "All channels", icon: LayoutList },
-  ];
+  const cell = (country: string, genre: string) =>
+    nav?.cells.find((c) => (c.country ?? "") === country && c.genre === genre)?.count ?? 0;
+  const genreTotal = (genre: string) => nav?.cells.filter((c) => c.genre === genre).reduce((n, c) => n + c.count, 0) ?? 0;
 
   return (
-    <div className="flex w-[260px] shrink-0 flex-col border-r border-line bg-panel">
+    <div className="flex w-[268px] shrink-0 flex-col border-r border-line bg-panel">
       <div className="px-4 pb-3 pt-6">
         <h1 className="mb-4 text-2xl font-bold tracking-tight">Live TV</h1>
+        <Segmented
+          value={mode}
+          onChange={setMode}
+          className="mb-3 flex w-full [&>button]:flex-1 [&>button]:px-2"
+          options={[
+            { value: "countries", label: "Countries" },
+            { value: "genres", label: "Genres" },
+            { value: "provider", label: "Provider" },
+          ]}
+        />
         <label className="relative flex items-center">
           <Search className="pointer-events-none absolute left-3 size-4 text-faint" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Filter categories"
+            placeholder={mode === "provider" ? "Filter categories" : mode === "genres" ? "Filter genres" : "Filter countries"}
             className="h-9 w-full rounded-lg bg-white/[0.06] pl-9 pr-3 text-sm outline-none ring-1 ring-white/[0.06] placeholder:text-faint focus:ring-accent"
           />
         </label>
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-6">
-        {special.map(({ key, label, icon: Icon }) => (
-          <button
-            key={label}
-            onClick={() => onSelect(key)}
-            className={clsx(
-              "flex h-9 w-full items-center gap-2.5 rounded-lg px-3 text-left text-[13.5px] font-medium transition-colors",
-              isActive(key) ? "bg-accent/15 text-fg" : "text-dim hover:bg-white/[0.04] hover:text-fg",
-            )}
-          >
-            <Icon className={clsx("size-4", isActive(key) ? "text-accent-strong" : "text-faint")} />
-            {label}
-          </button>
+        {special.map(({ key, label, icon: Icon, count }) => (
+          <ListRow key={label} active={isActive(key)} onClick={() => onSelect(key)} count={count}>
+            <Icon className={clsx("size-4 shrink-0", isActive(key) ? "text-accent-strong" : "text-faint")} />
+            <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+          </ListRow>
         ))}
         {loading && <Spinner className="px-3 py-4" />}
-        {groups.map(([region, cats]) => (
-          <div key={region} className="mt-3">
-            <button
-              onClick={() => toggle(region)}
-              className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-faint hover:text-dim"
-            >
-              <ChevronDown className={clsx("size-3.5 transition-transform", collapsed[region] && !q && "-rotate-90")} />
-              {region}
-              <span className="ml-auto font-medium normal-case tracking-normal">{cats.length}</span>
-            </button>
-            {(!collapsed[region] || q) &&
-              cats.map((c) => {
-                const k: ListKey = { type: "cat", sourceId: c.sourceId, id: c.id };
-                return (
-                  <button
-                    key={keyString(k)}
-                    onClick={() => onSelect(k)}
-                    className={clsx(
-                      "flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-[13.5px] transition-colors",
-                      isActive(k) ? "bg-accent/15 font-semibold text-fg" : "text-dim hover:bg-white/[0.04] hover:text-fg",
-                    )}
+
+        {mode === "countries" &&
+          nav?.countries
+            .filter((c) => matches(c.name, c.code))
+            .map((c) => {
+              const code = c.code ?? "";
+              const fold = `country:${code}`;
+              return (
+                <div key={fold} className="mt-2">
+                  <TreeHeader
+                    open={!isCollapsed(fold)}
+                    onToggle={() => toggle(fold)}
+                    active={isActive({ type: "nav", country: code })}
+                    onClick={() => onSelect({ type: "nav", country: code })}
+                    count={c.count}
                   >
-                    <span className="min-w-0 flex-1 truncate">{c.title}</span>
-                    <span className="shrink-0 text-[11px] tabular-nums text-faint">{c.count}</span>
-                  </button>
-                );
-              })}
-          </div>
-        ))}
+                    {c.name}
+                  </TreeHeader>
+                  {!isCollapsed(fold) &&
+                    nav.genres
+                      .filter((g) => cell(code, g) > 0)
+                      .map((g) => {
+                        const k: ListKey = { type: "nav", country: code, genre: g };
+                        return (
+                          <ListRow key={g} inset active={isActive(k)} onClick={() => onSelect(k)} count={cell(code, g)}>
+                            <span className="min-w-0 flex-1 truncate">{g}</span>
+                          </ListRow>
+                        );
+                      })}
+                </div>
+              );
+            })}
+
+        {mode === "genres" &&
+          nav?.genres
+            .filter((g) => matches(g))
+            .map((g) => {
+              const fold = `genre:${g}`;
+              return (
+                <div key={fold} className="mt-2">
+                  <TreeHeader
+                    open={!isCollapsed(fold)}
+                    onToggle={() => toggle(fold)}
+                    active={isActive({ type: "nav", genre: g })}
+                    onClick={() => onSelect({ type: "nav", genre: g })}
+                    count={genreTotal(g)}
+                  >
+                    {g}
+                  </TreeHeader>
+                  {!isCollapsed(fold) &&
+                    nav.countries
+                      .filter((c) => cell(c.code ?? "", g) > 0)
+                      .map((c) => {
+                        const k: ListKey = { type: "nav", country: c.code ?? "", genre: g };
+                        return (
+                          <ListRow key={c.code ?? "-"} inset active={isActive(k)} onClick={() => onSelect(k)} count={cell(c.code ?? "", g)}>
+                            <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                          </ListRow>
+                        );
+                      })}
+                </div>
+              );
+            })}
+
+        {mode === "provider" &&
+          providerGroups.map(([region, cats]) => {
+            const fold = `region:${region}`;
+            return (
+              <div key={region} className="mt-3">
+                <button
+                  onClick={() => toggle(fold)}
+                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-faint hover:text-dim"
+                >
+                  <ChevronDown className={clsx("size-3.5 transition-transform", isCollapsed(fold) && "-rotate-90")} />
+                  {region}
+                  <span className="ml-auto font-medium normal-case tracking-normal">{cats.length}</span>
+                </button>
+                {!isCollapsed(fold) &&
+                  cats.map((c) => {
+                    const k: ListKey = { type: "cat", sourceId: c.sourceId, id: c.id };
+                    return (
+                      <ListRow key={keyString(k)} active={isActive(k)} onClick={() => onSelect(k)} count={c.count}>
+                        <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                      </ListRow>
+                    );
+                  })}
+              </div>
+            );
+          })}
       </div>
+    </div>
+  );
+}
+
+function ListRow({
+  active,
+  onClick,
+  count,
+  inset,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  count?: number;
+  inset?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={clsx(
+        "flex min-h-9 w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13.5px] transition-colors",
+        inset && "pl-8",
+        active ? "bg-accent/15 font-semibold text-fg" : "text-dim hover:bg-white/[0.04] hover:text-fg",
+      )}
+    >
+      {children}
+      {count != null && <span className="shrink-0 text-[11px] font-normal tabular-nums text-faint">{count.toLocaleString()}</span>}
+    </button>
+  );
+}
+
+/** A country (or genre) that is a list itself and folds its sub-lists. */
+function TreeHeader({
+  open,
+  onToggle,
+  active,
+  onClick,
+  count,
+  children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  active: boolean;
+  onClick: () => void;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={clsx(
+        "flex min-h-9 items-center rounded-lg pr-3 transition-colors",
+        active ? "bg-accent/15 text-fg" : "text-fg/90 hover:bg-white/[0.04]",
+      )}
+    >
+      <button
+        aria-label={open ? "Collapse" : "Expand"}
+        aria-expanded={open}
+        onClick={onToggle}
+        className="grid h-9 w-8 shrink-0 place-items-center text-faint hover:text-fg"
+      >
+        <ChevronDown className={clsx("size-4 transition-transform", !open && "-rotate-90")} />
+      </button>
+      <button onClick={onClick} aria-pressed={active} className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-[14px] font-semibold">
+        <span className="min-w-0 flex-1 truncate">{children}</span>
+        <span className="shrink-0 text-[11px] font-normal tabular-nums text-faint">{count.toLocaleString()}</span>
+      </button>
     </div>
   );
 }
@@ -177,15 +338,7 @@ function useChannelList(key: ListKey, filter: string) {
     enabled: key.type !== "recent",
     initialPageParam: 0,
     refetchInterval: 60_000,
-    queryFn: ({ pageParam }) =>
-      api.channels({
-        favorites: key.type === "favorites" || undefined,
-        sourceId: key.type === "cat" ? key.sourceId : undefined,
-        categoryId: key.type === "cat" ? key.id : undefined,
-        q,
-        offset: pageParam,
-        limit: PAGE,
-      }),
+    queryFn: ({ pageParam }) => api.channels({ ...queryFor(key), q, offset: pageParam, limit: PAGE }),
     getNextPageParam: (last, pages) => {
       const loaded = pages.reduce((n, p) => n + p.items.length, 0);
       return loaded < last.total ? loaded : undefined;
@@ -215,14 +368,14 @@ function useChannelList(key: ListKey, filter: string) {
 
 function ChannelPane({
   listKey,
-  categories,
+  title,
   filter,
   setFilter,
   selected,
   onSelect,
 }: {
   listKey: ListKey;
-  categories: Category[];
+  title: string;
   filter: string;
   setFilter: (v: string) => void;
   selected: Channel | null;
@@ -235,14 +388,8 @@ function ChannelPane({
   const scrollRef = useRef<HTMLDivElement>(null);
   const previewTimer = useRef<number>(0);
 
-  const title =
-    listKey.type === "cat"
-      ? (categories.find((c) => c.sourceId === listKey.sourceId && c.id === listKey.id)?.title ?? "Channels")
-      : listKey.type === "favorites"
-        ? "Favorites"
-        : listKey.type === "recent"
-          ? "Recently watched"
-          : "All channels";
+  // channel rows (one per channel) vs. the provider's own feeds
+  const grouped = listKey.type !== "cat";
 
   const virtualizer = useVirtualizer({
     count: total,
@@ -258,10 +405,10 @@ function ChannelPane({
     if (lastIndex >= items.length - 20) fetchMore();
   }, [lastIndex, items.length, fetchMore]);
 
-  // keep the selection valid when switching lists
+  // a new list starts at the top
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 });
-  }, [listKey.type, listKey.type === "cat" ? listKey.id : ""]);
+  }, [keyString(listKey)]);
 
   const select = useCallback(
     (c: Channel, preview = true) => {
@@ -289,11 +436,12 @@ function ChannelPane({
 
   const toggleFavorite = useCallback(
     async (c: Channel) => {
-      const fav = await api.toggleFavorite("live", c.sourceId, c.id);
+      // a channel row stands for all of its feeds
+      const fav = grouped && c.group ? await api.toggleChannelFavorite(c.group.key) : await api.toggleFavorite("live", c.sourceId, c.id);
       if (selected && selected.sourceId === c.sourceId && selected.id === c.id) onSelect({ ...selected, favorite: fav });
       void qc.invalidateQueries({ queryKey: ["channels"] });
     },
-    [qc, selected, onSelect],
+    [qc, selected, onSelect, grouped],
   );
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -315,12 +463,15 @@ function ChannelPane({
 
   return (
     <div className="flex min-w-[380px] flex-1 flex-col border-r border-line bg-bg">
-      <div className="flex items-end justify-between gap-4 px-6 pb-3 pt-6">
-        <div className="min-w-0">
-          <h2 className="truncate text-xl font-bold tracking-tight">{title}</h2>
-          <p className="text-[13px] text-dim">{loading ? "Loading…" : `${total.toLocaleString()} channels`}</p>
+      {/* title above the search: "United Kingdom · Documentary" needs the width */}
+      <div className="flex flex-col gap-3 px-6 pb-3 pt-6">
+        <div className="flex min-w-0 items-baseline justify-between gap-3">
+          <h2 className="line-clamp-2 min-w-0 text-xl leading-tight font-bold tracking-tight" title={title}>
+            {title}
+          </h2>
+          <p className="shrink-0 text-[13px] tabular-nums text-dim">{loading ? "Loading…" : `${total.toLocaleString()} channels`}</p>
         </div>
-        <label className="relative flex w-56 items-center">
+        <label className="relative flex items-center">
           <Search className="pointer-events-none absolute left-3 size-4 text-faint" />
           <input
             value={filter}
@@ -333,7 +484,7 @@ function ChannelPane({
       <div ref={scrollRef} tabIndex={0} onKeyDown={onKeyDown} className="flex-1 overflow-y-auto px-3 pb-6 outline-none">
         {!loading && total === 0 ? (
           listKey.type === "favorites" ? (
-            <EmptyState icon={<Heart />} title="No favorite channels yet" text="Open a category and press the heart on any channel (or F) to pin it here." />
+            <EmptyState icon={<Heart />} title="No favorite channels yet" text="Open a country or genre and press the heart on any channel (or F) to pin it here." />
           ) : (
             <EmptyState icon={<Tv />} title="No channels" text={filter ? "Nothing matches your filter." : "This list is empty."} />
           )
@@ -346,6 +497,7 @@ function ChannelPane({
                   {c ? (
                     <ChannelRow
                       channel={c}
+                      grouped={grouped}
                       index={v.index}
                       selected={!!selected && selected.sourceId === c.sourceId && selected.id === c.id}
                       playing={playing === `${c.sourceId}:${c.id}`}
@@ -368,6 +520,7 @@ function ChannelPane({
 
 const ChannelRow = memo(function ChannelRow({
   channel: c,
+  grouped,
   index,
   selected,
   playing,
@@ -376,6 +529,7 @@ const ChannelRow = memo(function ChannelRow({
   onFavorite,
 }: {
   channel: Channel;
+  grouped: boolean;
   index: number;
   selected: boolean;
   playing: boolean;
@@ -404,6 +558,12 @@ const ChannelRow = memo(function ChannelRow({
           {c.badges.slice(0, 2).map((b) => (
             <Badge key={b}>{b}</Badge>
           ))}
+          {grouped && c.group && c.group.variants > 1 && (
+            <span title={`${c.group.variants} feeds of this channel`} className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-faint">
+              <Layers className="size-3.5" />
+              {c.group.variants}
+            </span>
+          )}
           {c.archive && (
             <span title="Catch-up available">
               <Clock className="size-3.5 shrink-0 text-faint" />
@@ -436,7 +596,48 @@ const ChannelRow = memo(function ChannelRow({
 
 // --------------------------------------------------------------- preview
 
-function PreviewPane({ channel }: { channel: Channel | null }) {
+/** The provider's feeds of a channel (quality variants); picking one remembers it. */
+function Feeds({ channel, playing, onChannel }: { channel: Channel; playing: boolean; onChannel: (c: Channel) => void }) {
+  const qc = useQueryClient();
+  const key = channel.group!.key;
+  const variants = useQuery({ queryKey: ["channels", "variants", key], queryFn: () => api.channelVariants(key) });
+  const pick = async (v: Channel & { label: string }) => {
+    await api.channelPrefer(key, v.sourceId, v.id);
+    // keep the channel's name; play the feed if the channel is on
+    const next: Channel = { ...v, title: channel.title, group: channel.group };
+    onChannel(next);
+    if (playing) void playChannel(next, undefined, usePlayer.getState().now?.zapList, false);
+    void qc.invalidateQueries({ queryKey: ["channels"] });
+  };
+  return (
+    <div>
+      <h4 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Feeds</h4>
+      <div className="flex flex-wrap gap-1.5">
+        {(variants.data ?? []).map((v) => {
+          const current = v.sourceId === channel.sourceId && v.id === channel.id;
+          return (
+            <button
+              key={`${v.sourceId}:${v.id}`}
+              onClick={() => void pick(v)}
+              title={[v.category, v.selected ? "plays by default" : null].filter(Boolean).join(" · ")}
+              aria-pressed={current}
+              className={clsx(
+                "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-semibold ring-1 transition-colors",
+                current ? "bg-accent/20 text-fg ring-accent/60" : "bg-white/[0.05] text-dim ring-white/[0.06] hover:bg-white/[0.1] hover:text-fg",
+              )}
+            >
+              {v.label}
+              {!v.epgId && !v.now && <span className="text-[10px] font-medium text-faint">no guide</span>}
+            </button>
+          );
+        })}
+        {variants.isLoading && <Spinner />}
+      </div>
+    </div>
+  );
+}
+
+function PreviewPane({ channel, onChannel }: { channel: Channel | null; onChannel: (c: Channel) => void }) {
   const navigate = useNavigate();
   const holeRef = useRef<HTMLDivElement>(null);
   const now = usePlayer((s) => s.now);
@@ -518,6 +719,7 @@ function PreviewPane({ channel }: { channel: Channel | null }) {
               Watch fullscreen
             </Button>
           </div>
+          {shown.group && shown.group.variants > 1 && <Feeds channel={shown} playing={isPlaying} onChannel={onChannel} />}
           {current ? (
             <div className="rounded-2xl bg-white/[0.04] p-4 ring-1 ring-white/[0.06]">
               <div className="mb-1 flex items-center justify-between text-[12px] font-semibold uppercase tracking-wider text-accent-strong">

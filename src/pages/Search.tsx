@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { elapsed } from "../lib/format";
 import { playChannel } from "../lib/play";
 import { ChannelLogo, PosterCard, Shelf, ShelfItem } from "../components/media";
+import { QualityBadges, workSubtitle } from "../components/LibraryBrowser";
 import { EmptyState, LiveDot, ProgressBar, Spinner } from "../components/ui";
 
 const RECENT_KEY = "search.recent";
@@ -142,7 +143,8 @@ export function SearchPage() {
                 <ShelfItem key={`${m.sourceId}-${m.id}`} width={160}>
                   <PosterCard
                     title={m.title}
-                    subtitle={[m.year, m.tag].filter(Boolean).join(" · ") || undefined}
+                    subtitle={workSubtitle(m.year, m)}
+                    badge={<QualityBadges quality={m.quality} />}
                     image={m.poster}
                     rating={m.rating}
                     progress={m.progress}
@@ -163,7 +165,8 @@ export function SearchPage() {
                 <ShelfItem key={`${s.sourceId}-${s.id}`} width={160}>
                   <PosterCard
                     title={s.title}
-                    subtitle={s.year ?? undefined}
+                    subtitle={workSubtitle(s.year, s)}
+                    badge={<QualityBadges quality={s.quality} />}
                     image={s.cover}
                     rating={s.rating}
                     width={160}

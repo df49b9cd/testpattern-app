@@ -1,18 +1,18 @@
 //! `play`: resolves (source, item) to a stream URL — credentials never leave
 //! the backend — and hands it to the native player.
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use tauri::{Runtime, State};
 
 use crate::error::{Error, Result};
-use crate::player::{LoadOptions, Player};
+use crate::player::{LoadOptions, MediaRef, Player};
 use crate::sources::{self, SourceKind, m3u};
 use crate::state::{AppState, http_client};
 use crate::util::json::i64_of;
 use crate::{library, settings};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayRequest {
     /// 'live' | 'movie' | 'episode' | 'catchup'
@@ -31,18 +31,24 @@ pub struct PlayRequest {
     pub paused: bool,
 }
 
-#[tauri::command]
-pub async fn play<R: Runtime>(
-    _app: tauri::AppHandle<R>,
-    state: State<'_, AppState>,
-    player: State<'_, Player>,
-    req: PlayRequest,
-) -> Result<()> {
-    let st = state.inner().clone();
-    let (url, alternates, live, user_agent, referrer) = {
-        let conn = st.db.read();
-        let src = sources::load(&conn, req.source_id)?;
-        let live_format = settings::get_str(&conn, "player.liveFormat");
+/// A playable stream. The URL carries the account's credentials: it goes to
+/// mpv, never to the UI.
+pub struct Stream {
+    pub url: String,
+    /// the same stream on the provider's mirror servers
+    pub alternates: Vec<String>,
+    pub live: bool,
+    pub user_agent: Option<String>,
+    pub referrer: Option<String>,
+    /// live channels: title and logo for "recently watched"
+    channel: Option<(String, Option<String>)>,
+}
+
+/// Resolves (source, item) to its stream.
+pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
+    let (url, alternates, live, user_agent, referrer, channel) = {
+        let src = sources::load(conn, req.source_id)?;
+        let live_format = settings::get_str(conn, "player.liveFormat");
         let fmt = if live_format == "m3u8" { "m3u8" } else { "ts" };
         let x = match src.kind {
             SourceKind::Xtream => Some(sources::xtream_for(&src, http_client(None))?),
@@ -51,6 +57,7 @@ pub async fn play<R: Runtime>(
 
         // request headers of M3U items (user agent, referrer); none for Xtream
         let mut headers: (Option<String>, Option<String>) = (None, None);
+        let mut channel = None;
         let (url, live) = match req.kind.as_str() {
             "live" => {
                 let (title, logo, direct, ua, referrer): (String, Option<String>, Option<String>, Option<String>, Option<String>) = conn
@@ -62,11 +69,7 @@ pub async fn play<R: Runtime>(
                     .optional()?
                     .ok_or_else(|| Error::NotFound(format!("channel {}", req.id)))?;
                 headers = (ua, referrer);
-                drop(conn);
-                {
-                    let w = st.db.write();
-                    library::touch_channel(&w, req.source_id, &req.id, &title, logo.as_deref())?;
-                }
+                channel = Some((title, logo));
                 let url = match (&x, direct) {
                     (_, Some(u)) => u,
                     (Some(x), None) => x.live_url(&req.id, fmt),
@@ -145,15 +148,41 @@ pub async fn play<R: Runtime>(
             other => return Err(Error::msg(format!("cannot play {other}"))),
         };
         let alternates = x.as_ref().map(|x| x.alternates_for(&url)).unwrap_or_default();
-        (url, alternates, live, headers.0.or(src.user_agent), headers.1)
+        (url, alternates, live, headers.0.or(src.user_agent), headers.1, channel)
     };
+    Ok(Stream { url, alternates, live, user_agent, referrer, channel })
+}
+
+#[tauri::command]
+pub async fn play<R: Runtime>(
+    _app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    player: State<'_, Player>,
+    req: PlayRequest,
+) -> Result<()> {
+    let st = state.inner().clone();
+    let Stream { url, alternates, live, user_agent, referrer, channel } = resolve(&st.db.read(), &req)?;
+    if let Some((title, logo)) = channel {
+        let w = st.db.write();
+        library::touch_channel(&w, req.source_id, &req.id, &title, logo.as_deref())?;
+    }
+    // one stream per account: a running version check closes its stream first
+    if crate::probe::running() {
+        tokio::task::spawn_blocking(crate::probe::cancel).await.map_err(|e| Error::msg(e.to_string()))?;
+    }
 
     log::info!("play {} {}:{} (live={live}, mirrors={})", req.kind, req.source_id, req.id, alternates.len());
+    let media = match req.kind.as_str() {
+        "movie" => Some("movie"),
+        "episode" => Some("episode"),
+        _ => None,
+    }
+    .map(|kind| MediaRef { kind, source_id: req.source_id, id: req.id.clone() });
     player
         .load_with_fallbacks(
             &url,
             alternates,
-            LoadOptions { start: req.start, live, title: req.title, user_agent, referrer, paused: req.paused },
+            LoadOptions { start: req.start, live, title: req.title, user_agent, referrer, paused: req.paused, media },
         )
         .map_err(|e| Error::msg(e.to_string()))
 }

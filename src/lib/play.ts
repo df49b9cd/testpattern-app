@@ -43,12 +43,16 @@ export function playMovie(m: Movie | MovieDetail, navigate?: NavigateFunction, f
   );
 }
 
-/** Without `navigate` the player page is not (re)opened — e.g. autoplay. */
+/**
+ * Without `navigate` the player page is not (re)opened — e.g. autoplay.
+ * The episode may come from another copy of the series than `series`
+ * (`ep.sourceId`/`ep.seriesId`).
+ */
 export function playEpisode(series: Series, ep: Episode, navigate?: NavigateFunction, fromStart = false) {
   return start(
     {
       kind: "episode",
-      sourceId: series.sourceId,
+      sourceId: ep.sourceId ?? series.sourceId,
       id: ep.id,
       title: ep.title,
       subtitle: `${series.title} · S${ep.season} E${ep.episode}`,
@@ -56,7 +60,7 @@ export function playEpisode(series: Series, ep: Episode, navigate?: NavigateFunc
       backdrop: series.backdrop ?? ep.image ?? null,
       ext: ep.ext,
       start: fromStart || ep.watched ? 0 : ep.position,
-      seriesId: series.id,
+      seriesId: ep.seriesId ?? series.id,
       seriesTitle: series.title,
       season: ep.season,
       episode: ep.episode,

@@ -66,7 +66,7 @@ export function Facts({ items }: { items: [string, ReactNode | null | undefined]
   const shown = items.filter(([, v]) => v);
   if (!shown.length) return null;
   return (
-    <dl className="grid max-w-5xl grid-cols-[140px_1fr] gap-x-6 gap-y-3 px-10 text-[14px]">
+    <dl className="relative grid max-w-5xl grid-cols-[140px_1fr] gap-x-6 gap-y-3 px-10 text-[14px]">
       {shown.map(([k, v]) => (
         <div key={k} className="contents">
           <dt className="text-faint">{k}</dt>

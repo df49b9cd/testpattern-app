@@ -101,6 +101,35 @@ export interface Channel {
   favorite: boolean;
   now?: Brief | null;
   next?: Brief | null;
+  /** the channel this feed belongs to: all its quality variants */
+  group?: ChannelGroupInfo | null;
+}
+
+export interface ChannelGroupInfo {
+  key: string;
+  /** number of feeds (quality variants) */
+  variants: number;
+  country?: string | null;
+  genre: string;
+}
+
+/** One feed of a channel (catalog.rs ChannelVariant). */
+export interface ChannelVariant extends Channel {
+  /** "RAW · HEVC", "HD · VIP", "4K" */
+  label: string;
+  /** provider category, e.g. "Now TV Sport · HD RAW" */
+  category?: string | null;
+  /** the feed that plays for this channel */
+  selected: boolean;
+}
+
+/** Live TV navigation (catalog.rs LiveNav). */
+export interface LiveNav {
+  /** the viewer's countries first, then by size; code null = no region */
+  countries: { code?: string | null; name: string; count: number }[];
+  /** genres in display order */
+  genres: string[];
+  cells: { country?: string | null; genre: string; count: number }[];
 }
 
 export interface Page<T> {
@@ -108,7 +137,21 @@ export interface Page<T> {
   items: T[];
 }
 
-export interface Movie {
+/**
+ * A movie or series is one "work" however many provider copies it has
+ * (src-tauri/src/works). `sourceId`/`id` name a representative copy.
+ */
+export interface WorkInfo {
+  key?: string | null;
+  /** number of provider copies (details list them in `versions`) */
+  versionCount: number;
+  /** "4K", "Dolby Vision", "Dolby Audio", "HEVC", "Blu-ray" */
+  quality: string[];
+  /** streaming services the copies come from ("Netflix", "Apple TV+") */
+  services: string[];
+}
+
+export interface Movie extends WorkInfo {
   sourceId: number;
   id: string;
   title: string;
@@ -123,7 +166,7 @@ export interface Movie {
   watched: boolean;
 }
 
-export interface Series {
+export interface Series extends WorkInfo {
   sourceId: number;
   id: string;
   title: string;
@@ -160,6 +203,51 @@ export interface MovieDetail extends Movie {
   video?: TechInfo | null;
   audio?: TechInfo | null;
   position: number;
+  /** every provider copy; the one that plays is `selected` */
+  versions: VersionInfo[];
+  /** some copies' details are still loading — refetch shortly */
+  versionsPending: boolean;
+  tmdb?: TmdbFacts | null;
+}
+
+export type Origin = "web" | "bluray" | "tv" | "cam" | "unknown";
+
+/** One provider copy of a movie or series (works/versions.rs). */
+export interface VersionInfo {
+  sourceId: number;
+  id: string;
+  /** e.g. "Apple TV+ · 4K Dolby Vision", "Nordic", "Blu-ray · Multi-subtitles" */
+  label: string;
+  service?: string | null;
+  origin: Origin;
+  language?: string | null;
+  subtitles?: string | null;
+  quality: string[];
+  /** provider category, e.g. "Apple+ Series · 4K Dolby Vision" */
+  category?: string | null;
+  /** set when the work spans several sources */
+  sourceName?: string | null;
+  selected: boolean;
+  ext?: string | null;
+  video?: TechInfo | null;
+  audio?: TechInfo | null;
+  duration?: number | null;
+  /** tracks the player saw in this copy */
+  tracks?: MediaTracks | null;
+  position: number;
+  watched: boolean;
+  /** series: seasons and episode count of this copy */
+  seasons: number[];
+  episodes: number;
+}
+
+/** What playback learned about a file (media_info). */
+export interface MediaTracks {
+  /** a check could not open the file on the server */
+  unavailable?: boolean;
+  audio?: { lang?: string | null; codec?: string | null; channels?: number | null; title?: string | null }[];
+  subtitles?: { lang?: string | null; codec?: string | null; title?: string | null; external?: boolean }[];
+  video?: { codec?: string | null; width?: number | null; height?: number | null; hdr?: boolean } | null;
 }
 
 export interface Episode {
@@ -176,6 +264,11 @@ export interface Episode {
   video?: TechInfo | null;
   position: number;
   watched: boolean;
+  /** the copy (series entry) this episode plays from */
+  sourceId: number;
+  seriesId: string;
+  /** that copy's label when it isn't the selected version */
+  version?: string | null;
 }
 
 export interface Season {
@@ -203,6 +296,11 @@ export interface SeriesDetail extends Series {
   trailer?: string | null;
   seasons: Season[];
   resume?: Resume | null;
+  /** every provider copy; seasons above are their union */
+  versions: VersionInfo[];
+  /** some copies' episode lists are still loading — refetch shortly */
+  versionsPending: boolean;
+  tmdb?: TmdbFacts | null;
 }
 
 export interface Programme {
@@ -252,6 +350,11 @@ export interface RecentChannel extends Channel {
 export interface ChannelQuery {
   sourceId?: number;
   categoryId?: string;
+  /** one row per channel (its chosen feed) instead of every provider feed */
+  grouped?: boolean;
+  /** channels of one country ("DK"; "" = no region) / live genre ("Sports") */
+  country?: string;
+  genre?: string;
   favorites?: boolean;
   withEpg?: boolean;
   q?: string;
@@ -261,14 +364,79 @@ export interface ChannelQuery {
 
 export type MediaSort = "added" | "title" | "rating" | "year" | "provider";
 
+export type FacetName =
+  | "service"
+  | "genre"
+  | "language"
+  | "quality"
+  | "decade"
+  | "collection"
+  /** from TMDB: original language, movie collections, TV networks */
+  | "original"
+  | "franchise"
+  | "network";
+
+export interface FacetFilter {
+  facet: FacetName;
+  value: string;
+}
+
 export interface MediaQuery {
+  /** with `categoryId`: one provider category */
   sourceId?: number;
   categoryId?: string;
   favorites?: boolean;
   q?: string;
   sort?: MediaSort;
+  /** all must match */
+  facets?: FacetFilter[];
   offset?: number;
   limit?: number;
+}
+
+export interface FacetValue {
+  value: string;
+  label: string;
+  /** works, not copies */
+  count: number;
+  /** collections: the service/language they are listed under */
+  group?: string | null;
+}
+
+/** Browse facets of Movies or Series (catalog.rs work_facets). */
+export interface Facets {
+  total: number;
+  service: FacetValue[];
+  genre: FacetValue[];
+  language: FacetValue[];
+  quality: FacetValue[];
+  decade: FacetValue[];
+  collection: FacetValue[];
+  original: FacetValue[];
+  franchise: FacetValue[];
+  network: FacetValue[];
+}
+
+/** TMDB metadata fill (src-tauri/src/tmdb.rs). */
+export interface TmdbStatus {
+  configured: boolean;
+  running: boolean;
+  /** titles checked in the current run, of `total` */
+  done: number;
+  total: number;
+  /** catalog titles with TMDB details, of `titles` that have a TMDB id */
+  known: number;
+  titles: number;
+  error?: string | null;
+  lastRun?: number | null;
+}
+
+/** What the detail pages show from TMDB. */
+export interface TmdbFacts {
+  originalLanguage?: string | null;
+  collection?: string | null;
+  networks: string[];
+  countries: string[];
 }
 
 export type PlayKind = "live" | "movie" | "episode" | "catchup";

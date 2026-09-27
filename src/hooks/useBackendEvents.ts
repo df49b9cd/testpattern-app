@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { api } from "../lib/api";
 import { listen } from "../lib/bridge";
 import { useQueryClient } from "@tanstack/react-query";
-import type { PlayerEvent, SyncProgress } from "../lib/types";
+import type { PlayerEvent, SyncProgress, TmdbStatus } from "../lib/types";
 import { usePlayer } from "../stores/player";
 import { useSync } from "../stores/sync";
 
@@ -19,6 +19,15 @@ export function useBackendEvents() {
         )
         .catch(() => {})
         .then(() => () => {}),
+      listen<TmdbStatus>("tmdb://progress", (e) => {
+        const before = qc.getQueryData<TmdbStatus>(["tmdb-status"]);
+        qc.setQueryData(["tmdb-status"], e.payload);
+        // regrouped with the new details: genres, languages, collections
+        if (!e.payload.running || (before && e.payload.known - before.known >= 4000)) {
+          void qc.invalidateQueries({ queryKey: ["movies"] });
+          void qc.invalidateQueries({ queryKey: ["series"] });
+        }
+      }),
       listen<SyncProgress>("sync://progress", (e) => {
         useSync.getState().apply(e.payload);
         if (e.payload.stage === "done" || e.payload.stage === "failed") {

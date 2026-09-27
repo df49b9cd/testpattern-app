@@ -4,10 +4,14 @@ import type {
   Category,
   Channel,
   ChannelQuery,
+  ChannelVariant,
+  Facets,
   GuideRow,
   HistoryInput,
   HistoryItem,
+  LiveNav,
   MediaKind,
+  MediaTracks,
   MediaQuery,
   Movie,
   MovieDetail,
@@ -22,6 +26,7 @@ import type {
   Source,
   SourceInput,
   TestResult,
+  TmdbStatus,
   UpNext,
   WatchedMeta,
 } from "./types";
@@ -41,10 +46,23 @@ export const api = {
   categories: (kind: MediaKind) => invoke<Category[]>("categories", { kind }),
   channels: (query: ChannelQuery) => invoke<Page<Channel>>("channels", { query }),
   channel: (sourceId: number, id: string) => invoke<Channel>("channel", { sourceId, id }),
+  /** Channel counts per country and genre. */
+  liveNav: () => invoke<LiveNav>("live_nav"),
+  /** Every feed of a channel group, best first. */
+  channelVariants: (key: string) => invoke<ChannelVariant[]>("channel_variants", { key }),
+  /** Makes a feed the one that plays for its channel. */
+  channelPrefer: (key: string, sourceId: number, id: string) => invoke<void>("channel_prefer", { key, sourceId, id }),
   movies: (query: MediaQuery) => invoke<Page<Movie>>("movies", { query }),
   series: (query: MediaQuery) => invoke<Page<Series>>("series_list", { query }),
   movieDetail: (sourceId: number, id: string) => invoke<MovieDetail>("movie_detail", { sourceId, id }),
   seriesDetail: (sourceId: number, id: string) => invoke<SeriesDetail>("series_detail", { sourceId, id }),
+  /** Browse facets with work counts. */
+  workFacets: (kind: "movie" | "series", query?: MediaQuery) => invoke<Facets>("work_facets", { kind, query }),
+  /** Remembers which copy of a movie/series plays. */
+  workPrefer: (kind: "movie" | "series", sourceId: number, id: string) => invoke<void>("work_prefer", { kind, sourceId, id }),
+  /** Opens one version briefly to read its audio/subtitle tracks (only while nothing plays). */
+  versionProbe: (kind: "movie" | "series", sourceId: number, id: string) =>
+    invoke<MediaTracks | null>("version_probe", { kind, sourceId, id }),
   epg: (sourceId: number, channelId: string, from: number, to: number) =>
     invoke<Programme[]>("epg_channel", { sourceId, channelId, from, to }),
   guide: (query: ChannelQuery & { from: number; to: number }) => invoke<Page<GuideRow>>("epg_grid", { query }),
@@ -53,6 +71,8 @@ export const api = {
   // library
   toggleFavorite: (kind: MediaKind, sourceId: number, itemId: string) =>
     invoke<boolean>("favorite_toggle", { kind, sourceId, itemId }),
+  /** Heart on a channel row: all of its feeds. */
+  toggleChannelFavorite: (key: string) => invoke<boolean>("channel_group_favorite", { key }),
   updateHistory: (entry: HistoryInput) => invoke<void>("history_update", { entry }),
   /** `meta` describes items without history yet (never-played episodes). */
   markWatched: (kind: "movie" | "episode", sourceId: number, itemId: string, watched: boolean, meta?: WatchedMeta) =>
@@ -74,6 +94,10 @@ export const api = {
 
   // settings
   settings: () => invoke<Settings>("settings_get"),
+  tmdbStatus: () => invoke<TmdbStatus>("tmdb_status"),
+  /** Checks the key with TMDB and saves it ("" removes it); starts fetching. */
+  tmdbSetKey: (key: string) => invoke<TmdbStatus>("tmdb_set_key", { key }),
+  tmdbRefresh: () => invoke<TmdbStatus>("tmdb_refresh"),
   setSetting: (key: string, value: unknown) => invoke<void>("settings_set", { key, value }),
   imageCache: () => invoke<CacheStats>("images_cache_info"),
   clearImageCache: () => invoke<CacheStats>("images_cache_clear"),

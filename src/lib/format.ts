@@ -60,3 +60,56 @@ export function resolutionLabel(w?: number | null, h?: number | null): string | 
   if (w >= 1270 || h >= 700) return "720p";
   return "SD";
 }
+
+// ISO 639-2 bibliographic codes (as in many files) → the terminology codes Intl knows
+const B_TO_T: Record<string, string> = {
+  ger: "deu", fre: "fra", dut: "nld", chi: "zho", cze: "ces", gre: "ell", ice: "isl", per: "fas", rum: "ron",
+  slo: "slk", wel: "cym", baq: "eus", arm: "hye", geo: "kat", may: "msa", mac: "mkd", alb: "sqi", bur: "mya",
+  tib: "bod", mao: "mri",
+};
+let languageNames: Intl.DisplayNames | null | undefined;
+
+/** Track language code ("dan", "da", "ger", "pt-BR") → "Danish"; null for none/undetermined. */
+export function languageName(code: string | null | undefined): string | null {
+  const c = code?.trim().toLowerCase().replace("_", "-");
+  if (!c || c === "und" || c === "unk" || c === "zxx" || c === "mis" || c === "mul") return null;
+  if (languageNames === undefined) {
+    try {
+      languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+    } catch {
+      languageNames = null;
+    }
+  }
+  const tag = B_TO_T[c] ?? c;
+  try {
+    const name = languageNames?.of(tag);
+    if (name && name.toLowerCase() !== tag) return name;
+  } catch {
+    /* not a language tag */
+  }
+  return c.toUpperCase();
+}
+
+/** Audio channel count → "5.1", "7.1", "Stereo", "Mono". */
+export function channelsLabel(n: number | null | undefined): string | null {
+  if (!n) return null;
+  if (n === 1) return "Mono";
+  if (n === 2) return "Stereo";
+  if (n === 6) return "5.1";
+  if (n === 8) return "7.1";
+  return `${n}ch`;
+}
+
+/** [1,2,3,5] → "Seasons 1–3, 5"; [4] → "Season 4". */
+export function seasonsLabel(seasons: number[]): string {
+  const s = [...new Set(seasons)].sort((a, b) => a - b);
+  if (!s.length) return "";
+  const runs: string[] = [];
+  for (let i = 0; i < s.length; ) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+    runs.push(j > i ? `${s[i]}–${s[j]}` : `${s[i]}`);
+    i = j + 1;
+  }
+  return `${s.length === 1 ? "Season" : "Seasons"} ${runs.join(", ")}`;
+}

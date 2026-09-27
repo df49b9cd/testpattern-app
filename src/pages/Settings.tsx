@@ -9,7 +9,7 @@ import type { Source } from "../lib/types";
 import { useSync } from "../stores/sync";
 import { SourceForm } from "../components/SourceForm";
 import type { StartPage } from "../app/Root";
-import { Badge, Button, IconButton, Segmented, Spinner, Switch, TextField } from "../components/ui";
+import { Badge, Button, IconButton, ProgressBar, Segmented, Spinner, Switch, TextField } from "../components/ui";
 
 export function SettingsPage() {
   const navigate = useNavigate();
@@ -254,7 +254,91 @@ function PlaybackSettings() {
           />
         </Card>
       </Section>
+      <Metadata />
     </>
+  );
+}
+
+/** TMDB: the user's own API key fills in genres, languages, collections, networks. */
+function Metadata() {
+  const qc = useQueryClient();
+  const status = useQuery({
+    queryKey: ["tmdb-status"],
+    queryFn: api.tmdbStatus,
+    // progress also arrives as events (useBackendEvents)
+    refetchInterval: (q) => (q.state.data?.running ? 5000 : false),
+  });
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const s = status.data;
+  const run = async (f: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await f();
+      setKey("");
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+      void qc.invalidateQueries({ queryKey: ["tmdb-status"] });
+    }
+  };
+  return (
+    <Section title="Metadata">
+      <Card className="flex flex-col gap-3">
+        <div className="px-1 pt-1">
+          <span className="block text-[15px] font-medium">TMDB</span>
+          <span className="mt-0.5 block text-[13px] leading-relaxed text-dim">
+            Genres for every movie, original languages, movie collections and TV networks — for the titles your provider lists
+            with a TMDB id. Uses your own free API key or read access token from themoviedb.org.
+          </span>
+        </div>
+        {s?.configured ? (
+          <div className="flex flex-col gap-2 px-1">
+            <div className="flex items-center justify-between gap-4 text-[13.5px]">
+              <span className="text-dim">
+                Details for <span className="font-semibold text-fg">{s.known.toLocaleString()}</span> of {s.titles.toLocaleString()} titles
+                {s.running ? ` · fetching ${s.done.toLocaleString()} of ${s.total.toLocaleString()}…` : s.lastRun ? ` · checked ${ago(s.lastRun)}` : ""}
+              </span>
+              <span className="flex shrink-0 gap-2">
+                <Button size="sm" icon={<RefreshCw className="size-4" />} disabled={s.running} loading={busy} onClick={() => void run(() => api.tmdbRefresh())}>
+                  Update
+                </Button>
+                <Button size="sm" variant="danger" icon={<Trash2 className="size-4" />} disabled={busy} onClick={() => void run(() => api.tmdbSetKey(""))}>
+                  Remove key
+                </Button>
+              </span>
+            </div>
+            {s.running && s.total > 0 && <ProgressBar value={s.done / s.total} />}
+            {s.error && <p className="text-[13px] text-live">{s.error}</p>}
+          </div>
+        ) : (
+          <form
+            className="flex items-end gap-3 px-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (key.trim()) void run(() => api.tmdbSetKey(key.trim()));
+            }}
+          >
+            <TextField
+              className="flex-1"
+              label="API key or read access token"
+              type="password"
+              autoComplete="off"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+            />
+            <Button type="submit" variant="primary" loading={busy} disabled={!key.trim()}>
+              Save
+            </Button>
+          </form>
+        )}
+        {error && <p className="px-1 text-[13px] text-live">{error}</p>}
+        <p className="px-1 pb-1 text-[12px] text-faint">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+      </Card>
+    </Section>
   );
 }
 

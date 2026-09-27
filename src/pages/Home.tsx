@@ -6,13 +6,14 @@ import { elapsed, hhmm } from "../lib/format";
 import { playChannel, playEpisode, resumeHistory } from "../lib/play";
 import type { Channel, HistoryItem, Series } from "../lib/types";
 import { Artwork, ChannelLogo, PosterCard, Shelf, ShelfItem } from "../components/media";
+import { QualityBadges, workSubtitle } from "../components/LibraryBrowser";
 import { Button, LiveDot, ProgressBar } from "../components/ui";
 
 export function HomePage() {
   const navigate = useNavigate();
   const cont = useQuery({ queryKey: ["continue"], queryFn: () => api.continueWatching(20) });
   const upNext = useQuery({ queryKey: ["continue", "up-next"], queryFn: () => api.upNext(20) });
-  const favs = useQuery({ queryKey: ["channels", "favorites"], queryFn: () => api.channels({ favorites: true, limit: 50 }) });
+  const favs = useQuery({ queryKey: ["channels", "favorites"], queryFn: () => api.channels({ grouped: true, favorites: true, limit: 50 }) });
   const recent = useQuery({ queryKey: ["recent-channels"], queryFn: () => api.recentChannels(20) });
   const movies = useQuery({ queryKey: ["movies", "home"], queryFn: () => api.movies({ sort: "added", limit: 24 }) });
   const series = useQuery({ queryKey: ["series", "home"], queryFn: () => api.series({ sort: "added", limit: 24 }) });
@@ -98,12 +99,13 @@ export function HomePage() {
               <ShelfItem key={`${m.sourceId}-${m.id}`} width={170}>
                 <PosterCard
                   title={m.title}
-                  subtitle={[m.year, m.tag].filter(Boolean).join(" · ") || undefined}
+                  subtitle={workSubtitle(m.year, m)}
                   image={m.poster}
                   rating={m.rating}
                   progress={m.progress}
                   watched={m.watched}
                   favorite={m.favorite}
+                  badge={<QualityBadges quality={m.quality} />}
                   width={170}
                   onClick={() => navigate(`/movies/${m.sourceId}/${m.id}`)}
                 />
@@ -117,10 +119,11 @@ export function HomePage() {
               <ShelfItem key={`${s.sourceId}-${s.id}`} width={170}>
                 <PosterCard
                   title={s.title}
-                  subtitle={s.year ?? undefined}
+                  subtitle={workSubtitle(s.year, s)}
                   image={s.cover}
                   rating={s.rating}
                   favorite={s.favorite}
+                  badge={<QualityBadges quality={s.quality} />}
                   width={170}
                   onClick={() => navigate(`/series/${s.sourceId}/${s.id}`)}
                 />
