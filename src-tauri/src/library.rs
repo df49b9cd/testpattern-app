@@ -294,7 +294,10 @@ pub struct HistoryItem {
 
 #[tauri::command]
 pub async fn continue_watching(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<HistoryItem>> {
-    let conn = state.db.read();
+    continue_watching_rows(&state.db.read(), limit.unwrap_or(20))
+}
+
+pub fn continue_watching_rows(conn: &Connection, limit: i64) -> Result<Vec<HistoryItem>> {
     // One entry per title: the latest play of any copy (episode of any copy of
     // a show). A title whose latest play was finished is not "in progress".
     let mut stmt = conn.prepare_cached(
@@ -312,7 +315,7 @@ pub async fn continue_watching(state: State<'_, AppState>, limit: Option<i64>) -
           ORDER BY updated_at DESC LIMIT ?1",
     )?;
     let rows = stmt
-        .query_map([limit.unwrap_or(20)], |r| {
+        .query_map([limit], |r| {
             Ok(HistoryItem {
                 kind: r.get(0)?,
                 source_id: r.get(1)?,
@@ -473,32 +476,38 @@ mod tests {
     fn continue_watching_lists_a_title_once() {
         let c = crate::db::test_conn();
         two_copies(&c);
-        let play = |id: &str, pos: f64, watched: bool, at: i64| {
+        let play = |kind: &str, id: &str, series: Option<&str>, pos: f64, watched: bool, at: i64| {
             c.execute(
-                "INSERT OR REPLACE INTO history (source_id, kind, item_id, title, position, duration, watched, updated_at)
-                 VALUES (1, 'movie', ?1, 'Film', ?2, 6000, ?3, ?4)",
-                params![id, pos, watched, at],
+                "INSERT OR REPLACE INTO history (source_id, kind, item_id, series_id, title, position, duration, watched, updated_at)
+                 VALUES (1, ?1, ?2, ?3, 'Title', ?4, 3000, ?5, ?6)",
+                params![kind, id, series, pos, watched, at],
             )
             .unwrap();
         };
         let listed = |c: &Connection| -> Vec<String> {
-            c.prepare(
-                "SELECT item_id FROM (SELECT h.*, ROW_NUMBER() OVER (
-                        PARTITION BY COALESCE(m.work_key, h.kind || ':' || h.item_id) ORDER BY h.updated_at DESC) AS n
-                   FROM history h LEFT JOIN movie m ON m.source_id = h.source_id AND m.id = h.item_id)
-                  WHERE n = 1 AND watched = 0 AND position > 30",
-            )
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
+            continue_watching_rows(c, 20).unwrap().into_iter().map(|h| h.item_id).collect()
         };
-        play("m1", 600.0, false, 100);
-        play("m2", 900.0, false, 200);
+        play("movie", "m1", None, 600.0, false, 100);
+        play("movie", "m2", None, 900.0, false, 200);
         assert_eq!(listed(&c), vec!["m2"]);
         // finished in the other copy: no longer in progress
-        play("m1", 5990.0, true, 300);
+        play("movie", "m1", None, 2990.0, true, 300);
+        assert!(listed(&c).is_empty());
+
+        // a show: episodes of all its copies are one title, the latest counts
+        for id in ["s1", "s2"] {
+            c.execute(
+                "INSERT INTO series (source_id, id, name, title, year, tmdb, position) VALUES (1, ?1, 'Show', 'Show', 2020, '9', 0)",
+                [id],
+            )
+            .unwrap();
+        }
+        crate::works::rebuild(&c).unwrap();
+        play("episode", "e1", Some("s1"), 400.0, false, 400);
+        play("episode", "e7", Some("s2"), 700.0, false, 500);
+        play("episode", "x1", Some("elsewhere"), 20.0, false, 550); // barely started
+        assert_eq!(listed(&c), vec!["e7"]);
+        play("episode", "e8", Some("s1"), 2990.0, true, 600);
         assert!(listed(&c).is_empty());
     }
 

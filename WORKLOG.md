@@ -48,7 +48,9 @@ import, image proxy, libmpv control. UI talks to it via Tauri commands/events.
   `mpv_create` (GTK sets the user locale); option `video-timing-offset=0` so
   `mpv_render_context_render` never blocks the GTK thread; the update callback
   must never run inline (use a GLib idle source); empty mpv node lists have
-  NULL pointers.
+  NULL pointers; stopping closes mpv's video output *without* a redraw
+  request, so the player queues one on `MPV_EVENT_IDLE` (`linux::redraw`) —
+  otherwise the last frame lingers behind transparent UI (T-057).
 - **Hardware decoding:** VA-API, zero-copy: the render context gets the GPU's
   render node (`MPV_RENDER_PARAM_DRM_DISPLAY_V2.render_fd`, found through
   `EGL_EXT_device_drm_render_node`), so `hwdec=auto-safe` picks `vaapi` and
@@ -118,10 +120,16 @@ FFmpeg files, a nasm GP fault in libc) while the same files compile fine
 alone — likely hardware instability under all-core load. Build with
 `TP_JOBS=16 CARGO_BUILD_JOBS=16` (`build-media.sh` reads `TP_JOBS`).
 
-`scripts/smoke.sh` (~45 s, 30 checks) plays at most one stream at a time and
-runs one full catalog sync of the headless profile. Its GPU-decoding check
-serves a local VP9 clip (made once with the system ffmpeg) from a temporary
-server on 127.0.0.1:18556 and is skipped where that isn't possible.
+`scripts/smoke.sh` (31 checks, ~40 s) plays at most one stream at a
+time and runs one full catalog sync of the headless profile. Its
+GPU-decoding check serves a local VP9 clip (made once with the system ffmpeg)
+from a temporary server on 127.0.0.1:18556 and is skipped where that isn't
+possible. **Don't edit files in the repo while it runs** — any change (even
+`scripts/*.sh` or this file) makes the dev webview reload (Tailwind's source
+scan; Vite logs nothing), and the checks that keep state in the page
+(`window.__smoke`) then fail with `{"error":"@…"}`;
+`performance.getEntriesByType('navigation')[0].type` and
+`performance.timeOrigin` tell whether the page reloaded.
 
 **Headless session** (`scripts/headless.sh`): its private D-Bus starts
 services on demand (portals, KWallet's `ksecretd`, prompts) with the nested
@@ -131,7 +139,14 @@ outlive it). Its Secret Service is a throwaway GNOME Keyring (unlocked, data
 in `.deps/headless/keyring`); `scripts/headless.sh keyring lock|unlock`
 changes its state without a prompt, and
 `DBUS_SESSION_BUS_ADDRESS=$(cat .deps/headless/dbus) secret-tool search --all application testpattern`
-lists the app's entries (prints secrets — test profile only).
+lists the app's entries (prints secrets — test profile only). With the
+session's `WAYLAND_DISPLAY` (`.deps/headless/socket`) and bus:
+`spectacle -b -n -f -o shot.png` captures the nested screen (release builds
+have no devtools `/snapshot`), and a KWin script (`dbus-send … --dest=org.kde.KWin
+/Scripting org.kde.kwin.Scripting.loadScript string:<file.js> string:<name>`,
+then `…Scripting.start`, `…unloadScript`) can resize or close the window
+(`workspace.windowList()`, `w.frameGeometry = {…}`, `w.closeWindow()` — a
+graceful exit, unlike the SIGTERM of `stop`/`restart-app`; T-033/T-057).
 
 **Test accounts** live in the gitignored `.env.local` (keys
 `TP_XTREAM_SERVER`, `TP_XTREAM_USER_1/PASS_1`, `..._2`, `TP_XTREAM_MIRRORS`;
@@ -160,7 +175,8 @@ binaries. Agents commit only when the user asks.
 
 **Debug automation** (debug builds only, `src-tauri/src/devtools.rs`), on
 `127.0.0.1:17777`:
-- `GET /snapshot?path=/tmp/x.png` → PNG of the window incl. the GL video layer.
+- `GET /snapshot?path=/tmp/x.png` → PNG of the window incl. the GL video layer
+  (its content: on KDE the title bar is the compositor's since Tauri 2.12).
 - `POST /eval` (body = JS function body, may `await`, `return` a value) → JSON.
   Example: `return await window.__TAURI_INTERNALS__.invoke('sources_list')`.
 - `scripts/dev-run.sh` env: `TP_DEV_AUTOPLAY=live:<stream_id>` autoplays from
@@ -193,23 +209,34 @@ binaries. Agents commit only when the user asks.
   3-day archive (`tv_archive`); timeshift streams take ~13 s to start and
   some archives have gaps (HTTP 404, e.g. RT Documentary).
   `get_short_epg` returns base64 titles/descriptions.
+- Guide data quirks (handled, T-058): "+1" channels carry their base
+  channel's guide id; "TS" is a placeholder id on 76 channels; 59 guide
+  channels list overlapping (mostly duplicated) programmes. TMDB (T-054/55):
+  97% of titles carry a TMDB id; of the 1,101 works without one, a search
+  finds 15%.
 - Names are noisy: `UK: BBC ONE LONDON 4K ◉`, `AT&T: BBC NEWS ᴿᴬᵂ`,
   categories `UK| SKY CINEMA ᴴᴰ/ᴿᴬᵂ`, movies `SC - Cleanskin (2012)`,
   series `NF - SEAL Team (2017) (US)` → cleaned by `src-tauri/src/names.rs`.
 
 ### Dependency policy (user requirement: always latest)
 Every dependency must be on its **latest stable** release. Audited
-2026-09-26 (re-audited later that day with `scripts/outdated.sh`: all current):
+2026-09-27 with `scripts/outdated.sh`: all current after the Tauri 2.12
+upgrade (T-057). The audits of 2026-09-26 had missed Tauri 2.12.0, released
+that afternoon: the script only asked whether the Cargo.toml requirement
+("2.11") *accepts* the newest release, not whether Cargo.lock uses it.
 - Rust **1.98.1** pinned in `rust-toolchain.toml` (+ `rust-version` in
   `src-tauri/Cargo.toml`), edition **2024**. Bun **1.4.2**, pinned as
   `packageManager` in `package.json` (CI installs that one).
 - All direct crates at latest stable (checked against crates.io) **except**
   the GTK3 stack — `gtk`/`gdk` 0.18, `glib`/`cairo-rs` 0.18,
   `javascriptcore-rs` 1.1 — which must match what `webkit2gtk` 2.0.2 (newest)
-  and Tauri 2.11.6 (newest stable) are built on. Tauri 3 exists only as
-  `3.0.0-alpha.x`; not adopted (stable only).
+  and Tauri 2.12.0 (newest stable; tauri-build 2.7, plugins opener 2.6,
+  single-instance 2.5, window-state 2.5) are built on. Tauri 3 exists only
+  as `3.0.0-alpha.x`; not adopted (stable only). Transitive crates: whatever
+  `cargo update` picks (nothing pending).
 - npm: `bun outdated` clean (React 19.3, Vite 8.3, TS 7.0, Tailwind 4.3,
-  react-router 8.4, @tauri-apps/* 2.11, vitest 5.0).
+  react-router 8.4, @tauri-apps/api + cli 2.12, plugin-opener 2.6,
+  vitest 5.0).
 - Media engine: FFmpeg **n9.0.2**, mpv **v0.41.0**, libplacebo **v7.360.1**,
   dav1d **1.5.4**, libxml2 **v2.15.4**, libdisplay-info **0.4.0**
   (`scripts/build-media.sh` re-fetches when a pinned tag changes and rebuilds
@@ -218,12 +245,18 @@ Every dependency must be on its **latest stable** release. Audited
   cache v6, setup-bun v2, rust-cache v2, upload-artifact v7.
 - After changing any dependency run `scripts/notices.py` (regenerates
   `THIRD_PARTY_NOTICES.md`; `scripts/check.sh` fails until you do).
-- How to re-audit: `scripts/outdated.sh` — compares every direct crate in
-  `src-tauri/Cargo.toml` with crates.io (`OLD` = behind, `pin` = the GTK3
-  exception above; exit 1 when something is behind), then runs
-  `bun outdated`, `rustup check` and compares the bun pin, the FFmpeg/mpv
-  tags in `scripts/build-media.sh` and the Action majors in the workflow with
-  upstream (`git ls-remote`).
+- How to re-audit: `scripts/outdated.sh` — every direct crate in
+  `src-tauri/Cargo.toml`: requirement *and* locked version vs crates.io
+  (`ok`; `upd` = allowed but not locked yet → `cargo update`; `OLD` = the
+  requirement excludes the newest → bump Cargo.toml; `pin` = the GTK3
+  exception above), the transitive lock entries `cargo update --dry-run`
+  would move, `bun outdated` rows, the pinned Rust toolchain vs the newest
+  stable (`rustup check`), the bun pin, the FFmpeg/mpv & co. tags in
+  `scripts/build-media.sh` and the Action majors in the workflow
+  (`git ls-remote`). Exit 1 when anything is behind. After upgrading:
+  `scripts/notices.py`, `scripts/check.sh`, smoke, `scripts/csp-check.sh`, a
+  real click (`/click`, the GTK overlay depends on tauri-runtime-wry
+  internals) and a release build.
 
 ## 4. Repository map
 
@@ -235,7 +268,7 @@ Every dependency must be on its **latest stable** release. Audited
 | `scripts/headless.sh` | Invisible test session: nested KWin + Vite (or reuse) + debug app, isolated profile, throwaway keyring |
 | `scripts/check.sh` | Rust unit tests + clippy `-D warnings` + `tsc` + vitest + notices up to date |
 | `scripts/smoke.sh` | End-to-end checks against the provider in the headless session |
-| `scripts/outdated.sh` | Dependency currency audit (crates.io, bun, rustup, FFmpeg/mpv tags) |
+| `scripts/outdated.sh` | Dependency currency audit (crates.io incl. what Cargo.lock uses + pending transitive updates, bun, Rust toolchain, FFmpeg/mpv tags, Actions) |
 | `scripts/git-hooks/pre-commit` | Refuses commits containing `.env.local` values (enable: `git config core.hooksPath scripts/git-hooks`) |
 | `scripts/csp-check.sh` | Fails on Content-Security-Policy violations in a bundled-assets build (T-040) |
 | `scripts/ubuntu-build.sh` | Portable release in an Ubuntu 24.04 container: one glibc-2.39 binary as .deb/AppImage/.rpm; `debug` + `run-app` to test it in the headless session (T-049) |
@@ -254,10 +287,10 @@ Every dependency must be on its **latest stable** release. Audited
 | `src-tauri/src/devtools.rs` | Debug-only HTTP automation + browser bridge (`/snapshot`, `/eval`, `/click`, `/invoke`, `/img`) |
 | `src-tauri/src/db.rs` | SQLite pool + schema migrations (+ `test_conn()` for unit tests) |
 | `src-tauri/src/sources/` | `xtream.rs` API client (+ mirrors) · `m3u.rs` parser · `mod.rs` CRUD + sync |
-| `src-tauri/src/epg.rs` | XMLTV streaming import + programme queries |
+| `src-tauri/src/epg.rs` | XMLTV streaming import (untangles overlaps, skips placeholder ids) + programme queries (timeshift) |
 | `src-tauri/src/catalog.rs` | Browse/detail/guide/search/up-next commands; works queries + facets, channel groups (`live_nav`, `channel_variants`), versions on detail pages |
 | `src-tauri/src/works/` | Grouping: `mod.rs` keys + `rebuild` (works, facets, channel groups, TMDB fold-in) · `variant.rs` what a copy is (service/origin/language/quality from tag + category, ranking) · `versions.rs` members, version choice, `work_prefer`, learned tracks · `genre.rs` genre words (several languages), live genres, countries · `lang.rs` ISO 639-1 names |
-| `src-tauri/src/tmdb.rs` | Optional TMDB details (user's key): background fetch (25 req/s), `tmdb` table, status/key commands |
+| `src-tauri/src/tmdb.rs` | Optional TMDB details (user's key): change lists, search for titles without an id (`tmdb_match`), background fetch (25 req/s), `tmdb` table, status/key commands |
 | `src-tauri/src/probe.rs` | "Check audio & subtitles": opens one version briefly in a second, silent mpv (only while nothing plays) |
 | `src-tauri/src/library.rs` | Favorites, history, watched state, continue watching, recent channels |
 | `src-tauri/src/playback.rs` | `play` command (URL building via `resolve`, catch-up, failover; tells the player what plays so it can learn its tracks) |
@@ -373,7 +406,9 @@ UHF/Infuse feature, **P2** = later.
   + polling).
 - **T-020 TV Guide** — `pages/Guide.tsx`: 12 h window (±3 h paging), sticky
   ruler/channel column, virtualized rows via `epg_grid` (new `withEpg`
-  filter), now line, programme dialog with Watch live / catch-up.
+  filter), now line, programme dialog with Watch live / catch-up. Titles of
+  programmes that began left of the visible window stay in view (sticky
+  inside their block, T-057).
 - **T-024 Search** — `pages/Search.tsx`: FTS results (channels, movies,
   series), recent searches, provider tag in captions to tell duplicates apart.
 - **T-025 Settings** — `pages/Settings.tsx`: source cards (status, expiry,
@@ -399,8 +434,13 @@ UHF/Infuse feature, **P2** = later.
   Search, `components/ErrorBoundary.tsx` around pages, "My List" shelf on Home.
 
 - **T-033 Window state + single instance** — `tauri-plugin-single-instance`
-  2.4.5 (second launch focuses the window) + `tauri-plugin-window-state` 2.4.1
-  (size/position/maximized; not visibility/fullscreen).
+  (second launch focuses the window) + `tauri-plugin-window-state`
+  (size/position/maximized; not visibility/fullscreen); 2.5.0 each since
+  T-057. Verified headless on 2026-09-27: a second launch exits at once; a
+  size set through a KWin script (nested session's D-Bus, `loadScript` +
+  `start`) is saved when the window is closed (KWin `closeWindow()` — the
+  usual SIGTERM stop saves nothing) and restored at the next start. Wayland
+  doesn't let apps place windows, so the position isn't restored there.
 - **T-032 Up next** — `catalog::up_next` (uses cached series detail; next
   episode after the most recently *finished* one) + "Up Next" shelf on Home.
   `parse_episodes` factored out of `series_detail`. (Emptied after every
@@ -830,7 +870,9 @@ UHF/Infuse feature, **P2** = later.
   while anything plays — one stream per account — and `play` cancels a
   running check first). A copy the server can't open is remembered
   (`media_info` `{"unavailable":true}`): its card says so with "Check
-  again", and the automatic choice avoids it (`versions::BROKEN`). UI:
+  again", and the automatic choice avoids it (`versions::BROKEN`). Only a
+  stream that failed to open counts — a check cancelled by `play` stores
+  nothing (T-057). UI:
   `components/Versions.tsx` (hero badge "Apple TV+ · 4K Dolby Vision · 6
   versions", cards with picture/sound, seasons, languages — the viewer's
   own first). Verified on For All Mankind: 6 copies (Nordic 4K DA and
@@ -881,14 +923,16 @@ UHF/Infuse feature, **P2** = later.
   v4 token as Bearer, or v3 key) `tmdb.rs` fetches `/3/movie/{id}` and
   `/3/tv/{id}` for every work with a TMDB id — newest first, 25 requests/s,
   8 at a time, 429s waited out, a 401 stops the run — into `tmdb` (schema
-  v8; 404 remembered; refetched after 30 days); runs 20 s after start, after
+  v8; 404 remembered; refetched when TMDB lists a change, else after 180
+  days — T-055); runs 20 s after start, after
   each full sync and when the key is saved (checked first with
   `/3/authentication`). `works::rebuild` folds in genres (TMDB names through
   `genre::from_text`), original language, collection (movies), networks
   (series), and rating/year/poster/backdrop where the provider has none —
   only when TMDB's title or year fits the provider's (`tmdb_fits`: some
   entries carry another title's id). Detail pages show original language,
-  collection (links to the filtered grid), network, country. Status +
+  collection (links to the filtered grid), network, country (TMDB's; the
+  provider's movie field often lists languages, T-057). Status +
   progress in Settings (`tmdb_status`, `tmdb://progress`); removing the key
   stops a run. The key lives in the system keyring (`secrets::NAMED`, entry
   "testpattern: TMDB API key"; database setting `tmdb.key` only without a
@@ -905,32 +949,167 @@ UHF/Infuse feature, **P2** = later.
   …). Verified in the app: Series → Network "Apple TV" + Original language
   English = 180 shows, other facet counts follow.
 
+- **T-057 Status review (2026-09-27, session 5)** — the user asked whether
+  the worklog is current and the done work tested, complete and working.
+  State at the start: PR #2 (T-050…T-054 + session-4 fixes) merged by the
+  user 2026-09-27 03:17 UTC (`246d825`), CI green on the PR head and on
+  `main`; `scripts/check.sh` (68 Rust tests, 35 vitest) and smoke (30/30)
+  green. Then a code review of the PR #2 diff (6.3k lines) and every new
+  feature by hand in the headless app (facet panel with combined filters vs
+  backend counts, movie/series versions, "Check … of all", picking a
+  version, season union, Live TV countries/genres/feeds, zapping a grouped
+  list, Guide countries/genres, search, Home, TMDB status). Found and fixed
+  (branch `review-2026-09-27`):
+  1. **A track check interrupted by playback marked the version broken**
+     (T-051): `play` cancels a running check (one stream per account), but
+     `probe.rs` took the cancelled check for a stream that doesn't open and
+     stored `{"unavailable":true}` — the card then said "The server couldn't
+     open this version" and the automatic choice avoided it. Reproduced
+     (Perfect Days, Nordic copy, flagged after a 0.5 s interruption; alone
+     it opens in 0.9 s with 5 subtitle tracks). A cancelled check now stores
+     nothing (`Outcome::Cancelled`, log "cancelled by playback") and a
+     series check doesn't go on to its second episode. Smoke check "track
+     check interrupted by playback leaves no verdict".
+  2. **The last video frame stayed on screen after playback stopped**: mpv
+     closes its video output on stop without asking for a redraw, so the GL
+     area kept the frame — dimmed behind the Live TV preview window's "Select
+     a channel". The player queues one redraw on `MPV_EVENT_IDLE`
+     (`player/linux.rs` `redraw`); mpv then renders an empty frame.
+     Snapshot of the preview window: mean RGB 22/24/16 → 1/1/1.
+  3. **TV Guide: no title on programmes that began before the visible
+     window** (T-020) — the title sat at the block's left edge, under the
+     channel column (at "Now", 5 of the first 12 UK rows showed an empty
+     current programme). Titles are sticky inside their block
+     (`overflow-clip`: `overflow-hidden` would make the block the sticky
+     container).
+  4. **Movie "Country" showed languages** ("English, Español"): the
+     provider's field won over TMDB's countries, and 4 of the 8 cached movie
+     details with a country held languages. TMDB's countries win when known.
+  5. `continue_watching_lists_a_title_once` tested its own copy of the SQL
+     (which lacked the series part), not the production query → the query
+     is `library::continue_watching_rows`, the test calls it and covers
+     episodes of two copies of a show (mutation-checked: without `s.work_key`
+     in the partition it fails).
+  6. Latent: a series page borrowed the plot of *any* ungrouped series when
+     its own had none (`x.work_key IS s.work_key` matches every NULL key) →
+     `catalog::series_text` + unit test.
+  7. **The dependency audit missed Tauri 2.12.0** (released 2026-09-26
+     16:44 UTC, incl. security fix GHSA-w28w-mhc8-qvjv): `scripts/outdated.sh`
+     only checked that requirements *accept* the newest release. It now
+     compares the locked version too (`upd`), lists what `cargo update`
+     would move, fails on `bun outdated` rows and compares the pinned Rust
+     toolchain with the newest stable. Upgraded tauri 2.12.0, tauri-build
+     2.7.0, plugins opener 2.6.0 / single-instance 2.5.0 / window-state
+     2.5.0, npm @tauri-apps/api + cli 2.12.0 / plugin-opener 2.6.0 and 56
+     transitive lock entries (wry 0.55 → 0.57, tao 0.35 → 0.37, …); GTK3
+     stack unchanged (webkit2gtk 2.0.2, gtk 0.18). Visible change: tao 0.36+
+     leaves the title bar to the compositor where it offers server-side
+     decorations (KDE draws its own instead of GTK's header bar; the icon
+     comes from the installed `testpattern.desktop`). Verified on 2.12:
+     check.sh, smoke 31/31, a real GTK click (`/click`), `csp-check.sh` (0
+     violations; now also walks a movie page with versions), single
+     instance, window size saved/restored (T-033), and a release build
+     (`bun run tauri build`): 63.3 MB single binary without FFmpeg/mpv & co.
+     among its 31 needed libraries, rpm/deb 25.7 MiB; copied alone into an
+     empty directory it renders the full UI in the nested session (captured
+     with `spectacle -b -n -f` on the session's bus/display — release builds
+     have no devtools `/snapshot`).
+  Found, not fixed: provider guide data — "+1" channels carry their base
+  channel's EPG id, overlapping programmes (→ T-058). Noted: the CI bundle
+  job (version tags / manual runs only) has never run to the end — 4×
+  skipped, 1× cancelled; the portable bundles were only built locally
+  (T-049). A manual run (Actions → CI → Run workflow) would exercise it.
+
+- **T-055 TMDB: keep current, cover titles without an id** — a TMDB run
+  (`tmdb.rs`: 20 s after start, after each full sync, Settings → Update) has
+  three steps now:
+  1. **Change lists instead of a refetch every 30 days**: `GET
+     /3/{movie,tv}/changes` for each day since the day of the last scan
+     (setting `tmdb.changesAt`). The lists name days only (inclusive dates,
+     at most 14 days back, at most 500 pages per list; a day has ~60 + ~20
+     pages), so a title's stored details are marked stale (`fetched_at = 0`)
+     for changes on or after the day they were fetched. No scan within 14
+     days (or never): details fetched before the window are fetched again.
+     `MAX_AGE` (the safety net) is 180 days. Measured on the test catalog:
+     the first scan over the whole window marked 9,049 of 33k titles, day by
+     day 1,333; a second run the same day scanned one day, marked 148 (same-
+     day changes can't be ordered against the fetch) and was done in 13 s —
+     before, all 33k were refetched every 30 days (≈ 23 min).
+  2. **Titles without an id**: every work keyed `title:` (title + year) or
+     `item:` (no year) is searched once (`/3/search/movie|tv?query=…&year=…`,
+     `_` → space); only a single result whose title or original title equals
+     the work's (`works::norm_title`) counts (`pick_match`). Answers are kept
+     in `tmdb_match` (schema v9: work kind + key → TMDB id, NULL = none;
+     asked again after `MAX_AGE`); `works::assign_keys` turns a found key into
+     `tmdb:<id>` (grouping rules v5), so the work joins or forms its TMDB
+     work and gets details like any other. Test catalog: 1,101 searches in
+     ~45 s, 166 found — `title:` movies 26/110, series 10/31; year-less
+     movies 47/762 (Zumba videos, concerts, Swedish documentaries, "22
+     July"), year-less series 83/198 ("Hotel Portofino" — now with year 2022
+     and networks BritBox, U&Drama —, "Från Trakten" on SVT, …); spot-checked
+     correct. A second search without the year for misses would add only 4,
+     one of them wrong ("Titanic" 1996 → the 1997 film): not done.
+  3. Details of every work with an id that has none or stale ones.
+  Settings → Metadata says "Details for 33,107 of 33,310 titles (165 found
+  by title)" and "checking TMDB for changes…" while scanning. Tests:
+  `change_lists_continue_from_the_last_scan`,
+  `a_search_counts_only_one_exact_title`,
+  `changed_and_unmatched_titles_are_fetched`,
+  `titles_found_on_tmdb_join_their_work`.
+
+- **T-056 HDR in track checks** — the check (`probe.rs`) decodes nothing
+  unless that's the only way to tell HDR: for HEVC/AV1/VP9 video without a
+  Dolby Vision profile (mpv lists DV from the container; `track-list` has no
+  other colour info) it switches video on after `file-loaded` (`vid=auto`,
+  software, still paused) and reads the first frame's `video-params` gamma
+  (`pq`/`hlg` = HDR; waits at most 5 s). H.264 copies stay undecoded.
+  Measured on 4K HEVC (Ryzen 9 5950X): 255–616 ms, 280–450 ms CPU per
+  frame; whole check 0.6–1.1 s. Findings on the provider: 4K copies with a
+  DV profile are detected as before (Night Swim, Go Team!, The Love
+  Hypothesis); HDR10 without a DV profile only shows decoded (Against the
+  Ice "Netflix · 4K Dolby Vision", two Marvel 4K films → PQ); and several
+  "4K" copies are plain SDR (For All Mankind "Apple TV+ · 4K Dolby Vision",
+  Mission: Impossible, X-Men: First Class → bt.1886) — the version card now
+  shows "HDR" only where it is. A check cancelled during the decode stores
+  nothing (as T-057). Unit test
+  `decodes_a_frame_only_when_hdr_is_unknown_otherwise`.
+
+- **T-058 Guide: timeshift channels, overlapping programmes, placeholder
+  ids** — three kinds of provider guide data the Guide showed wrong:
+  1. **"+1" channels** carried their base channel's guide id ("ITV 1 +1" →
+     `ITV1.uk`), so they showed its schedule an hour early.
+     `works::timeshift_hours`: "+1"/"+2" at the end of the name (not other
+     numbers: "… +45" event feeds, "TENNIS CHANNEL PLUS 9"), and only when a
+     channel *without* such a suffix uses the same guide id (else it's the
+     channel's own guide). `works::rebuild` stores it as `channel.epg_shift`
+     (schema v10, grouping rules v6): 43 feeds on the test provider. Reads
+     shift by it — now/next (`catalog::channel_select`), the preview's list
+     (`epg_channel`, incl. the panel's short-EPG fallback) and the grid
+     (`epg::programmes(…, shift)`); catch-up uses the times shown, i.e. the
+     +1 stream's own. Verified: ITV 1 +1 and E4 +1 show ITV 1's and E4's
+     programmes exactly an hour later.
+  2. **Overlapping programmes** (59 of 722 guide channels, 979 pairs — mostly
+     the same schedule merged twice with small offsets: "Hygge i hagen"
+     13:30–14:29 and 13:31–14:30, racing replays 15 min apart; some real
+     conflicts: Channel 4's "Couples Come Dine…" vs "The Simpsons") are
+     untangled after each import (`epg::untangle`/`tidy`, for the channels
+     the import replaced): an overlapping entry with the same title is
+     dropped, a different one ends the programme before it. First import:
+     729 fixed, 0 overlaps left, Channel 4's row reads cleanly.
+  3. **Placeholder ids**: "TS" is shared by 76 unrelated channels of several
+     countries and has 20 "TimeShift 04" entries. `epg::wanted_ids` leaves
+     out an id that more than 20 channels of more than one country share
+     (regional networks share within one country: SVT1's 27 regions); those
+     channels now say "No programme information".
+  Tests: `timeshift_channels_run_behind_the_guide_they_share`,
+  `a_timeshift_channel_shows_its_guide_later`,
+  `overlapping_programmes_are_untangled`, `placeholder_guide_ids_are_left_out`.
+
 ### 🟨 In progress
 
 _(nothing)_
 
 ### 🟦 To do
-
-#### T-055 (P2) TMDB: keep current, cover titles without an id
-- Refresh with TMDB's change lists instead of refetching everything after
-  30 days: `GET /3/movie/changes` and `/3/tv/changes` (`start_date`, at most
-  14 days back, paged) list ids changed since the last run; mark those
-  `tmdb` rows stale (`fetched_at = 0`) before `todo()` (`tmdb.rs`). Store the
-  last run date in a setting.
-- ~1,100 works have no TMDB id (`title:` keys). Look them up with
-  `GET /3/search/movie?query=<title>&year=<year>` / `/3/search/tv?query=…
-  &first_air_date_year=…`; accept a single exact normalized-title match
-  (`works::norm_title`), store it as a mapping table (title key → TMDB id)
-  so `assign_keys` can put them into the TMDB group. Spec:
-  https://developer.themoviedb.org/openapi/tmdb-api.json.
-
-#### T-056 (P2) Versions: HDR in track checks
-- The track check (`probe.rs`) doesn't decode, so `hdr` is only set when
-  mpv lists `dolby-vision-profile` for the track (For All Mankind's "4K
-  Dolby Vision" copy reported none). HDR10/DV need `video-params` (decode
-  one frame: `vid=auto`, `hwdec=no`, paused, wait for `video-params` gamma
-  `pq`/`hlg`, then stop) — measure the time/CPU on a 4K HEVC stream first;
-  playback already records it (`learn_tracks`).
 
 #### T-028 (P2) Other platforms
 - Windows/macOS: libmpv render API with WGL/CGL contexts or `wid` embedding;
@@ -1072,3 +1251,33 @@ _(nothing)_
   (provider order) → guide channels first per genre (UK now opens with BBC
   One London, BBC 1, BBC 2, ITV 1 …). Tests added for both. Nothing
   committed yet (branch `content-grouping`, based on the merged PR #1).
+- **2026-09-27 (session 5)** — User asked again for a status check: is the
+  worklog current, is the done work tested, complete and working? The
+  worklog's last line ("nothing committed yet") was outdated: session 4's
+  work had been committed on `content-grouping` and the user merged it as
+  PR #2 (03:17 UTC, `246d825`); CI green on the PR head and on `main`.
+  Checks green at the start (68 Rust tests, 35 vitest, smoke 30/30). Code
+  review of the PR #2 diff + every T-050…T-054 feature by hand found 6
+  problems — two only visible in use (interrupted track checks flagged
+  versions as broken; the last video frame lingered after stop), one in the
+  Guide (titles of programmes that began earlier were off-screen), the movie
+  country, a test that didn't test the production query, a latent NULL-key
+  lookup — all fixed and covered (T-057). The dependency audit had missed
+  Tauri 2.12 (with a security fix) because it only compared requirements:
+  script fixed, Tauri 2.12 family + 56 transitive crates upgraded and
+  re-verified. New gotcha: editing any repo file while smoke runs reloads
+  the dev webview (§3). New card T-058 (provider guide data: +1 channels,
+  overlaps). Counts now: 69 Rust tests, 35 vitest, 31 smoke checks. Work on
+  branch `review-2026-09-27` (from `main`), not committed.
+- **2026-09-27 (session 5, continued)** — User: "continue working the
+  worklog". Done in card order, each measured on the provider first:
+  T-055 (TMDB change lists — scanned day by day: 1,333 refetches instead of
+  9,049 for a whole-window scan, later runs ~13 s instead of a 23-min
+  refetch every 30 days — and a search for works without an id: 166 of
+  1,101 found), T-056 (track checks decode one frame only for HEVC/AV1/VP9
+  without a Dolby Vision profile, 0.25–0.6 s; found HDR10 copies without DV
+  metadata and "4K Dolby Vision" copies that are SDR), T-058 (43 "+1" feeds
+  shifted, 729 overlapping programmes untangled, the placeholder guide id
+  "TS" left out). Checks: 78 Rust tests, 35 vitest, smoke 31/31, CSP clean.
+  Only T-028 (Windows/macOS hardware) is left in To do. Still uncommitted
+  on branch `review-2026-09-27`.

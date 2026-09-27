@@ -69,6 +69,10 @@ pub struct ChannelItem {
     pub next: Option<Brief>,
     /// the channel this feed belongs to (all its quality variants)
     pub group: Option<GroupInfo>,
+    /// seconds a timeshift channel runs behind the guide it shares; the
+    /// times above already include it
+    #[serde(skip)]
+    pub epg_shift: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,7 +271,8 @@ pub async fn categories(state: State<'_, AppState>, kind: String) -> Result<Vec<
 /// Channel rows with now/next. `grouped`: one row per channel group,
 /// titled as the group and playing its chosen variant (`g.source_id`/
 /// `g.item_id`), a favorite when any variant is. A feed without its own EPG
-/// id uses its group's.
+/// id uses its group's; a timeshift channel ("ITV 1 +1") shows its guide
+/// `c.epg_shift` later.
 fn channel_select(grouped: bool) -> String {
     let (title, favorite, from) = if grouped {
         (
@@ -286,15 +291,18 @@ fn channel_select(grouped: bool) -> String {
     format!(
         "SELECT c.source_id, c.id, c.num, {title}, COALESCE(c.logo, g.logo), COALESCE(c.epg_id, g.epg_id), c.category_id,
                 c.badges, c.archive, c.archive_days, {favorite},
-                p.title, p.start, p.stop, q.title, q.start, q.stop, g.key, g.variants, g.country, g.genre
+                p.title, p.start + c.epg_shift, p.stop + c.epg_shift, q.title, q.start + c.epg_shift, q.stop + c.epg_shift,
+                g.key, g.variants, g.country, g.genre, c.epg_shift
            FROM {from}
            LEFT JOIN programme p ON p.source_id = c.source_id AND p.epg_id = COALESCE(c.epg_id, g.epg_id)
                 AND p.start = (SELECT MAX(start) FROM programme
-                                WHERE source_id = c.source_id AND epg_id = COALESCE(c.epg_id, g.epg_id) AND start <= :now)
-                AND p.stop > :now
+                                WHERE source_id = c.source_id AND epg_id = COALESCE(c.epg_id, g.epg_id)
+                                  AND start <= :now - c.epg_shift)
+                AND p.stop > :now - c.epg_shift
            LEFT JOIN programme q ON q.source_id = c.source_id AND q.epg_id = COALESCE(c.epg_id, g.epg_id)
                 AND q.start = (SELECT MIN(start) FROM programme
-                                WHERE source_id = c.source_id AND epg_id = COALESCE(c.epg_id, g.epg_id) AND start > :now)"
+                                WHERE source_id = c.source_id AND epg_id = COALESCE(c.epg_id, g.epg_id)
+                                  AND start > :now - c.epg_shift)"
     )
 }
 
@@ -323,6 +331,7 @@ fn row_to_channel(r: &Row) -> rusqlite::Result<ChannelItem> {
             Some(key) => Some(GroupInfo { key, variants: r.get(18)?, country: r.get(19)?, genre: r.get(20)? }),
             None => None,
         },
+        epg_shift: r.get(21)?,
     })
 }
 
@@ -1569,6 +1578,31 @@ struct SeriesText {
     trailer: Option<String>,
 }
 
+/// Long texts of a series: the requested copy's, else any copy's of the same
+/// work (a copy that isn't grouped yet has only its own).
+fn series_text(conn: &Connection, source_id: i64, id: &str) -> Result<SeriesText> {
+    Ok(conn.query_row(
+        "SELECT (SELECT plot FROM series x
+                  WHERE (x.work_key = s.work_key OR (x.source_id = s.source_id AND x.id = s.id)) AND x.plot IS NOT NULL
+                  ORDER BY x.source_id = s.source_id AND x.id = s.id DESC LIMIT 1),
+                COALESCE(s.cast_list, (SELECT cast_list FROM series x WHERE x.work_key = s.work_key AND x.cast_list IS NOT NULL LIMIT 1)),
+                COALESCE(s.director, (SELECT director FROM series x WHERE x.work_key = s.work_key AND x.director IS NOT NULL LIMIT 1)),
+                COALESCE(s.release_date, (SELECT release_date FROM series x WHERE x.work_key = s.work_key AND x.release_date IS NOT NULL LIMIT 1)),
+                COALESCE(s.trailer, (SELECT trailer FROM series x WHERE x.work_key = s.work_key AND x.trailer IS NOT NULL LIMIT 1))
+           FROM series s WHERE s.source_id = ?1 AND s.id = ?2",
+        params![source_id, id],
+        |r| {
+            Ok(SeriesText {
+                plot: r.get(0)?,
+                cast: r.get(1)?,
+                director: r.get(2)?,
+                release: r.get(3)?,
+                trailer: r.get(4)?,
+            })
+        },
+    )?)
+}
+
 /// Watch state of one episode (of any copy of the show).
 struct Watched {
     source_id: i64,
@@ -1610,26 +1644,7 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
                     .optional()?
                     .ok_or_else(|| Error::NotFound(format!("series {id}")))?,
             };
-            // long texts: the requested copy, else any copy that has them
-            let text = conn.query_row(
-                "SELECT (SELECT plot FROM series x WHERE x.work_key IS s.work_key AND x.plot IS NOT NULL
-                          ORDER BY x.source_id = s.source_id AND x.id = s.id DESC LIMIT 1),
-                        COALESCE(s.cast_list, (SELECT cast_list FROM series x WHERE x.work_key = s.work_key AND x.cast_list IS NOT NULL LIMIT 1)),
-                        COALESCE(s.director, (SELECT director FROM series x WHERE x.work_key = s.work_key AND x.director IS NOT NULL LIMIT 1)),
-                        COALESCE(s.release_date, (SELECT release_date FROM series x WHERE x.work_key = s.work_key AND x.release_date IS NOT NULL LIMIT 1)),
-                        COALESCE(s.trailer, (SELECT trailer FROM series x WHERE x.work_key = s.work_key AND x.trailer IS NOT NULL LIMIT 1))
-                   FROM series s WHERE s.source_id = ?1 AND s.id = ?2",
-                params![source_id, id],
-                |r| {
-                    Ok(SeriesText {
-                        plot: r.get(0)?,
-                        cast: r.get(1)?,
-                        director: r.get(2)?,
-                        release: r.get(3)?,
-                        trailer: r.get(4)?,
-                    })
-                },
-            )?;
+            let text = series_text(conn, source_id, &id)?;
             let history: Vec<Watched> = conn
                 .prepare_cached(
                     "SELECT h.source_id, h.item_id, h.season, h.episode, h.position, h.watched, h.updated_at
@@ -1825,23 +1840,23 @@ pub async fn epg_channel(
     to: i64,
 ) -> Result<Vec<ProgrammeRow>> {
     let st = state.inner().clone();
-    let (epg_id, rows) = {
+    let (epg_id, shift, rows) = {
         let channel_id = channel_id.clone();
         blocking(&st, move |conn| {
-            let epg_id: Option<String> = conn
+            let (epg_id, shift): (Option<String>, i64) = conn
                 .query_row(
-                    "SELECT COALESCE(c.epg_id, g.epg_id) FROM channel c LEFT JOIN channel_group g ON g.key = c.group_key
+                    "SELECT COALESCE(c.epg_id, g.epg_id), c.epg_shift FROM channel c LEFT JOIN channel_group g ON g.key = c.group_key
                       WHERE c.source_id = ?1 AND c.id = ?2",
                     params![source_id, channel_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?
-                .flatten();
+                .unwrap_or((None, 0));
             let rows = match &epg_id {
-                Some(e) => epg::programmes(conn, source_id, e, from, to)?,
+                Some(e) => epg::programmes(conn, source_id, e, from, to, shift)?,
                 None => Vec::new(),
             };
-            Ok((epg_id, rows))
+            Ok((epg_id, shift, rows))
         })
         .await?
     };
@@ -1878,8 +1893,9 @@ pub async fn epg_channel(
     Ok(list
         .iter()
         .filter_map(|p| {
-            let start = i64_of(&p["start_timestamp"])?;
-            let stop = i64_of(&p["stop_timestamp"])?;
+            // the panel's listing is the guide's: a timeshift channel runs behind it
+            let start = i64_of(&p["start_timestamp"])? + shift;
+            let stop = i64_of(&p["stop_timestamp"])? + shift;
             (stop > from && start < to).then(|| ProgrammeRow {
                 epg_id: epg_id.clone().unwrap_or_default(),
                 start,
@@ -1919,7 +1935,7 @@ pub async fn epg_grid(state: State<'_, AppState>, query: GuideQuery) -> Result<P
         let mut items = Vec::with_capacity(page.items.len());
         for channel in page.items {
             let programmes = match &channel.epg_id {
-                Some(e) => epg::programmes(conn, channel.source_id, e, query.from, query.to)?,
+                Some(e) => epg::programmes(conn, channel.source_id, e, query.from, query.to, channel.epg_shift)?,
                 None => Vec::new(),
             };
             items.push(GuideRow { channel, programmes });
@@ -2051,6 +2067,24 @@ mod tests {
         assert_eq!(episode_title("S01E02 - The Pilot", "X", 2), "The Pilot");
         assert_eq!(episode_title("The Pilot", "X", 2), "The Pilot");
         assert_eq!(episode_title("", "X", 3), "Episode 3");
+    }
+
+    #[test]
+    fn series_texts_come_from_copies_of_the_same_show() {
+        let c = crate::db::test_conn();
+        for (id, plot) in [("a", Some("About A")), ("b", None)] {
+            c.execute(
+                "INSERT INTO series (source_id, id, name, title, plot, position) VALUES (1, ?1, ?1, ?1, ?2, 0)",
+                params![id, plot],
+            )
+            .unwrap();
+        }
+        // not grouped (yet): a copy without a plot doesn't borrow another show's
+        assert_eq!(series_text(&c, 1, "a").unwrap().plot.as_deref(), Some("About A"));
+        assert_eq!(series_text(&c, 1, "b").unwrap().plot, None);
+        // copies of one show share them
+        c.execute("UPDATE series SET work_key = 'tmdb:1'", []).unwrap();
+        assert_eq!(series_text(&c, 1, "b").unwrap().plot.as_deref(), Some("About A"));
     }
 
     #[test]
@@ -2218,6 +2252,39 @@ mod tests {
         assert_eq!(titles(uk), ["BBC ONE", "BAYWATCH"]);
         let genre = ChannelQuery { grouped: true, genre: Some("Entertainment".into()), ..Default::default() };
         assert_eq!(titles(genre), ["BBC ONE", "BAYWATCH"]);
+    }
+
+    #[test]
+    fn a_timeshift_channel_shows_its_guide_later() {
+        let c = crate::db::test_conn();
+        c.execute("INSERT INTO category (source_id, kind, id, name, title, region, position) VALUES (1, 'live', 'e', 'ENT', 'ENT', 'UK', 0)", [])
+            .unwrap();
+        for (id, title) in [("itv", "ITV 1"), ("itv1", "ITV 1 +1")] {
+            c.execute(
+                "INSERT INTO channel (source_id, id, name, title, category_id, epg_id, position) VALUES (1, ?1, ?2, ?2, 'e', 'ITV1.uk', 0)",
+                params![id, title],
+            )
+            .unwrap();
+        }
+        let now = now();
+        for (start, stop, title) in [(now - 5400, now - 1800, "Earlier"), (now - 1800, now + 1800, "Show")] {
+            c.execute(
+                "INSERT INTO programme (source_id, epg_id, start, stop, title) VALUES (1, 'ITV1.uk', ?1, ?2, ?3)",
+                params![start, stop, title],
+            )
+            .unwrap();
+        }
+        crate::works::rebuild(&c).unwrap();
+        let ch = |id: &str| channel_by_id(&c, 1, id).unwrap();
+        let (itv, plus1) = (ch("itv"), ch("itv1"));
+        assert_eq!(itv.now.as_ref().map(|b| b.title.as_str()), Some("Show"));
+        // an hour behind: what ITV 1 showed an hour ago, at its own times
+        let now_plus1 = plus1.now.unwrap();
+        assert_eq!((now_plus1.title.as_str(), now_plus1.start, now_plus1.stop), ("Earlier", now - 1800, now + 1800));
+        assert_eq!(plus1.next.map(|b| (b.title, b.start)), Some(("Show".into(), now + 1800)));
+        // the guide grid and the preview's list the same
+        let rows = epg::programmes(&c, 1, "ITV1.uk", now, now + 7200, plus1.epg_shift).unwrap();
+        assert_eq!(rows.iter().map(|p| (p.title.as_str(), p.start)).collect::<Vec<_>>(), [("Earlier", now - 1800), ("Show", now + 1800)]);
     }
 
     #[test]

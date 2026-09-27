@@ -11,7 +11,7 @@ name = "testpattern_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
 anyhow = "1"
@@ -31,10 +31,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "g
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2.11", features = [] }
-tauri-plugin-opener = "2.5"
-tauri-plugin-single-instance = "2.4"
-tauri-plugin-window-state = "2.4"
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2.6"
+tauri-plugin-single-instance = "2.5"
+tauri-plugin-window-state = "2.5"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
 url = "2"
@@ -48,7 +48,7 @@ strip = "debuginfo"
 opt-level = 2
 
 # The GTK3 binding versions are dictated by webkit2gtk 2.0.2 (newest release),
-# which Tauri 2.11 is built on. Newer gtk/glib/cairo/javascriptcore crates
+# which Tauri 2.12 is built on. Newer gtk/glib/cairo/javascriptcore crates
 # would be a second, incompatible type universe — bump them only together
 # with Tauri.
 [target.'cfg(target_os = "linux")'.dependencies]

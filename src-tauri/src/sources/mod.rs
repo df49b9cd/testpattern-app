@@ -627,17 +627,16 @@ async fn sync_epg(st: &AppState, id: i64, client: &reqwest::Client, urls: &[Stri
             tokio::task::spawn_blocking(move || -> Result<usize> {
                 let (wanted, past_days) = {
                     let conn = st2.db.read();
-                    let mut stmt = conn.prepare(
-                        "SELECT DISTINCT epg_id FROM channel WHERE source_id = ?1 AND epg_id IS NOT NULL",
-                    )?;
-                    let wanted: HashSet<String> = stmt.query_map([id], |r| r.get(0))?.collect::<Result<_, _>>()?;
-                    (wanted, crate::epg::history_days(&conn, id)?)
+                    (crate::epg::wanted_ids(&conn, id)?, crate::epg::history_days(&conn, id)?)
                 };
                 let guide = crate::epg::open_guide(&file2)?;
                 let mut conn = st2.db.write();
                 let imported = crate::epg::import(&mut conn, id, guide, &wanted, past_days)?;
                 if let Some(e) = &imported.incomplete {
                     log::warn!("source {id}: guide document incomplete ({e}); kept {} programmes", imported.programmes);
+                }
+                if imported.untangled > 0 {
+                    log::info!("source {id}: {} overlapping programmes untangled", imported.untangled);
                 }
                 conn.execute("UPDATE source SET last_epg_sync = ?2 WHERE id = ?1", params![id, now()])?;
                 Ok(imported.programmes)

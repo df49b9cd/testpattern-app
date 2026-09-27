@@ -195,15 +195,20 @@ export function GuidePage() {
                           key={p.start}
                           onClick={() => setSelected({ channel: row.channel, programme: p })}
                           className={clsx(
-                            "absolute inset-y-1 overflow-hidden rounded-lg px-2.5 text-left transition-colors",
+                            // overflow-clip, not -hidden: that would make the button the
+                            // sticky container of its text
+                            "absolute inset-y-1 overflow-clip rounded-lg text-left transition-colors",
                             live ? "bg-accent/25 ring-1 ring-accent/50 hover:bg-accent/35" : past ? "bg-white/[0.03] hover:bg-white/[0.07]" : "bg-white/[0.06] hover:bg-white/[0.11]",
                           )}
                           style={{ left: left + 1, width: right - left - 2 }}
                           title={p.title}
                         >
-                          <div className={clsx("truncate text-[13px] font-semibold", past && "text-dim")}>{p.title}</div>
-                          <div className="truncate text-[11px] tabular-nums text-faint">
-                            {hhmm(p.start)} – {hhmm(p.stop)}
+                          {/* a programme that began further left keeps its title in view */}
+                          <div className="sticky w-fit max-w-full px-2.5" style={{ left: CHANNEL_COL }}>
+                            <div className={clsx("truncate text-[13px] font-semibold", past && "text-dim")}>{p.title}</div>
+                            <div className="truncate text-[11px] tabular-nums text-faint">
+                              {hhmm(p.start)} – {hhmm(p.stop)}
+                            </div>
                           </div>
                         </button>
                       );

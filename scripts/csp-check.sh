@@ -34,6 +34,9 @@ for page in "#/" "#/live" "#/guide" "#/movies" "#/series" "#/search?q=news" "#/s
   printf '  %-20s %s violations so far\n' "$page" "$(js 'return window.__TP_CSP__.length')"
 done
 js "const s = (await window.__TAURI_INTERNALS__.invoke('series_list', {query: {limit: 1}})).items[0]; location.hash = '#/series/' + s.sourceId + '/' + s.id; await new Promise(r => setTimeout(r, 2500)); return 1;" >/dev/null
+# a movie with several versions (version cards, TMDB facts)
+js "const m = (await window.__TAURI_INTERNALS__.invoke('movies', {query: {sort: 'added', limit: 300}})).items.find(x => x.versionCount > 1); location.hash = '#/movies/' + m.sourceId + '/' + m.id; await new Promise(r => setTimeout(r, 2500)); return 1;" >/dev/null
+echo "  detail pages         $(js 'return window.__TP_CSP__.length') violations so far"
 js "location.hash = '#/settings'; await new Promise(r => setTimeout(r, 1200)); for (const label of ['License', 'Third-party notices']) { [...document.querySelectorAll('button')].find(b => b.innerText === label).click(); for (let i = 0; i < 40 && !document.querySelector('[role=dialog] pre'); i++) await new Promise(r => setTimeout(r, 250)); window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); await new Promise(r => setTimeout(r, 300)); } return 1;" >/dev/null
 echo "  license dialogs      $(js 'return window.__TP_CSP__.length') violations so far"
 js "const inv = window.__TAURI_INTERNALS__.invoke; location.hash = '#/live?list=all'; await new Promise(r => setTimeout(r, 2000)); [...document.querySelectorAll('[role=button]')].filter(r => r.querySelector('img'))[1].click(); for (let i = 0; i < 30; i++) { await new Promise(r => setTimeout(r, 500)); if ((await inv('player_get', {name: 'time-pos'})) > 2) break; } await inv('player_stop'); location.hash = '#/'; return 1;" >/dev/null

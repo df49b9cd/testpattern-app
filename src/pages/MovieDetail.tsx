@@ -152,7 +152,8 @@ export function MovieDetailPage() {
           ["Cast", m.cast],
           ["Genre", m.genre],
           ["Released", m.releaseDate],
-          ["Country", m.country ?? (m.tmdb?.countries.length ? m.tmdb.countries.join(", ") : null)],
+          // TMDB's when known: the provider's field often lists languages ("English, Español")
+          ["Country", m.tmdb?.countries.length ? m.tmdb.countries.join(", ") : m.country],
           ["Original language", m.tmdb?.originalLanguage],
           [
             "Collection",
