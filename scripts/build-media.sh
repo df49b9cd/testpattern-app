@@ -172,7 +172,7 @@ if ! built ffmpeg; then
       --disable-avdevice --disable-indevs --disable-outdevs \
       --enable-network --enable-openssl \
       --enable-libdav1d --enable-libxml2 --enable-zlib \
-      "${FFMPEG_HW[@]}" \
+      ${FFMPEG_HW[@]+"${FFMPEG_HW[@]}"} \
       --disable-vulkan --disable-cuda --disable-cuvid --disable-nvenc \
       --disable-nvdec --disable-ffnvcodec --disable-amf --disable-vdpau \
       --disable-xlib --disable-libxcb --disable-sdl2 \
@@ -186,11 +186,14 @@ if ! built ffmpeg; then
 fi
 
 # --------------------------------------------------- mpv's static deps
+# PLACEBO_PLAT is empty on macOS; "${arr[@]}" on bash 4.x still passes one
+# empty positional, which meson rejects as an unknown option. Use "${arr[@]+...}"
+# so an array that is empty expands to nothing on every supported shell.
 built libplacebo || meson_static libplacebo \
   -Dvulkan=disabled -Dopengl=enabled -Dd3d11=disabled -Dglslang=disabled -Dshaderc=disabled \
   -Dlcms=enabled -Ddovi=enabled -Dlibdovi=disabled -Dunwind=disabled -Dxxhash=disabled \
   -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false \
-  "${PLACEBO_PLAT[@]}"
+  ${PLACEBO_PLAT[@]+"${PLACEBO_PLAT[@]}"}
 
 # needed by mpv's drm feature, which VA-API decoding requires (no X11/Wayland here)
 if [ "$(uname)" != "Darwin" ]; then
@@ -208,7 +211,7 @@ if ! built mpv; then
     -Dlibmpv=true -Dcplayer=false -Dgpl=true \
     -Dx11=disabled -Dwayland=disabled -Dvulkan=disabled \
     -Ddmabuf-wayland=disabled -Dvdpau=disabled \
-    "${MPV_PLAT[@]}" \
+    ${MPV_PLAT[@]+"${MPV_PLAT[@]}"} \
     -Dlua=disabled -Djavascript=disabled -Dlibarchive=disabled \
     -Dlibavdevice=disabled -Drubberband=disabled -Dzimg=disabled \
     -Duchardet=enabled -Dlcms2=enabled -Djpeg=disabled \
