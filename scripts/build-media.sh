@@ -123,6 +123,15 @@ meson_static() { # name [meson options...] — static meson build into $PREFIX
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" "$@" \
     >"$BUILD/$name-configure.log"
   meson compile -C "$BUILD/$name" -j "$JOBS" >"$BUILD/$name-make.log" 2>&1
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    # make the failing step visible on CI (the file is otherwise tiny+quiet)
+    echo "==> $name build FAILED (rc=$rc); logs follow:"
+    tail -60 "$BUILD/$name-configure.log" >&2 || true
+    tail -40 "$BUILD/$name-make.log" >&2 || true
+    echo "==> end $name failure"
+    return $rc
+  fi
   meson install -C "$BUILD/$name" >/dev/null
   rebuilt "$name"
 }
