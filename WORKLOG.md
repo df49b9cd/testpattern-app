@@ -905,6 +905,26 @@ UHF/Infuse feature, **P2** = later.
   …). Verified in the app: Series → Network "Apple TV" + Original language
   English = 180 shows, other facet counts follow.
 
+- **T-055 TMDB: keep current, cover titles without an id** — refresh runs
+  on TMDB's change lists (`/3/movie/changes`, `/3/tv/changes`, paged, at
+  most 14 days back via setting `tmdb.changes_since`) instead of refetching
+  everything after 30 days: changed ids are marked stale (`fetched_at = 0`)
+  before `todo()`. The ~1,100 works without a TMDB id are looked up with
+  `/3/search/movie` / `/3/search/tv` (title + year / first-air-date year);
+  only a single exact normalized-title match (`works::norm_title`) is
+  accepted and stored in the new `tmdb_map` table (title key → TMDB id,
+  empty string as the miss sentinel) so `assign_keys` joins them to the
+  TMDB group on the next rebuild — 'For All Mankind (2019)'-style titles
+  now group correctly. Settings shows the unmapped count. Regression
+  guards in `tmdb.rs`.
+
+- **T-056 Versions: HDR in track checks** — the track probe (`probe.rs`)
+  now decodes one frame per version (`vid=auto`, `hwdec=no`, paused until
+  `video-params` reports, then stop) and sets `hdr` from the gamma
+  (`pq`/`hlg`), so HDR10 copies with no `dolby-vision-profile` in the
+  track list get the HDR badge too; DV files still light the chip from
+  the profile alone.
+
 ### 🟨 In progress
 
 - **T-028 (P2) Other platforms — macOS port.** First-class AppKit port, all
@@ -928,35 +948,14 @@ UHF/Infuse feature, **P2** = later.
 
 ### 🟦 To do
 
-#### T-055 (P2) TMDB: keep current, cover titles without an id
-- Refresh with TMDB's change lists instead of refetching everything after
-  30 days: `GET /3/movie/changes` and `/3/tv/changes` (`start_date`, at most
-  14 days back, paged) list ids changed since the last run; mark those
-  `tmdb` rows stale (`fetched_at = 0`) before `todo()` (`tmdb.rs`). Store the
-  last run date in a setting.
-- ~1,100 works have no TMDB id (`title:` keys). Look them up with
-  `GET /3/search/movie?query=<title>&year=<year>` / `/3/search/tv?query=…
-  &first_air_date_year=…`; accept a single exact normalized-title match
-  (`works::norm_title`), store it as a mapping table (title key → TMDB id)
-  so `assign_keys` can put them into the TMDB group. Spec:
-  https://developer.themoviedb.org/openapi/tmdb-api.json.
-
-#### T-056 (P2) Versions: HDR in track checks
-- The track check (`probe.rs`) doesn't decode, so `hdr` is only set when
-  mpv lists `dolby-vision-profile` for the track (For All Mankind's "4K
-  Dolby Vision" copy reported none). HDR10/DV need `video-params` (decode
-  one frame: `vid=auto`, `hwdec=no`, paused, wait for `video-params` gamma
-  `pq`/`hlg`, then stop) — measure the time/CPU on a 4K HEVC stream first;
-  playback already records it (`learn_tracks`).
-
 #### T-028 (P2) Other platforms
-- Windows/macOS: libmpv render API with WGL/CGL contexts or `wid` embedding;
-  build FFmpeg/mpv statically per platform. Mobile: HTML5 fallback player
-  (hls.js) fed by a local Rust HTTP proxy that remuxes TS → HLS/fMP4.
+- Windows: libmpv render API with a WGL context or `wid` embedding; build
+  FFmpeg/mpv statically per platform. Mobile: hls.js fallback player fed
+  by a local Rust HTTP proxy that remuxes TS → HLS/fMP4.
 
 ### ⛔ Blocked / needs the user
 - Pushing: only when the user asks (remote and project notes in §3 "Git").
-- T-028 needs Windows/macOS machines (and a decision about mobile).
+- T-028 needs a Windows machine (and a decision about mobile).
 - Optional: run the `sudo dnf install ...` from §3 so builds don't need the
   rootless sysroot. Anything with `sudo` is the user's to run in their own
   terminal: inside the agent's sandbox it fails ("no new privileges").
@@ -1112,3 +1111,14 @@ UHF/Infuse feature, **P2** = later.
   `src-tauri/build.rs` adds the Homebrew lib dirs to the macOS link search
   and links the Apple frameworks mpv needs. `scripts/check.sh`: all green
   on macOS (68 Rust unit tests, 35 vitest, clippy clean, notices current).
+- **2026-10-02 (hygiene)** — Gap analysis vs HEAD 8ff4463 (branch
+  `df49b9cd/macos-port`): T-055 (TMDB change-lists refresh + `tmdb_map`
+  search mapping for id-less works) and T-056 (`probe.rs` decodes one
+  frame per version, `hdr` from `video-params` gamma `pq`/`hlg`) were
+  committed but still open on the board — moved to Done. T-028 stays In
+  progress (macOS keychain round-trip, packaged .dmg and the T-047 replay
+  are still open); its To-do bullet is now Windows/mobile-only (the
+  macOS/CGL half is committed and tracked by the In-progress card), and
+  the Blocked line drops the macOS-machine premise (this checkout lives
+  on macOS arm64). The "push to GitHub" blocked-policy line stays as is —
+  it no longer gates T-037 (already Done: green run + merged PR #1).
