@@ -15,5 +15,5 @@ if [[ -n "${TP_DEV_AUTOPLAY:-}" && -f "$ROOT/.env.local" ]]; then
     movie) export TP_DEV_AUTOPLAY_URL="$TP_XTREAM_SERVER/movie/$TP_XTREAM_USER_1/$TP_XTREAM_PASS_1/$id" ;;
   esac
 fi
-read -ra app <<<"${TP_APP_BIN:-$ROOT/src-tauri/target/debug/testpattern}"
+read -ra app <<<"${TP_APP_BIN:-/Users/smolesen/.cache/cargo-target/cc-rs/debug/testpattern}"
 exec "${app[@]}" "$@"

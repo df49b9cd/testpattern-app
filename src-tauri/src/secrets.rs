@@ -189,7 +189,105 @@ mod backend {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: the login keychain, items by `security(1)` (a subprocess, but it
+/// brings ACL prompts and unlock handling for free; there is no per-session
+/// throwaway keychain to ask for instead). Unlock::Never maps to omitting
+/// `/usr/bin/security unlock-keychain` — `find-generic-password` on a locked
+/// login keychain then fails with "user interaction is not allowed" when a
+/// prompt would be needed, which we treat as `locked`.
+#[cfg(target_os = "macos")]
+mod backend {
+    use std::process::Stdio;
+
+    use super::{Entry, Unlock};
+    use crate::error::{Error, Result};
+
+    fn err(e: impl std::fmt::Display) -> Error {
+        Error::msg(format!("keyring: {e}"))
+    }
+
+    fn attrs(profile: &str, entry: Entry<'_>, label: &str) -> [(&'static str, String); 4] {
+        let (key, value) = match entry {
+            Entry::Source(id) => ("source", id.to_string()),
+            Entry::Named(name) => ("name", name.to_owned()),
+        };
+        [
+            ("-s", "testpattern".into()), // kSecAttrService
+            ("-a", format!("{profile}:{}", value)), // kSecAttrAccount: profile + entry
+            ("-l", label.to_owned()),     // kSecAttrLabel (what Keychain Access shows)
+            ("-j", key.into()),           // kSecAttrComment: entry kind ("source"/"name")
+        ]
+    }
+
+    /// `security` with the given args, stdin the secret when present.
+    /// Ok(Some(stdout)) / Ok(None) when the item is absent; Err on locked
+    /// keyring or other failure.
+    fn sec(args: &[(&str, String)], verb: &str, secret: Option<&str>) -> Result<Option<String>> {
+        let mut cmd = std::process::Command::new("/usr/bin/security");
+        cmd.arg(verb);
+        for (k, v) in args { cmd.arg(k).arg(v); }
+        cmd.arg("-g"); // print the password on stderr (and attributes on stdout)
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(err)?;
+        if let Some(s) = secret {
+            use std::io::Write;
+            child.stdin.take().map(|mut i| i.write_all(s.as_bytes()));
+        }
+        let out = child.wait_with_output().map_err(err)?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if out.status.success() {
+            // `security -g` prints `password: "…"` on stderr
+            let line = stderr.lines().find_map(|l| l.strip_prefix("password: ")).unwrap_or("");
+            let quoted = line.strip_prefix('"').and_then(|l| l.strip_suffix('"')).unwrap_or(line);
+            return Ok(Some(quoted.replace("\\\"", "\"")));
+        }
+        if stderr.contains("could not be found") || stderr.contains("The specified item could not be found") {
+            return Ok(None);
+        }
+        Err(err(stderr.trim()))
+    }
+
+    fn run(args: Vec<String>) -> Result<bool> {
+        let out = std::process::Command::new("/usr/bin/security").args(&args).output().map_err(err)?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if out.status.success() { return Ok(true); }
+        if stderr.contains("could not be found") { return Ok(false); }
+        Err(err(stderr.trim()))
+    }
+
+    pub async fn store(profile: &str, entry: Entry<'_>, label: &str, password: &str, unlock: Unlock) -> Result<bool> {
+        let a = attrs(profile, entry, label).to_vec();
+        // Upsert: add, or update when the entry exists.
+        let mut add: Vec<String> = vec!["add-generic-password".into(), "-U".into()];
+        for (k, v) in a { add.push(k.to_string()); add.push(v); }
+        add.push("-w".into()); add.push(password.into());
+        // unlock-keychain prompts when locked; skip it for Unlock::Never
+        if unlock == Unlock::Never {
+            let locked = run(vec!["show-keychain-info".into()]).is_err();
+            if locked { return Ok(false); }
+        } else {
+            let _ = run(vec!["unlock-keychain".into()]); // may prompt; ignore outcome
+        }
+        run(add)
+    }
+
+    pub async fn load(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<Option<String>> {
+        if unlock != Unlock::Never { let _ = run(vec!["unlock-keychain".into()]); }
+        // service + account identify the entry; the label is display-only
+        let a: Vec<(&str, String)> = attrs(profile, entry, "").into_iter().filter(|(k, _)| *k != "-l").collect();
+        sec(&a, "find-generic-password", None)
+    }
+
+    pub async fn delete(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<()> {
+        if unlock != Unlock::Never { let _ = run(vec!["unlock-keychain".into()]); }
+        let a = attrs(profile, entry, "").to_vec();
+        let mut d: Vec<String> = vec!["delete-generic-password".into()];
+        for (k, v) in a.iter().filter(|(k, _)| *k != "-l") { d.push((*k).to_string()); d.push(v.to_string()); }
+        run(d).map(|_| ())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod backend {
     //! No keyring integration yet (T-028): secrets stay in the database.
     use super::{Entry, Unlock};

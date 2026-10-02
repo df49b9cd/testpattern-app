@@ -19,9 +19,11 @@
         "minWidth": 960,
         "minHeight": 600,
         "visible": false,
-        "backgroundColor": "#000000"
+        "backgroundColor": "#000000",
+        "transparent": true
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": {
         "default-src": "'self'",
@@ -57,7 +59,8 @@
     "active": true,
     "targets": [
       "rpm",
-      "deb"
+      "deb",
+      "dmg"
     ],
     "category": "Video",
     "shortDescription": "IPTV player",
@@ -126,6 +129,15 @@
           "/usr/share/doc/testpattern/LICENSE": "../LICENSE",
           "/usr/share/doc/testpattern/THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md"
         }
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": "../packaging/macos/entitlements.plist",
+      "files": {
+        "LICENSE": "../LICENSE",
+        "THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md"
       }
     }
   }

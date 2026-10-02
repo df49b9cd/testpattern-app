@@ -200,7 +200,7 @@ binaries. Agents commit only when the user asks.
 ### Dependency policy (user requirement: always latest)
 Every dependency must be on its **latest stable** release. Audited
 2026-09-26 (re-audited later that day with `scripts/outdated.sh`: all current):
-- Rust **1.98.1** pinned in `rust-toolchain.toml` (+ `rust-version` in
+- Rust **1.99.0** pinned in `rust-toolchain.toml` (+ `rust-version` in
   `src-tauri/Cargo.toml`), edition **2024**. Bun **1.4.2**, pinned as
   `packageManager` in `package.json` (CI installs that one).
 - All direct crates at latest stable (checked against crates.io) **except**
@@ -907,7 +907,24 @@ UHF/Infuse feature, **P2** = later.
 
 ### 🟨 In progress
 
-_(nothing)_
+- **T-028 (P2) Other platforms — macOS port.** First-class AppKit port, all
+  native (WKWebView `transparent`/`macOSPrivateApi`, NSOpenGLView under the
+  webview via CGL, FFmpeg VideoToolbox, mpv OpenGL render API, Security
+  framework Keychain for passwords); Linux unaffected (every new piece is
+  `cfg(target_os = "macos")`) and still CI-checked. Media engine builds via
+  `scripts/build-media.sh` (now dual-platform; `-Dgl-cocoa=enabled
+  -Dcoreaudio=enabled -Davfoundation=enabled` on macOS, swift-build on for
+  cocoa-cb, videotoolbox on FFmpeg's side via auto-detect); mpv's static
+  archive is re-linked with `libtool -static` because its Swift step ships
+  `swift.o` already as an archive (ar's plain output is a stub otherwise).
+  Backend verified: 68 Rust unit tests + 35 vitest + clippy clean on macOS
+  arm64; `scripts/headless-macos.sh` runs the debug app against an isolated
+  profile (no GNOME Keyring on macOS — the login keychain's `testpattern:`
+  entries are namespaced by profile id and removed on `stop`); smoke passes
+  the "mpv render context ready" milestone. Remaining before Done: actual
+  keychain round-trip (add/edit/lock/unlock/remove + locked-keyring guide),
+  a packaged .dmg on the machine, and the T-047 replay on macOS (T-047 was
+  Linux-only).
 
 ### 🟦 To do
 
@@ -1072,3 +1089,26 @@ _(nothing)_
   (provider order) → guide channels first per genre (UK now opens with BBC
   One London, BBC 1, BBC 2, ITV 1 …). Tests added for both. Nothing
   committed yet (branch `content-grouping`, based on the merged PR #1).
+- **2026-10-02** — Status/hygiene session. Dependency audit
+  (`scripts/outdated.sh`): everything current except Rust (1.98.1 → 1.99.0,
+  re-pinned in `rust-toolchain.toml` + `rust-version`; the GTK3 pins stand)
+  and the local Bun install (1.3.9 → 1.4.2, matching the `packageManager`
+  pin). `cargo update` pulled tauri 2.11 → 2.12.1 (Cargo spec `2.11` is a
+  semver range); the new `tauri-codegen` 2.7 dropped `bundle.macOS.category`
+  and `bundle.linux.category` from the config schema (superseded by the
+  top-level `bundle.category`), so `tauri.conf.json` now has only
+  `category: "Video"` under `bundle` (plus this machine's `transparent` /
+  `macOSPrivateApi` edits). Fixed two Linux-only-code warnings that fail
+  `-D warnings` on macOS (`unused mpsc` import in devtools.rs, dead
+  `Mpv::raw` in mpv.rs) with `cfg_attr(not(target_os = "linux"), allow)`.
+  `bun.lock` regenerated with Bun 1.4.2 (lockfile v2, in-range bumps incl.
+  @tauri-apps/cli 2.11.5 → 2.12.1); `THIRD_PARTY_NOTICES.md` regenerated.
+  This checkout lives on macOS now (session 4's work was on Linux), so
+  `scripts/build-media.sh` was made dual-platform (`nproc` →
+  `sysctl -n hw.ncpu` fallback; VA-API/libdrm/EGL and
+  pipewire/pulse/alsa gated to Linux, VideoToolbox/Cocoa/CoreAudio on
+  macOS), Homebrew installed meson/ninja/cmake/nasm + libass/lcms2/uchardet
+  and the media engine built into `third_party/prefix`.
+  `src-tauri/build.rs` adds the Homebrew lib dirs to the macOS link search
+  and links the Apple frameworks mpv needs. `scripts/check.sh`: all green
+  on macOS (68 Rust unit tests, 35 vitest, clippy clean, notices current).

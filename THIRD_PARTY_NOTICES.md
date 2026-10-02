@@ -64,7 +64,7 @@ testpattern packages and keep their own licenses:
 
 ## 3. Rust crates (statically linked)
 
-383 crates compiled into the executable (build-time-only crates such as
+377 crates compiled into the executable (build-time-only crates such as
 procedural macros are not included). Where a crate offers a choice of
 licenses, "Used under" names the one this distribution relies on.
 
@@ -73,8 +73,8 @@ licenses, "Used under" names the one this distribution relies on.
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | MIT |
 | aes | 0.9.3 | MIT OR Apache-2.0 | MIT |
 | aho-corasick | 1.1.5 | Unlicense OR MIT | MIT |
-| alloc-no-stdlib | 2.0.4 | BSD-3-Clause | BSD-3-Clause |
-| alloc-stdlib | 0.2.4 | BSD-3-Clause | BSD-3-Clause |
+| alloc-no-stdlib | 3.0.0 | BSD-3-Clause | BSD-3-Clause |
+| alloc-stdlib | 0.3.0 | BSD-3-Clause | BSD-3-Clause |
 | anstream | 1.0.0 | MIT OR Apache-2.0 | MIT |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 | MIT |
 | anstyle-parse | 1.0.0 | MIT OR Apache-2.0 | MIT |
@@ -82,7 +82,7 @@ licenses, "Used under" names the one this distribution relies on.
 | anyhow | 1.0.104 | MIT OR Apache-2.0 | MIT |
 | async-broadcast | 0.7.2 | MIT OR Apache-2.0 | MIT |
 | async-channel | 2.5.0 | Apache-2.0 OR MIT | MIT |
-| async-compression | 0.4.48 | MIT OR Apache-2.0 | MIT |
+| async-compression | 0.4.50 | MIT OR Apache-2.0 | MIT |
 | async-executor | 1.14.0 | Apache-2.0 OR MIT | MIT |
 | async-io | 2.6.0 | Apache-2.0 OR MIT | MIT |
 | async-lock | 3.4.2 | Apache-2.0 OR MIT | MIT |
@@ -104,8 +104,8 @@ licenses, "Used under" names the one this distribution relies on.
 | block-buffer | 0.12.1 | MIT OR Apache-2.0 | MIT |
 | block-padding | 0.4.2 | MIT OR Apache-2.0 | MIT |
 | blocking | 1.7.0 | Apache-2.0 OR MIT | MIT |
-| brotli | 8.0.4 | BSD-3-Clause AND MIT | MIT AND BSD-3-Clause |
-| brotli-decompressor | 5.0.3 | BSD-3-Clause/MIT | MIT |
+| brotli | 9.0.0 | BSD-3-Clause AND MIT | MIT AND BSD-3-Clause |
+| brotli-decompressor | 6.0.1 | BSD-3-Clause/MIT | MIT |
 | bs58 | 0.5.1 | MIT/Apache-2.0 | MIT |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT | MIT |
 | byteorder | 1.5.0 | Unlicense OR MIT | MIT |
@@ -117,7 +117,7 @@ licenses, "Used under" names the one this distribution relies on.
 | cargo-platform | 0.1.9 | MIT OR Apache-2.0 | MIT |
 | cargo_metadata | 0.19.2 | MIT | MIT |
 | cbc | 0.2.1 | MIT OR Apache-2.0 | MIT |
-| cfb | 0.7.3 | MIT | MIT |
+| cfb | 0.14.0 | MIT | MIT |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 | MIT |
 | chacha20 | 0.10.2 | MIT OR Apache-2.0 | MIT |
 | chrono | 0.4.45 | MIT OR Apache-2.0 | MIT |
@@ -125,7 +125,7 @@ licenses, "Used under" names the one this distribution relies on.
 | cmov | 0.5.4 | Apache-2.0 OR MIT | MIT |
 | color_quant | 1.1.0 | MIT | MIT |
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 | MIT |
-| compression-codecs | 0.4.43 | MIT OR Apache-2.0 | MIT |
+| compression-codecs | 0.4.45 | MIT OR Apache-2.0 | MIT |
 | compression-core | 0.4.33 | MIT OR Apache-2.0 | MIT |
 | concurrent-queue | 2.5.0 | Apache-2.0 OR MIT | MIT |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT | MIT |
@@ -139,8 +139,8 @@ licenses, "Used under" names the one this distribution relies on.
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 | MIT |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 | MIT |
-| cssparser | 0.36.0 | MPL-2.0 | MPL-2.0 |
-| ctor | 0.8.0 | Apache-2.0 OR MIT | MIT |
+| cssparser | 0.37.0 | MPL-2.0 | MPL-2.0 |
+| ctor | 1.0.13 | Apache-2.0 OR MIT | MIT |
 | ctutils | 0.4.2 | Apache-2.0 OR MIT | MIT |
 | darling | 0.24.1 | MIT | MIT |
 | darling_core | 0.24.1 | MIT | MIT |
@@ -151,14 +151,13 @@ licenses, "Used under" names the one this distribution relies on.
 | derive_more | 2.1.1 | MIT | MIT |
 | digest | 0.10.7 | MIT OR Apache-2.0 | MIT |
 | digest | 0.11.3 | MIT OR Apache-2.0 | MIT |
-| dirs | 6.0.0 | MIT OR Apache-2.0 | MIT |
+| dirs | 7.0.0 | MIT OR Apache-2.0 | MIT |
 | dirs-sys | 0.5.0 | MIT OR Apache-2.0 | MIT |
 | dlopen2 | 0.8.2 | MIT | MIT |
-| dom_query | 0.27.0 | MIT | MIT |
+| dom_query | 0.28.0 | MIT | MIT |
 | dpi | 0.1.2 | Apache-2.0 AND MIT | MIT AND Apache-2.0 |
 | dtoa | 1.0.11 | MIT OR Apache-2.0 | MIT |
 | dtoa-short | 0.3.5 | MPL-2.0 | MPL-2.0 |
-| dtor | 0.3.0 | Apache-2.0 OR MIT | MIT |
 | dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | MIT-0 |
 | dyn-clone | 1.0.20 | MIT OR Apache-2.0 | MIT |
 | encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | MIT AND BSD-3-Clause |
@@ -217,7 +216,7 @@ licenses, "Used under" names the one this distribution relies on.
 | hex | 0.4.3 | MIT OR Apache-2.0 | MIT |
 | hkdf | 0.13.0 | MIT OR Apache-2.0 | MIT |
 | hmac | 0.13.0 | MIT OR Apache-2.0 | MIT |
-| html5ever | 0.38.0 | MIT OR Apache-2.0 | MIT |
+| html5ever | 0.39.0 | MIT OR Apache-2.0 | MIT |
 | http | 1.5.0 | MIT OR Apache-2.0 | MIT |
 | http-body | 1.1.0 | MIT | MIT |
 | http-body-util | 0.1.5 | MIT | MIT |
@@ -242,7 +241,7 @@ licenses, "Used under" names the one this distribution relies on.
 | image-webp | 0.2.4 | MIT OR Apache-2.0 | MIT |
 | indexmap | 1.9.3 | Apache-2.0 OR MIT | MIT |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT | MIT |
-| infer | 0.19.0 | MIT | MIT |
+| infer | 0.22.0 | MIT | MIT |
 | inout | 0.2.2 | MIT OR Apache-2.0 | MIT |
 | ipnet | 2.12.2 | MIT OR Apache-2.0 | MIT |
 | is-docker | 0.2.0 | MIT | MIT |
@@ -253,9 +252,9 @@ licenses, "Used under" names the one this distribution relies on.
 | javascriptcore-rs-sys | 1.1.1 | MIT | MIT |
 | jiff | 0.2.37 | Unlicense OR MIT | MIT |
 | jiff-core | 0.1.1 | Unlicense OR MIT | MIT |
-| json-patch | 3.0.1 | MIT/Apache-2.0 | MIT |
-| jsonptr | 0.6.3 | MIT OR Apache-2.0 | MIT |
-| keyboard-types | 0.7.0 | MIT OR Apache-2.0 | MIT |
+| json-patch | 4.2.0 | MIT/Apache-2.0 | MIT |
+| jsonptr | 0.7.1 | MIT OR Apache-2.0 | MIT |
+| keyboard-types | 0.8.3 | MIT OR Apache-2.0 | MIT |
 | libappindicator | 0.9.0 | Apache-2.0 OR MIT | MIT |
 | libappindicator-sys | 0.9.0 | Apache-2.0 OR MIT | MIT |
 | libc | 0.2.189 | MIT OR Apache-2.0 | MIT |
@@ -268,7 +267,7 @@ licenses, "Used under" names the one this distribution relies on.
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | MIT |
 | log | 0.4.34 | MIT OR Apache-2.0 | MIT |
 | lru-slab | 0.1.3 | MIT OR Apache-2.0 OR Zlib | MIT |
-| markup5ever | 0.38.0 | MIT OR Apache-2.0 | MIT |
+| markup5ever | 0.39.0 | MIT OR Apache-2.0 | MIT |
 | memchr | 2.8.3 | Unlicense OR MIT | MIT |
 | memoffset | 0.9.1 | MIT | MIT |
 | mime | 0.3.17 | MIT OR Apache-2.0 | MIT |
@@ -276,7 +275,7 @@ licenses, "Used under" names the one this distribution relies on.
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | MIT |
 | mio | 1.2.3 | MIT | MIT |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | BSD-3-Clause |
-| muda | 0.19.3 | Apache-2.0 OR MIT | MIT |
+| muda | 0.20.0 | Apache-2.0 OR MIT | MIT |
 | new_debug_unreachable | 1.0.6 | MIT | MIT |
 | num | 0.4.3 | MIT OR Apache-2.0 | MIT |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 | MIT |
@@ -318,8 +317,8 @@ licenses, "Used under" names the one this distribution relies on.
 | quick-error | 2.0.1 | MIT/Apache-2.0 | MIT |
 | quick-xml | 0.42.0 | MIT | MIT |
 | quinn | 0.11.12 | MIT OR Apache-2.0 | MIT |
-| quinn-proto | 0.11.18 | MIT OR Apache-2.0 | MIT |
-| quinn-udp | 0.5.15 | MIT OR Apache-2.0 | MIT |
+| quinn-proto | 0.11.19 | MIT OR Apache-2.0 | MIT |
+| quinn-udp | 0.5.16 | MIT OR Apache-2.0 | MIT |
 | quote | 1.0.47 | MIT OR Apache-2.0 | MIT |
 | rand | 0.10.3 | MIT OR Apache-2.0 | MIT |
 | rand_core | 0.10.1 | MIT OR Apache-2.0 | MIT |
@@ -345,7 +344,7 @@ licenses, "Used under" names the one this distribution relies on.
 | schemars | 1.2.2 | MIT | MIT |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 | MIT |
 | secret-service | 5.2.0 | MIT OR Apache-2.0 | MIT |
-| selectors | 0.36.1 | MPL-2.0 | MPL-2.0 |
+| selectors | 0.38.0 | MPL-2.0 | MPL-2.0 |
 | semver | 1.0.28 | MIT OR Apache-2.0 | MIT |
 | serde | 1.0.229 | MIT OR Apache-2.0 | MIT |
 | serde-untagged | 0.1.9 | MIT OR Apache-2.0 | MIT |
@@ -354,7 +353,7 @@ licenses, "Used under" names the one this distribution relies on.
 | serde_json | 1.0.151 | MIT OR Apache-2.0 | MIT |
 | serde_spanned | 0.6.9 | MIT OR Apache-2.0 | MIT |
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 | MIT |
-| serde_with | 3.23.0 | MIT OR Apache-2.0 | MIT |
+| serde_with | 3.24.0 | MIT OR Apache-2.0 | MIT |
 | serialize-to-javascript | 0.1.2 | MIT OR Apache-2.0 | MIT |
 | servo_arc | 0.4.3 | MIT OR Apache-2.0 | MIT |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | MIT |
@@ -377,15 +376,15 @@ licenses, "Used under" names the one this distribution relies on.
 | syn | 3.0.6 | MIT OR Apache-2.0 | MIT |
 | sync_wrapper | 1.0.2 | Apache-2.0 | Apache-2.0 |
 | synstructure | 0.14.0 | MIT | MIT |
-| tao | 0.35.3 | Apache-2.0 | Apache-2.0 |
-| tauri | 2.11.6 | Apache-2.0 OR MIT | MIT |
-| tauri-codegen | 2.6.3 | Apache-2.0 OR MIT | MIT |
-| tauri-plugin-opener | 2.5.5 | Apache-2.0 OR MIT | MIT |
-| tauri-plugin-single-instance | 2.4.5 | Apache-2.0 OR MIT | MIT |
-| tauri-plugin-window-state | 2.4.1 | Apache-2.0 OR MIT | MIT |
-| tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | MIT |
-| tauri-runtime-wry | 2.11.4 | Apache-2.0 OR MIT | MIT |
-| tauri-utils | 2.9.3 | Apache-2.0 OR MIT | MIT |
+| tao | 0.37.1 | Apache-2.0 | Apache-2.0 |
+| tauri | 2.12.1 | Apache-2.0 OR MIT | MIT |
+| tauri-codegen | 2.7.1 | Apache-2.0 OR MIT | MIT |
+| tauri-plugin-opener | 2.7.0 | Apache-2.0 OR MIT | MIT |
+| tauri-plugin-single-instance | 2.5.2 | Apache-2.0 OR MIT | MIT |
+| tauri-plugin-window-state | 2.5.0 | Apache-2.0 OR MIT | MIT |
+| tauri-runtime | 2.12.1 | Apache-2.0 OR MIT | MIT |
+| tauri-runtime-wry | 2.12.1 | Apache-2.0 OR MIT | MIT |
+| tauri-utils | 2.10.1 | Apache-2.0 OR MIT | MIT |
 | tendril | 0.5.1 | MIT OR Apache-2.0 | MIT |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | MIT |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 | MIT |
@@ -394,7 +393,7 @@ licenses, "Used under" names the one this distribution relies on.
 | tinystr | 0.8.4 | Unicode-3.0 | Unicode-3.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT | MIT |
 | tokio | 1.53.1 | MIT | MIT |
-| tokio-rustls | 0.26.5 | MIT OR Apache-2.0 | MIT |
+| tokio-rustls | 0.26.6 | MIT OR Apache-2.0 | MIT |
 | tokio-util | 0.7.19 | MIT | MIT |
 | toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | MIT |
 | toml_datetime | 0.6.3 | MIT OR Apache-2.0 | MIT |
@@ -410,25 +409,20 @@ licenses, "Used under" names the one this distribution relies on.
 | tower-service | 0.3.3 | MIT | MIT |
 | tracing | 0.1.44 | MIT | MIT |
 | tracing-core | 0.1.36 | MIT | MIT |
-| tray-icon | 0.24.2 | MIT OR Apache-2.0 | MIT |
+| tray-icon | 0.25.1 | MIT OR Apache-2.0 | MIT |
 | try-lock | 0.2.5 | MIT | MIT |
 | typeid | 1.0.3 | MIT OR Apache-2.0 | MIT |
 | typenum | 1.20.1 | MIT OR Apache-2.0 | MIT |
-| unic-char-property | 0.9.0 | MIT/Apache-2.0 | MIT |
-| unic-char-range | 0.9.0 | MIT/Apache-2.0 | MIT |
-| unic-common | 0.9.0 | MIT/Apache-2.0 | MIT |
-| unic-ucd-ident | 0.9.0 | MIT/Apache-2.0 | MIT |
-| unic-ucd-version | 0.9.0 | MIT/Apache-2.0 | MIT |
 | unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | MIT AND Unicode-3.0 |
-| unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | MIT |
 | untrusted | 0.9.0 | ISC | ISC |
 | url | 2.5.8 | MIT OR Apache-2.0 | MIT |
-| urlpattern | 0.3.0 | MIT | MIT |
+| urlpattern | 0.6.0 | MIT | MIT |
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | MIT |
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT | MIT |
 | uuid | 1.26.1 | Apache-2.0 OR MIT | MIT |
 | walkdir | 2.5.0 | Unlicense/MIT | MIT |
 | want | 0.3.1 | MIT | MIT |
+| web-time | 1.1.0 | MIT OR Apache-2.0 | MIT |
 | web_atoms | 0.2.6 | MIT OR Apache-2.0 | MIT |
 | webkit2gtk | 2.0.2 | MIT | MIT |
 | webkit2gtk-sys | 2.0.2 | MIT | MIT |
@@ -436,7 +430,7 @@ licenses, "Used under" names the one this distribution relies on.
 | winnow | 0.5.40 | MIT | MIT |
 | winnow | 1.0.4 | MIT | MIT |
 | writeable | 0.6.4 | Unicode-3.0 | Unicode-3.0 |
-| wry | 0.55.1 | Apache-2.0 OR MIT | MIT |
+| wry | 0.57.0 | Apache-2.0 OR MIT | MIT |
 | x11 | 2.21.0 | MIT | MIT |
 | x11-dl | 2.21.0 | MIT | MIT |
 | yoke | 0.8.3 | Unicode-3.0 | Unicode-3.0 |
@@ -460,15 +454,15 @@ licenses, "Used under" names the one this distribution relies on.
 |---|---|---|---|
 | @fontsource-variable/inter | 5.3.0 | OFL-1.1 | OFL-1.1 |
 | @remix-run/route-pattern | 0.22.1 | MIT | MIT |
-| @tanstack/query-core | 5.104.0 | MIT | MIT |
-| @tanstack/react-query | 5.104.0 | MIT | MIT |
+| @tanstack/query-core | 5.104.1 | MIT | MIT |
+| @tanstack/react-query | 5.104.1 | MIT | MIT |
 | @tanstack/react-virtual | 3.14.13 | MIT | MIT |
 | @tanstack/virtual-core | 3.17.11 | MIT | MIT |
-| @tauri-apps/api | 2.11.1 | Apache-2.0 OR MIT | MIT |
-| @tauri-apps/plugin-opener | 2.5.5 | MIT OR Apache-2.0 | MIT |
+| @tauri-apps/api | 2.12.1 | Apache-2.0 OR MIT | MIT |
+| @tauri-apps/plugin-opener | 2.7.0 | MIT OR Apache-2.0 | MIT |
 | clsx | 2.1.1 | MIT | MIT |
 | cookie-es | 3.1.1 | MIT | MIT |
-| lucide-react | 1.48.0 | ISC | ISC |
+| lucide-react | 1.50.0 | ISC | ISC |
 | react | 19.3.0 | MIT | MIT |
 | react-dom | 19.3.0 | MIT | MIT |
 | react-router | 8.4.0 | MIT | MIT |
@@ -1529,7 +1523,7 @@ Applies to: sync_wrapper 1.0.2.
 
 ### 5.2 Apache-2.0
 
-Applies to: tao 0.35.3.
+Applies to: tao 0.37.1.
 
 ```text
 Apache License
@@ -1737,7 +1731,7 @@ Apache License
 
 ### 5.3 BSD-3-Clause
 
-Applies to: alloc-no-stdlib 2.0.4, brotli 8.0.4, brotli-decompressor 5.0.3.
+Applies to: alloc-no-stdlib 3.0.0, brotli 9.0.0, brotli-decompressor 6.0.1.
 
 ```text
 Copyright (c) 2016 Dropbox, Inc.
@@ -1756,7 +1750,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ### 5.4 BSD-3-Clause
 
-Applies to: alloc-stdlib 0.2.4 (ships no license file: standard text).
+Applies to: alloc-stdlib 0.3.0 (ships no license file: standard text).
 
 ```text
 Copyright (c) Daniel Reiter Horn
@@ -2086,7 +2080,7 @@ THIS SOFTWARE.
 
 ### 5.9 ISC
 
-Applies to: lucide-react 1.48.0.
+Applies to: lucide-react 1.50.0.
 
 ```text
 ISC License
@@ -2524,7 +2518,7 @@ SOFTWARE.
 
 ### 5.16 MIT
 
-Applies to: @tanstack/query-core 5.104.0, @tanstack/react-query 5.104.0, @tanstack/react-virtual 3.14.13, @tanstack/virtual-core 3.17.11.
+Applies to: @tanstack/query-core 5.104.1, @tanstack/react-query 5.104.1, @tanstack/react-virtual 3.14.13, @tanstack/virtual-core 3.17.11.
 
 ```text
 MIT License
@@ -2552,7 +2546,7 @@ SOFTWARE.
 
 ### 5.17 MIT
 
-Applies to: @tauri-apps/api 2.11.1, tauri 2.11.6, tauri-codegen 2.6.3, tauri-plugin-opener 2.5.5, tauri-plugin-window-state 2.4.1, tauri-runtime 2.11.3, tauri-runtime-wry 2.11.4, tauri-utils 2.9.3.
+Applies to: @tauri-apps/api 2.12.1, tauri 2.12.1, tauri-codegen 2.7.1, tauri-plugin-opener 2.7.0, tauri-plugin-window-state 2.5.0, tauri-runtime 2.12.1, tauri-runtime-wry 2.12.1, tauri-utils 2.10.1.
 
 ```text
 MIT License
@@ -2580,7 +2574,7 @@ SOFTWARE.
 
 ### 5.18 MIT
 
-Applies to: @tauri-apps/plugin-opener 2.5.5 (ships no license file: standard text).
+Applies to: @tauri-apps/plugin-opener 2.7.0 (ships no license file: standard text).
 
 ```text
 Copyright (c) the @tauri-apps/plugin-opener authors
@@ -2751,7 +2745,7 @@ SOFTWARE.
 
 ### 5.24 MIT
 
-Applies to: async-compression 0.4.48, compression-codecs 0.4.43, compression-core 0.4.33.
+Applies to: async-compression 0.4.50, compression-codecs 0.4.45, compression-core 0.4.33.
 
 ```text
 The MIT License (MIT)
@@ -3310,7 +3304,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.33 MIT AND BSD-3-Clause
 
-Applies to: brotli 8.0.4.
+Applies to: brotli 9.0.0.
 
 ```text
 Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
@@ -3444,7 +3438,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.38 MIT
 
-Applies to: cfb 0.7.3.
+Applies to: cfb 0.14.0.
 
 ```text
 MIT License
@@ -4212,7 +4206,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.56 MIT
 
-Applies to: ctor 0.8.0, dtor 0.3.0, tinyvec 1.13.3.
+Applies to: ctor 1.0.13, tinyvec 1.13.3.
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -4487,7 +4481,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.66 MIT
 
-Applies to: dirs 6.0.0, dirs-sys 0.5.0.
+Applies to: dirs 7.0.0, dirs-sys 0.5.0.
 
 ```text
 Copyright (c) 2018-2019 dirs-rs contributors
@@ -4539,7 +4533,7 @@ SOFTWARE.
 
 ### 5.68 MIT
 
-Applies to: dom_query 0.27.0.
+Applies to: dom_query 0.28.0.
 
 ```text
 MIT License
@@ -5252,7 +5246,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.90 MIT
 
-Applies to: heck 0.4.1, heck 0.5.0, unicode-segmentation 1.13.3.
+Applies to: heck 0.4.1, heck 0.5.0.
 
 ```text
 Copyright (c) 2015 The Rust Project Developers
@@ -5344,7 +5338,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.93 MIT
 
-Applies to: html5ever 0.38.0, markup5ever 0.38.0, web_atoms 0.2.6.
+Applies to: html5ever 0.39.0, markup5ever 0.39.0, web_atoms 0.2.6.
 
 ```text
 Copyright (c) 2014 The html5ever Project Developers
@@ -5732,7 +5726,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.106 MIT
 
-Applies to: infer 0.19.0.
+Applies to: infer 0.22.0.
 
 ```text
 MIT License
@@ -5892,7 +5886,7 @@ SOFTWARE.
 
 ### 5.112 MIT
 
-Applies to: json-patch 3.0.1.
+Applies to: json-patch 4.2.0.
 
 ```text
 MIT License
@@ -5920,7 +5914,7 @@ SOFTWARE.
 
 ### 5.113 MIT
 
-Applies to: jsonptr 0.6.3.
+Applies to: jsonptr 0.7.1.
 
 ```text
 MIT License
@@ -5948,7 +5942,7 @@ SOFTWARE.
 
 ### 5.114 MIT
 
-Applies to: keyboard-types 0.7.0.
+Applies to: keyboard-types 0.8.3.
 
 ```text
 Copyright (c) 2017 Pyfisch
@@ -6242,7 +6236,7 @@ THE SOFTWARE.
 
 ### 5.125 MIT
 
-Applies to: muda 0.19.3, tray-icon 0.24.2.
+Applies to: muda 0.20.0, tray-icon 0.25.1.
 
 ```text
 MIT License
@@ -6583,7 +6577,7 @@ THE SOFTWARE.
 
 ### 5.137 MIT
 
-Applies to: quinn 0.11.12, quinn-proto 0.11.18, quinn-udp 0.5.15.
+Applies to: quinn 0.11.12, quinn-proto 0.11.19, quinn-udp 0.5.16.
 
 ```text
 Copyright (c) 2018 The quinn Developers
@@ -6987,7 +6981,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.151 MIT
 
-Applies to: serde_with 3.23.0.
+Applies to: serde_with 3.24.0.
 
 ```text
 Copyright (c) 2015
@@ -7348,7 +7342,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ### 5.163 MIT
 
-Applies to: tauri-plugin-single-instance 2.4.5.
+Applies to: tauri-plugin-single-instance 2.5.2.
 
 ```text
 MIT License
@@ -7462,7 +7456,7 @@ SOFTWARE.
 
 ### 5.167 MIT
 
-Applies to: tokio-rustls 0.26.5.
+Applies to: tokio-rustls 0.26.6.
 
 ```text
 Copyright (c) 2017 quininer kel
@@ -7643,33 +7637,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.173 MIT
-
-Applies to: unic-char-property 0.9.0 (ships no license file: standard text), unic-char-range 0.9.0 (ships no license file: standard text), unic-common 0.9.0 (ships no license file: standard text), unic-ucd-ident 0.9.0 (ships no license file: standard text), unic-ucd-version 0.9.0 (ships no license file: standard text).
-
-```text
-Copyright (c) The UNIC Project Developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### 5.174 MIT AND Unicode-3.0
+### 5.173 MIT AND Unicode-3.0
 
 Applies to: unicode-ident 1.0.26.
 
@@ -7715,9 +7683,9 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 5.175 MIT
+### 5.174 MIT
 
-Applies to: urlpattern 0.3.0.
+Applies to: urlpattern 0.6.0.
 
 ```text
 MIT License
@@ -7743,7 +7711,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.176 MIT
+### 5.175 MIT
 
 Applies to: utf8parse 0.2.2.
 
@@ -7775,7 +7743,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.177 MIT
+### 5.176 MIT
 
 Applies to: uuid 1.26.1.
 
@@ -7808,7 +7776,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.178 MIT
+### 5.177 MIT
 
 Applies to: want 0.3.1.
 
@@ -7832,6 +7800,34 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+### 5.178 MIT
+
+Applies to: web-time 1.1.0.
+
+```text
+MIT License
+
+Copyright (c) 2023 dAxpeDDa
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### 5.179 MIT
@@ -7941,7 +7937,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### 5.183 MIT
 
-Applies to: wry 0.55.1.
+Applies to: wry 0.57.0.
 
 ```text
 MIT License
@@ -8249,7 +8245,7 @@ express Statement of Purpose.
 
 ### 5.190 MPL-2.0
 
-Applies to: cssparser 0.36.0, dtoa-short 0.3.5, selectors 0.36.1 (ships no license file: standard text).
+Applies to: cssparser 0.37.0, dtoa-short 0.3.5, selectors 0.38.0 (ships no license file: standard text).
 
 ```text
 Mozilla Public License Version 2.0

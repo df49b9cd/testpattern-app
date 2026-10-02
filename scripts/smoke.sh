@@ -5,9 +5,18 @@
 # stream at a time (the account allows a single connection).
 #
 #   scripts/smoke.sh            # starts/seeds the headless session if needed
+#   TP_HEADLESS=noop            # don't manage a session, use what's running
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-H="$ROOT/scripts/headless.sh"
+# the session driver is platform-specific (scripts/headless-macos.sh on a Mac,
+# scripts/headless.sh elsewhere); TP_HEADLESS overrides the choice
+if [[ -n "${TP_HEADLESS:-}" ]]; then
+  H="${TP_HEADLESS}"
+elif [[ "$(uname -s)" == Darwin && -x "$ROOT/scripts/headless-macos.sh" ]]; then
+  H="$ROOT/scripts/headless-macos.sh"
+else
+  H="$ROOT/scripts/headless.sh"
+fi
 DEV=http://127.0.0.1:17777
 E=$DEV/eval
 OUT="$ROOT/.deps/headless/smoke"
@@ -80,7 +89,7 @@ check "progress lands in continue watching" "$I const m = (await inv('movies', {
 REC="$OUT/recordings"
 rm -rf "$REC"
 file=$(js "$I await inv('settings_set', {key: 'recording.dir', value: '$REC'}); const c = (await inv('channels', {query: {withEpg: true, limit: 1}})).items[0]; await inv('play', {req: {kind: 'live', sourceId: c.sourceId, id: c.id, title: c.title}}); for (let i = 0; i < 30; i++) { await sleep(500); if ((await inv('player_get', {name: 'time-pos'})) > 1) break; } await inv('player_record', {on: true}); await sleep(4000); const f = await inv('player_record', {on: false}); await inv('settings_set', {key: 'recording.dir', value: ''}); return f;" | python3 -c 'import json,sys; print(json.load(sys.stdin) or "")' 2>/dev/null || true)
-size=$(stat -c %s "$file" 2>/dev/null || echo 0)
+size=$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file" 2>/dev/null || echo 0)
 report "live recording writes MPEG-TS" "$([[ $size -gt 100000 && "$(head -c1 "$file" | od -An -tx1 | tr -d ' ')" == 47 ]] && echo 1 || echo 0)" "file '$file', $size bytes"
 check "stop" "$I await inv('player_stop'); await sleep(500); return (await inv('player_get', {name: 'idle-active'})) === true;"
 # the episode's last seconds through the real UI store (dev builds expose it)

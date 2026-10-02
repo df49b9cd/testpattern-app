@@ -291,8 +291,9 @@ function Metadata() {
         <div className="px-1 pt-1">
           <span className="block text-[15px] font-medium">TMDB</span>
           <span className="mt-0.5 block text-[13px] leading-relaxed text-dim">
-            Genres for every movie, original languages, movie collections and TV networks — for the titles your provider lists
-            with a TMDB id. Uses your own free API key or read access token from themoviedb.org.
+            Genres for every movie, original languages, movie collections and TV networks. Updates check TMDB's change
+            lists instead of re-downloading, and titles the provider did not id are looked up by title once. Uses your own
+            free API key or read access token from themoviedb.org.
           </span>
         </div>
         {s?.configured ? (
@@ -300,6 +301,7 @@ function Metadata() {
             <div className="flex items-center justify-between gap-4 text-[13.5px]">
               <span className="text-dim">
                 Details for <span className="font-semibold text-fg">{s.known.toLocaleString()}</span> of {s.titles.toLocaleString()} titles
+                {s.unmapped > 0 ? ` · ${s.unmapped.toLocaleString()} without a TMDB match` : ""}
                 {s.running ? ` · fetching ${s.done.toLocaleString()} of ${s.total.toLocaleString()}…` : s.lastRun ? ` · checked ${ago(s.lastRun)}` : ""}
               </span>
               <span className="flex shrink-0 gap-2">

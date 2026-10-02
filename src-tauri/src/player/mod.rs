@@ -3,8 +3,11 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 pub mod mpv;
-mod mpv_sys;
+/// libmpv constants (also used by `crate::probe` for a `video-params` node watch).
+pub(crate) mod mpv_sys;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -437,7 +440,9 @@ pub fn init<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) -> Result
     let player = Player::new(app).map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
     linux::attach(window, player.mpv.clone()).map_err(|e| e.to_string())?;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    macos::attach(window, player.mpv.clone()).map_err(|e| e.to_string())?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let _ = window;
     app.manage(player);
     Ok(())

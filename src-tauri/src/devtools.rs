@@ -22,6 +22,9 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+// only the gtk (Linux) webview paths use channels: the JS runs on the main
+// thread there via `with_webview`
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -373,9 +376,29 @@ fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
     rx.recv_timeout(Duration::from_secs(20)).map_err(|e| e.to_string())?
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: Tauri 2.11's `eval_with_callback` wraps WKWebView's
+/// evaluateJavaScript; the callback gets the completion value as JSON text —
+/// the same contract as the Linux webkit2gtk path.
+#[cfg(target_os = "macos")]
+fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
+    let window = app.get_webview_window("main").ok_or("no main window")?;
+    let script = format!(
+        "(async () => {{ try {{ const r = await (async () => {{ {js} }})(); return JSON.stringify(r ?? null); }} catch (e) {{ return JSON.stringify({{error: String(e && e.stack || e)}}); }} }})()"
+    );
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    // The JS returns a JSON string; `eval_with_callback` serializes the
+    // completion value, so the callback receives a JSON-encoded string of the
+    // JSON text — unwrap one level.
+    let _ = window.eval_with_callback(&script, move |out| {
+        let unwrapped = serde_json::from_str::<String>(&out).unwrap_or(out);
+        let _ = tx.send(Ok(unwrapped));
+    });
+    rx.recv_timeout(Duration::from_secs(20)).map_err(|e| e.to_string())?
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn eval<R: Runtime>(_app: &AppHandle<R>, _js: &str) -> Result<String, String> {
-    Err("eval is only implemented on Linux".into())
+    Err("eval is only implemented on Linux and macOS".into())
 }
 
 #[cfg(test)]
