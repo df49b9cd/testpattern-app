@@ -123,7 +123,7 @@ meson_static() { # name [meson options...] — static meson build into $PREFIX
   if ! meson setup "$BUILD/$name" "$SRC/$name" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release -Ddefault_library=static \
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" "$@" \
-    >"$BUILD/$name-configure.log"; then
+    >"$BUILD/$name-configure.log" 2>&1; then
     local rc=$?
     echo "==> $name configure FAILED (rc=$rc), meson log follows:" >&2
     tail -60 "$BUILD/$name-configure.log" >&2 || true
