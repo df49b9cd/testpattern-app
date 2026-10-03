@@ -952,12 +952,10 @@ UHF/Infuse feature, **P2** = later.
   devtools `/eval` on macOS now returns results over a devtools-only Tauri
   IPC channel (`eval_with_callback`'s completion is empty on this webview),
   and `scripts/headless-macos.sh` runs muted by default (`--interactive` for
-  a visible, audible window).
+  a visible, audible window). Follow-ups all closed 2026-10-03:
+  PL-97/99/100/101 — see the 2026-10-03 log entry.
 
 ### 🟨 In progress
-
-- **PL-97 / PL-99 / PL-100 / PL-101** (planned tracker) — implement,
-  verify, then move to Done with the worklog entry below.
 
 ### 🟦 To do
 
