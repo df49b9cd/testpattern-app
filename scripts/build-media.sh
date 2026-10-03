@@ -118,11 +118,8 @@ meson_static() { # name [meson options...] — static meson build into $PREFIX
   shift
   echo "==> building $name $(cat "$SRC/$name.tag")"
   rm -rf "${BUILD:?}/$name"
-  # A leftover meson-info from a previous invocation can carry the old option
-  # list forward (the earlier failure read 'Unknown options: drm, vaapi,
-  # vaapi-drm' from meson.build's own defaults, not the command line). Wipe
-  # it so the call below starts clean.
-  rm -rf "$BUILD/$name/meson-info" "$BUILD/$name/meson-private" "$BUILD/$name/meson-logs"
+  # stdout of meson setup is chatty; its error text goes to stderr AND to the
+  # configure.log. CI swallows the former — keep a copy visible on failure.
   if ! meson setup "$BUILD/$name" "$SRC/$name" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release -Ddefault_library=static \
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" "$@" \
@@ -162,13 +159,15 @@ if [ "$(uname)" = "Darwin" ]; then
   FFMPEG_HW=(--enable-videotoolbox --enable-audiotoolbox)
   PLACEBO_PLAT=()
   MPV_PLAT=(-Dgl=enabled -Dgl-cocoa=enabled -Dcocoa=enabled -Dcoreaudio=enabled -Davfoundation=enabled \
+    -Ddrm=disabled -Degl=disabled -Dvaapi=disabled -Dvaapi-drm=disabled \
     -Dpipewire=disabled -Dpulse=disabled -Dalsa=disabled -Daudiounit=disabled \
     -Dmacos-cocoa-cb=disabled -Dswift-build=enabled)
 else
   FFMPEG_HW=(--enable-vaapi --enable-libdrm)
-  PLACEBO_PLAT=(-Ddrm=enabled)
+  PLACEBO_PLAT=(-Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled)
   MPV_PLAT=(-Dgl=enabled -Dplain-gl=enabled -Degl=enabled \
-    -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled -Dvaapi-drm=enabled)
+    -Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled \
+    -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled)
 fi
 
 if ! built ffmpeg; then
