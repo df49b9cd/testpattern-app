@@ -166,10 +166,9 @@ if [ "$(uname)" = "Darwin" ]; then
     -Dmacos-cocoa-cb=disabled -Dswift-build=enabled)
 else
   FFMPEG_HW=(--enable-vaapi --enable-libdrm)
-  PLACEBO_PLAT=(-Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled)
+  PLACEBO_PLAT=(-Ddrm=enabled)
   MPV_PLAT=(-Dgl=enabled -Dplain-gl=enabled -Degl=enabled \
     -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled -Dvaapi-drm=enabled)
-  PLACEBO_PLAT=(-Ddrm=enabled)
 fi
 
 if ! built ffmpeg; then
