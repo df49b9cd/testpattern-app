@@ -932,39 +932,29 @@ UHF/Infuse feature, **P2** = later.
   track list get the HDR badge too; DV files still light the chip from
   the profile alone.
 
-### 🟨 In progress
-
 - **T-028 (P2) Other platforms — macOS port.** First-class AppKit port, all
   native (WKWebView `transparent`/`macOSPrivateApi`, NSOpenGLView under the
   webview via CGL, FFmpeg VideoToolbox, mpv OpenGL render API, Security
   framework Keychain for passwords); Linux unaffected (every new piece is
-  `cfg(target_os = "macos")`) and still CI-checked. Media engine builds via
-  `scripts/build-media.sh` (now dual-platform; `-Dgl-cocoa=enabled
-  -Dcoreaudio=enabled -Davfoundation=enabled` on macOS, swift-build on for
-  cocoa-cb, videotoolbox on FFmpeg's side via auto-detect); mpv's static
+  `cfg(target_os = "macos")`) and still CI-checked (PR #4 merged). Media
+  engine builds via `scripts/build-media.sh` (now dual-platform;
+  `-Dgl-cocoa=enabled -Dcoreaudio=enabled -Davfoundation=enabled` on macOS,
+  swift-build on for cocoa-cb, videotoolbox on FFmpeg's side); mpv's static
   archive is re-linked with `libtool -static` because its Swift step ships
-  `swift.o` already as an archive (ar's plain output is a stub otherwise).
-  Backend verified: 68 Rust unit tests + 35 vitest + clippy clean on macOS
-  arm64; `scripts/headless-macos.sh` runs the debug app against an isolated
-  profile (no GNOME Keyring on macOS — the login keychain's `testpattern:`
-  entries are namespaced by profile id and removed on `stop`). Keychain
-  round-trip verified 2026-10-03 (PL-75, workflow): `security`-CLI backend
-  set/get/upsert/delete/lock/unlock round-trip passes against a throwaway
-  keychain; a locked keychain surfaces as exit 128 with empty stderr, now
-  mapped to the friendly message in `secrets.rs` (PL-98 closed alongside).
-  T-047 replayed on macOS the same day (`scripts/smoke.sh` on
-  `scripts/headless-macos.sh`): 29/29 green — sync + keyring, works/versions
-  grouping, live play/zap/resume/recording, next-episode, hardening
-  (devtools origin rules, mpv `run` blocked); the GPU-decoding check is
-  Linux-only and skips here (PL-97: wire it to VideoToolbox). devtools `/eval`
-  on macOS was fixed the same day: Tauri/wry's `eval_with_callback`
-  completion returns empty on this webview, so the result now returns through
-  a devtools-only Tauri IPC channel instead. Packaged .dmg built on this
-  machine (PL-76): `~/.cache/cargo-target/cc-rs/release/bundle/dmg/
-  testpattern_0.1.0_aarch64.dmg` (21 MB, arm64, no /opt/homebrew linked
-  libraries); ad-hoc signed — manual launch check still open, tracked in PL-76.
-  Remaining before Done: none beyond the manual .dmg launch verification
-  and the GPU check port.
+  `swift.o` already as an archive. Backend: 78 Rust unit tests + 35 vitest +
+  clippy clean on macOS arm64. All remaining T-028 work verified
+  2026-10-03 — see the log: macOS keychain round-trip (PL-75; secrets.rs
+  through the login keychain via `security(1)`, plus a friendly message when
+  it's locked, PL-98), packaged .dmg built and verified launching on this
+  machine (PL-76), and the T-047 replay on macOS (PL-77:
+  `scripts/smoke.sh` 29/29 in `scripts/headless-macos.sh`; the GPU check is
+  Linux-only and skips, PL-97). Two new port-specific helpers came out of it:
+  devtools `/eval` on macOS now returns results over a devtools-only Tauri
+  IPC channel (`eval_with_callback`'s completion is empty on this webview),
+  and `scripts/headless-macos.sh` runs muted by default (`--interactive` for
+  a visible, audible window).
+
+### 🟨 In progress
 
 ### 🟦 To do
 
