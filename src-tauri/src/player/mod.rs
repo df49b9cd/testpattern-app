@@ -133,6 +133,8 @@ const OBSERVED: &[(&str, mpv_format)] = &[
     ("track-list", MPV_FORMAT_NODE),
     ("aid", MPV_FORMAT_NODE),
     ("sid", MPV_FORMAT_NODE),
+    // the player-chrome subs toggle shows the real flag, not the setting (PL-99)
+    ("sub-visibility", MPV_FORMAT_FLAG),
     ("video-params", MPV_FORMAT_NODE),
     ("video-codec", MPV_FORMAT_STRING),
     ("audio-codec-name", MPV_FORMAT_STRING),

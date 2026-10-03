@@ -40,11 +40,27 @@ export function Layout() {
       if (e.key === "/" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k")) {
         e.preventDefault();
         navigate("/search");
+        return;
+      }
+      // PL-101: playback may run without the player page open (preview on
+      // /live, autoplay-next, a script/bridge start); off-page Space/K/M go
+      // straight to that player instead of doing nothing. Space with a
+      // focused control belongs to it (spatial nav activates on Space).
+      const { now } = usePlayer.getState();
+      if (!now || location.pathname === "/player" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const onBody = !(document.activeElement instanceof HTMLElement) || document.activeElement === document.body;
+      if (e.key === " " || e.key === "k" || e.key === "K") {
+        if (!onBody) return;
+        e.preventDefault();
+        navigate("/player");
+      } else if (e.key === "m" || e.key === "M") {
+        e.preventDefault();
+        void api.set("mute", !usePlayer.getState().props.mute);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [navigate]);
+  }, [navigate, location.pathname]);
 
   return (
     <div className="flex h-full" style={pip ? { clipPath: pipClipPath(w, h) } : undefined}>

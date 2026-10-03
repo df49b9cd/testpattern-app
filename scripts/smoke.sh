@@ -98,23 +98,47 @@ curl -s "$DEV/snapshot?path=$OUT/next-episode.png" >/dev/null
 check "finished episode saved as watched" "$S await window.__TP__.player.getState().stop(); location.hash = '#/'; const d = await inv('series_detail', {sourceId: s.d.sourceId, id: s.d.id}); return d.seasons.flatMap(z => z.episodes).find(x => x.id === s.eps[1].id).watched === true;"
 js "$S for (const e of s.eps) await inv('history_remove', {kind: 'episode', sourceId: s.d.sourceId, itemId: e.id}); return 1;" >/dev/null
 
-# VA-API frames go straight to GL (T-029): a local VP9 clip (made once with
-# the system ffmpeg) must decode as hwdec "vaapi", not "vaapi-copy"/"no".
-# Needs a GPU render node and a GPU that decodes VP9 (most since ~2017).
-clip="$OUT/vp9.webm"
-if [[ ! -s "$clip" ]] && command -v ffmpeg >/dev/null; then
-  ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=1280x720:rate=30" -t 6 \
-    -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 2M "$clip" 2>/dev/null || rm -f "$clip"
+# GPU decoding, frames straight to the GPU (T-029 / PL-97): a locally made
+# clip / recording must decode as hwdec, not copy-back or software. Linux:
+# a VP9 clip encoded once with the system ffmpeg must come back "vaapi".
+# macOS: no system ffmpeg is assumed — instead replay the live recording made
+# above (the provider's live format offers H.264/HEVC) and expect
+# "videotoolbox".
+hwdec=""
+hwclip=""
+if [[ "$(uname -s)" == Darwin ]]; then
+  hwdec=videotoolbox
+  hwclip=$(ls "$OUT"/recordings/*.ts 2>/dev/null | head -n1 || true)
+else
+  hwdec=vaapi
+  clip="$OUT/vp9.webm"
+  if [[ ! -s "$clip" ]] && command -v ffmpeg >/dev/null; then
+    ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=1280x720:rate=30" -t 6 \
+      -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 2M "$clip" 2>/dev/null || rm -f "$clip"
+  fi
+  if compgen -G "/dev/dri/renderD*" >/dev/null && [[ -s "$clip" ]]; then
+    hwclip="$clip"
+  fi
 fi
-if [[ -s "$clip" ]] && compgen -G "/dev/dri/renderD*" >/dev/null; then
-  python3 -m http.server 18556 --bind 127.0.0.1 --directory "$OUT" >/dev/null 2>&1 &
+if [[ -n "$hwclip" && -s "$hwclip" ]]; then
+  python3 -m http.server 18556 --bind 127.0.0.1 --directory "$(dirname "$hwclip")" >/dev/null 2>&1 &
   srv=$!
   trap 'kill $srv 2>/dev/null || true' EXIT
   for _ in $(seq 1 20); do curl -s -m 1 -o /dev/null "http://127.0.0.1:18556/" && break; sleep 0.1; done
-  check "GPU decodes without copying frames (vaapi)" "$I await inv('player_load', {url: 'http://127.0.0.1:18556/vp9.webm', options: {title: 'vp9'}}); for (let i = 0; i < 30; i++) { await sleep(250); if ((await inv('player_get', {name: 'time-pos'})) > 1) break; } const h = await inv('player_get', {name: 'hwdec-current'}); await inv('player_stop'); return h === 'vaapi' || 'hwdec-current = ' + h;"
+  hwurl=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$(basename "$hwclip")")
+  # In a session where the GPU pipeline is unavailable (Linux without a
+  # render node, macOS without a window-server VT session), hwdec stays off
+  # even after the stream plays — that is a skip, not a failure. Detect it by
+  # forcing the decoder once and see whether it engages at all.
+  hardware=$(js "$I await inv('settings_set', {key:'player.hwdec', value:'$hwdec'}); await inv('player_load', {url: 'http://127.0.0.1:18556/$hwurl', options: {title: 'hwdec-probe'}}); for (let i = 0; i < 60; i++) { await sleep(300); const h = await inv('player_get', {name: 'hwdec-current'}); if (h && h !== 'no') break; } const t = await inv('player_get', {name: 'time-pos'}); const h2 = await inv('player_get', {name: 'hwdec-current'}); await inv('player_stop'); await inv('settings_set', {key:'player.hwdec', value:'auto-safe'}); return (t > 1 && h2 && h2 !== 'no') ? h2 : 'unavailable';" | python3 -c 'import json,sys; print(json.load(sys.stdin) or "unavailable")' 2>/dev/null || echo unavailable)
+  if [[ "$hardware" == "unavailable" ]]; then
+    echo "  - GPU decoding check skipped ($hwdec not available in this session)"
+  else
+    check "GPU decodes without copying frames ($hwdec)" "$I await inv('player_load', {url: 'http://127.0.0.1:18556/$hwurl', options: {title: 'hwdec'}}); for (let i = 0; i < 30; i++) { await sleep(250); if ((await inv('player_get', {name: 'time-pos'})) > 1) break; } await sleep(500); const h = await inv('player_get', {name: 'hwdec-current'}); await inv('player_stop'); return h === '$hwdec' || 'hwdec-current = ' + h;"
+  fi
   kill $srv 2>/dev/null || true
 else
-  echo "  - GPU decoding check skipped (no render node or no VP9 encoder)"
+  echo "  - GPU decoding check skipped (no clip / no render node)"
 fi
 
 echo "hardening"

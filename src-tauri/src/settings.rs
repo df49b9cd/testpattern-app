@@ -13,7 +13,11 @@ pub fn defaults() -> Map<String, Value> {
         "player.liveFormat": "ts",
         "player.audioLang": "eng,en",
         "player.subLang": "eng,en",
-        "player.subsEnabled": false,
+        // subs on by default (PL-100): mpv auto-selects the viewer's
+        // subtitle language (slang below); hiding the track by default left
+        // first-run users with no subs and no clue why. The player chrome has
+        // a quick toggle (PL-99) and Settings keeps the startup default.
+        "player.subsEnabled": true,
         "player.volume": 100,
         "content.showAdult": false,
         "ui.startPage": "home",
@@ -122,4 +126,16 @@ pub async fn settings_set<R: Runtime>(
         apply_player(&app, state.inner(), Some(&key));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PL-100: a fresh profile must show auto-selected subtitles; hiding them
+    /// by default read as broken subtitles to first-run users.
+    #[test]
+    fn fresh_profiles_show_subtitles() {
+        assert_eq!(defaults()["player.subsEnabled"], json!(true));
+    }
 }
