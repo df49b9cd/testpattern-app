@@ -115,6 +115,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            devtools::__devtools_eval_result,
             player::player_load,
             player::player_stop,
             player::player_command,

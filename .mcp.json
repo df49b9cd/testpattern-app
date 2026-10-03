@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "planned": {
+      "type": "http",
+      "url": "http://localhost:4000/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PLANNED_API_KEY}"
+      }
+    }
+  }
+}

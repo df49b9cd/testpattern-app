@@ -2,15 +2,19 @@
 # macOS counterpart of scripts/headless.sh: runs the debug app against an
 # ISOLATED profile under .deps/headless-macos/ (XDG_DATA_HOME / XDG_CACHE_HOME /
 # XDG_CONFIG_HOME like headless.sh — the backend reads those on every platform)
-# so tests never touch the real profile. macOS has no nested Wayland
-# compositor: the app instead opens its window on an offscreen position that
-# the user's screens don't contain. Drive it via the devtools server on
-# 127.0.0.1:17777 (scripts/dev-run.sh, TP_DEV_MUTE=1) — same as Linux.
+# so tests never touch the real profile.
 #
-#   scripts/headless-macos.sh start [WIDTHxHEIGHT]   (default 1600x1000)
+# macOS has no nested Wayland compositor, so the app opens as a VISIBLE window
+# on the desktop. The default start is automation-mode: the window is muted
+# (TP_DEV_MUTE=1) and uses the null audio device (TP_DEV_AO=null), so test runs
+# never make noise. `start --interactive` runs the same isolated profile but
+# visible AND audible — use that for by-hand checks; the smoke suite always
+# uses the default (muted) mode.
+#
+#   scripts/headless-macos.sh start [--interactive]  (windowed, muted by default)
 #   scripts/headless-macos.sh stop
 #   scripts/headless-macos.sh status
-#   scripts/headless-macos.sh restart-app            (after a cargo build)
+#   scripts/headless-macos.sh restart-app [--interactive]  (after a cargo build)
 #   scripts/headless-macos.sh seed                   (test account 1 from .env.local)
 #   scripts/headless-macos.sh tmdb                   (TMDB key from .env.local, if any)
 #
@@ -24,6 +28,10 @@ STATE="$ROOT/.deps/headless-macos"
 LOGS="$STATE/logs"
 mkdir -p "$LOGS"
 
+# automation runs are silent; --interactive keeps sound on
+INTERACTIVE=0
+[[ "${2:-}" == "--interactive" || "${1:-}" == "--interactive" ]] && INTERACTIVE=1
+
 alive() { [[ -f "$STATE/$1.pid" ]] && kill -0 "$(cat "$STATE/$1.pid")" 2>/dev/null; }
 
 app_pid_file() {
@@ -34,7 +42,7 @@ app_pid_file() {
 
 start_app() {
   (
-    export TP_DEV_MUTE=1 TP_DEV_AO=null
+    if [[ "$INTERACTIVE" == 0 ]]; then export TP_DEV_MUTE=1 TP_DEV_AO=null; fi
     export XDG_DATA_HOME="$STATE/data" XDG_CACHE_HOME="$STATE/cache" XDG_CONFIG_HOME="$STATE/config"
     exec "$ROOT/scripts/dev-run.sh"
   ) >"$LOGS/app.log" 2>&1 &

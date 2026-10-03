@@ -172,6 +172,12 @@ fn handle<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, port: u16) -> s
             Ok(v) => (200, v),
             Err(e) => (500, e),
         },
+        // Harness probe: "ready" only once JS actually round-trips through the
+        // webview, so the startup check never depends on /snapshot (reload path).
+        ("GET", "/eval-ready") => match eval(app, "return 1+1;") {
+            Ok(_) => (200, "ready".to_owned()),
+            Err(e) => (503, e),
+        },
         _ => (404, "not found".to_owned()),
     };
     respond(&mut stream, status, "text/plain; charset=utf-8", response.as_bytes(), cors)
@@ -376,24 +382,80 @@ fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
     rx.recv_timeout(Duration::from_secs(20)).map_err(|e| e.to_string())?
 }
 
-/// macOS: Tauri 2.11's `eval_with_callback` wraps WKWebView's
-/// evaluateJavaScript; the callback gets the completion value as JSON text —
-/// the same contract as the Linux webkit2gtk path.
+/// macOS: WKWebView's `evaluateJavaScript` completion path loses the result
+/// of an async script here (the completion value comes back empty from wry's
+/// NSJSONSerialization serialization of a Promise), so the Linux-style
+/// "read the completion value" contract cannot work. Instead the wrapper
+/// ships the result back to Rust through Tauri's own IPC — a channel that is
+/// proven to work in this webview — and the caller waits on it. The script
+/// itself is still dispatched with `eval_with_callback` (fire-and-forget);
+/// only the *return path* changes.
+///
+/// The JS posts to the devtools-only `__devtools_eval_result` command —
+/// registered only in debug builds, as devtools itself is. Any page load could
+/// in principle invoke it, but only the Vite dev server's origin can even
+/// reach /eval, and the result is keyed by an eval id that is only valid for
+/// one outstanding call.
 #[cfg(target_os = "macos")]
 fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
     let window = app.get_webview_window("main").ok_or("no main window")?;
-    let script = format!(
-        "(async () => {{ try {{ const r = await (async () => {{ {js} }})(); return JSON.stringify(r ?? null); }} catch (e) {{ return JSON.stringify({{error: String(e && e.stack || e)}}); }} }})()"
-    );
+    let id = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    };
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
-    // The JS returns a JSON string; `eval_with_callback` serializes the
-    // completion value, so the callback receives a JSON-encoded string of the
-    // JSON text — unwrap one level.
-    let _ = window.eval_with_callback(&script, move |out| {
-        let unwrapped = serde_json::from_str::<String>(&out).unwrap_or(out);
-        let _ = tx.send(Ok(unwrapped));
-    });
-    rx.recv_timeout(Duration::from_secs(20)).map_err(|e| e.to_string())?
+    eval_bus::register(id, tx);
+    // The wrapper awaits the user JS, then hands the JSON string over IPC.
+    // `eval_with_callback`'s callback is ignored on macOS (see above).
+    let script = format!(
+        "(async () => {{ let out; try {{ const r = await (async () => {{ {js} }})(); out = JSON.stringify(r ?? null); }} catch (e) {{ out = JSON.stringify({{error: String(e && e.stack || e)}}); }} let done = false; while (!done) {{ try {{ await window.__TAURI_INTERNALS__.invoke('__devtools_eval_result', {{ id: {id}, result: out }}); done = true; }} catch (_) {{ await new Promise(r => setTimeout(r, 50)); }} }} }})(); 'ok'"
+    );
+    if window.eval_with_callback(&script, |_| {}).is_err() {
+        eval_bus::unregister(id);
+        return Err("evaluateJavaScript dispatch failed".into());
+    }
+    let r = rx.recv_timeout(Duration::from_secs(25));
+    eval_bus::unregister(id);
+    r.map_err(|e| format!("evaluateJavaScript completion never fired: {e}"))?
+}
+
+#[cfg(target_os = "macos")]
+mod eval_bus {
+    use std::collections::HashMap;
+    use std::sync::mpsc::Sender;
+    use std::sync::{Mutex, OnceLock};
+
+    type Tx = Sender<Result<String, String>>;
+
+    fn channels() -> &'static Mutex<HashMap<u64, Tx>> {
+        static C: OnceLock<Mutex<HashMap<u64, Tx>>> = OnceLock::new();
+        C.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub fn register(id: u64, tx: Tx) {
+        channels().lock().unwrap().insert(id, tx);
+    }
+
+    pub fn unregister(id: u64) {
+        channels().lock().unwrap().remove(&id);
+    }
+
+    pub fn resolve(id: u64, result: String) -> bool {
+        let tx = { channels().lock().unwrap().get(&id).cloned() };
+        match tx {
+            Some(tx) => tx.send(Ok(result)).is_ok(),
+            None => false,
+        }
+    }
+}
+
+/// Devtools IPC command (debug builds only): the eval wrapper posts its JSON
+/// result here and the waiting eval thread picks it up.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn __devtools_eval_result(id: u64, result: String) -> bool {
+    eval_bus::resolve(id, result)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

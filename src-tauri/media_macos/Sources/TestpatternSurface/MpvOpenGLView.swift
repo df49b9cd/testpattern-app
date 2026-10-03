@@ -37,6 +37,19 @@ public final class MpvOpenGLView: NSOpenGLView {
     needsDisplay = true
   }
 
+  /// The app never wants this view to be first responder: the WKWebView owns
+  /// keyboard input. Without this, a click on the video surface grabs focus
+  /// and keyDown: (Space, K, arrows, …) never reaches the web page.
+  public override var acceptsFirstResponder: Bool { false }
+
+  /// Swallow nothing: forward keyboard and mouse events up the responder
+  /// chain so the WKWebView (sibling above us) and the page's handlers see
+  /// them even if this view somehow ends up targeted.
+  public override func keyDown(with event: NSEvent) { nextResponder?.keyDown(with: event) }
+  public override func keyUp(with event: NSEvent) { nextResponder?.keyUp(with: event) }
+  public override func mouseDown(with event: NSEvent) { nextResponder?.mouseDown(with: event) }
+  public override func mouseUp(with event: NSEvent) { nextResponder?.mouseUp(with: event) }
+
   /// Called by Rust right after the view is created.
   @objc public static func setRenderCallback(_ fn: RenderFn?) {
     renderFn = fn

@@ -244,6 +244,12 @@ mod backend {
         if stderr.contains("could not be found") || stderr.contains("The specified item could not be found") {
             return Ok(None);
         }
+        // A locked login keychain says "user interaction is not allowed" on
+        // stderr; a locked *throwaway* keychain (and some non-interactive
+        // sessions) just exits 128 with empty stderr.
+        if out.status.code() == Some(128) && stderr.trim().is_empty() {
+            return Err(err("the keychain is locked"));
+        }
         Err(err(stderr.trim()))
     }
 
@@ -252,6 +258,9 @@ mod backend {
         let stderr = String::from_utf8_lossy(&out.stderr);
         if out.status.success() { return Ok(true); }
         if stderr.contains("could not be found") { return Ok(false); }
+        if out.status.code() == Some(128) && stderr.trim().is_empty() {
+            return Err(err("the keychain is locked"));
+        }
         Err(err(stderr.trim()))
     }
 
@@ -580,6 +589,107 @@ mod tests {
         let ss = SecretService::connect(EncryptionType::Dh).await.expect("encrypted session");
         let default = ss.get_default_collection().await.expect("default collection");
         println!("default collection {:?}, locked: {:?}", default.get_label().await, default.is_locked().await);
+    }
+
+    /// Throwaway-keychain roundtrip for the macOS backend:
+    /// `TP_TEST_KEYCHAIN=/tmp/tp-test-keychain.$$.keychain-db cargo test --lib -- --ignored macos_keychain_roundtrip --exact --nocapture`
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn macos_keychain_roundtrip() {
+        use std::process::Command;
+        let kc = std::env::var("TP_TEST_KEYCHAIN").expect("TP_TEST_KEYCHAIN (throwaway keychain path)");
+        assert!(kc.starts_with("/tmp/tp-test-keychain."), "refusing anything but a throwaway keychain: {kc}");
+
+        let profile = "testprofile";
+        let label = "testpattern: roundtrip";
+        let pw = "s3cr3t-value";
+
+        // The same argument vector the backend builds in store()/load()/delete().
+        let attrs = |with_label: bool| -> Vec<String> {
+            let mut v = vec![
+                "-s".to_string(),
+                "testpattern".to_string(),
+                "-a".to_string(),
+                format!("{profile}:4242"),
+                "-j".to_string(),
+                "source".to_string(),
+            ];
+            if with_label {
+                v.push("-l".to_string());
+                v.push(label.to_string());
+            }
+            v
+        };
+        let sec = |args: Vec<String>, stdin: Option<&str>| -> (bool, String) {
+            let mut cmd = Command::new("/usr/bin/security");
+            cmd.args(&args).arg(&kc); // keychain path is a positional arg, not -k
+            if stdin.is_some() {
+                cmd.stdin(std::process::Stdio::piped());
+            }
+            cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            let mut child = cmd.spawn().expect("spawn security");
+            if let Some(s) = stdin {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+            }
+            let out = child.wait_with_output().expect("wait security");
+            (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
+        };
+        let find = || -> (bool, String) {
+            let mut args = vec!["find-generic-password".to_string()];
+            args.extend(attrs(false));
+            args.push("-g".to_string());
+            sec(args, None)
+        };
+
+        // set -> get == value
+        let mut add = vec!["add-generic-password".to_string(), "-U".to_string()];
+        add.extend(attrs(true));
+        add.push("-w".to_string());
+        add.push(pw.to_string());
+        assert!(sec(add, None).0, "add failed");
+        let (ok, err) = find();
+        assert!(ok, "find failed: {err}");
+        assert!(err.contains(&format!("password: \"{pw}\"")), "wrong value: {err}");
+
+        // set same label again updates in place
+        let pw2 = "updated-value";
+        let mut add2 = vec!["add-generic-password".to_string(), "-U".to_string()];
+        add2.extend(attrs(true));
+        add2.push("-w".to_string());
+        add2.push(pw2.to_string());
+        assert!(sec(add2, None).0, "update failed");
+        let (ok, err) = find();
+        assert!(ok && err.contains(&format!("password: \"{pw2}\"")), "update not in place: {err}");
+
+        // delete -> get fails
+        let mut del = vec!["delete-generic-password".to_string()];
+        del.extend(attrs(false));
+        assert!(sec(del, None).0, "delete failed");
+        let (ok, err) = find();
+        assert!(!ok && err.contains("could not be found"), "get after delete: ok={ok} err={err}");
+
+        // re-add, then lock -> set/get fail until unlocked
+        let mut add3 = vec!["add-generic-password".to_string(), "-U".to_string()];
+        add3.extend(attrs(true));
+        add3.push("-w".to_string());
+        add3.push(pw.to_string());
+        assert!(sec(add3, None).0, "re-add failed");
+        assert!(sec(vec!["lock-keychain".to_string()], None).0, "lock failed");
+        let (ok, err) = find();
+        assert!(!ok, "get on locked keychain succeeded: {err}");
+        eprintln!("locked find stderr: {err:?}");
+        let mut add4 = vec!["add-generic-password".to_string(), "-U".to_string()];
+        add4.extend(attrs(true));
+        add4.push("-w".to_string());
+        add4.push(pw.to_string());
+        let (ok, err) = sec(add4, None);
+        assert!(!ok, "set on locked keychain succeeded: {err}");
+        let pw_arg = std::env::var("TP_TEST_KEYCHAIN_PASSWORD").expect("TP_TEST_KEYCHAIN_PASSWORD");
+        assert!(sec(vec!["unlock-keychain".to_string(), "-p".to_string(), pw_arg], None).0, "unlock failed");
+        let (ok, err) = find();
+        assert!(ok && err.contains(&format!("password: \"{pw}\"")), "get after unlock: {err}");
     }
 
     #[test]

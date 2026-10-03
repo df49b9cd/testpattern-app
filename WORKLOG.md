@@ -280,6 +280,13 @@ Every dependency must be on its **latest stable** release. Audited
 Legend: **P0** = needed for a usable app on Linux, **P1** = expected
 UHF/Infuse feature, **P2** = later.
 
+> Work state is also tracked in **planned** (the user's tracker): project
+> **testpattern-app** (team PL, `PLANNED_API_KEY` in
+> `/Users/smolesen/Dev/planned/data/.env`, MCP on `localhost:4000` — start it
+> with `just dev` or `planned serve` in `/Users/smolesen/Dev/planned`). This
+> file keeps the build notes; the kanban below stays the issue-of-record for
+> what is done.
+
 ### 🟩 Done
 
 - **T-001 Environment + provider survey.** Toolchain present (bun 1.4, rust
@@ -925,26 +932,29 @@ UHF/Infuse feature, **P2** = later.
   track list get the HDR badge too; DV files still light the chip from
   the profile alone.
 
-### 🟨 In progress
-
 - **T-028 (P2) Other platforms — macOS port.** First-class AppKit port, all
   native (WKWebView `transparent`/`macOSPrivateApi`, NSOpenGLView under the
   webview via CGL, FFmpeg VideoToolbox, mpv OpenGL render API, Security
   framework Keychain for passwords); Linux unaffected (every new piece is
-  `cfg(target_os = "macos")`) and still CI-checked. Media engine builds via
-  `scripts/build-media.sh` (now dual-platform; `-Dgl-cocoa=enabled
-  -Dcoreaudio=enabled -Davfoundation=enabled` on macOS, swift-build on for
-  cocoa-cb, videotoolbox on FFmpeg's side via auto-detect); mpv's static
+  `cfg(target_os = "macos")`) and still CI-checked (PR #4 merged). Media
+  engine builds via `scripts/build-media.sh` (now dual-platform;
+  `-Dgl-cocoa=enabled -Dcoreaudio=enabled -Davfoundation=enabled` on macOS,
+  swift-build on for cocoa-cb, videotoolbox on FFmpeg's side); mpv's static
   archive is re-linked with `libtool -static` because its Swift step ships
-  `swift.o` already as an archive (ar's plain output is a stub otherwise).
-  Backend verified: 68 Rust unit tests + 35 vitest + clippy clean on macOS
-  arm64; `scripts/headless-macos.sh` runs the debug app against an isolated
-  profile (no GNOME Keyring on macOS — the login keychain's `testpattern:`
-  entries are namespaced by profile id and removed on `stop`); smoke passes
-  the "mpv render context ready" milestone. Remaining before Done: actual
-  keychain round-trip (add/edit/lock/unlock/remove + locked-keyring guide),
-  a packaged .dmg on the machine, and the T-047 replay on macOS (T-047 was
-  Linux-only).
+  `swift.o` already as an archive. Backend: 78 Rust unit tests + 35 vitest +
+  clippy clean on macOS arm64. All remaining T-028 work verified
+  2026-10-03 — see the log: macOS keychain round-trip (PL-75; secrets.rs
+  through the login keychain via `security(1)`, plus a friendly message when
+  it's locked, PL-98), packaged .dmg built and verified launching on this
+  machine (PL-76), and the T-047 replay on macOS (PL-77:
+  `scripts/smoke.sh` 29/29 in `scripts/headless-macos.sh`; the GPU check is
+  Linux-only and skips, PL-97). Two new port-specific helpers came out of it:
+  devtools `/eval` on macOS now returns results over a devtools-only Tauri
+  IPC channel (`eval_with_callback`'s completion is empty on this webview),
+  and `scripts/headless-macos.sh` runs muted by default (`--interactive` for
+  a visible, audible window).
+
+### 🟨 In progress
 
 ### 🟦 To do
 
