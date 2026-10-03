@@ -90,6 +90,8 @@ impl Mpv {
         Ok(mpv)
     }
 
+    /// The raw handle; only the Linux render-API surface needs it today.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn raw(&self) -> *mut mpv_handle {
         self.handle
     }

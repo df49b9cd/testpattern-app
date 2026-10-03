@@ -4,9 +4,97 @@ use std::process::Command;
 fn main() {
     tauri_build::build();
 
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        link_media_engine();
+    match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("linux") => link_media_engine(),
+        Ok("macos") => link_media_engine_macos(),
+        _ => {}
     }
+}
+
+/// macOS: link the static media engine from the prefix, plus the frameworks.
+/// The prefix layout and pkg-config files are the same as Linux's; only the
+/// dynamic tail differs: no pkg-config probe (macOS's static archives reference
+/// frameworks and libSystem), link the well-known set directly.
+fn link_media_engine_macos() {
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let prefix = std::env::var("TP_MEDIA_PREFIX")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| manifest.join("../third_party/prefix"));
+    let prefix = prefix.canonicalize().unwrap_or_else(|_| {
+        panic!(
+            "media engine not found at {} — run scripts/build-media.sh first",
+            prefix.display()
+        )
+    });
+    println!("cargo:rerun-if-env-changed=TP_MEDIA_PREFIX");
+    println!("cargo:rustc-link-search=native={}", prefix.join("lib").display());
+    println!("cargo:rerun-if-changed={}", prefix.join("lib/libmpv.a").display());
+    // the dynamic tail below (libass, lcms2, uchardet) comes from Homebrew
+    // at /opt/homebrew (Apple Silicon) or /usr/local (Intel): add both, a
+    // nonexistent one is a no-op
+    for dir in ["/opt/homebrew/lib", "/usr/local/lib"] {
+        println!("cargo:rustc-link-search=native={dir}");
+    }
+    link_swift_surface(&manifest);
+
+    // Same order rule as Linux: dependents before dependencies. No
+    // display-info on macOS (libdisplay-info is a DRM/EDID thing).
+    const STATIC: &[&str] = &[
+        "mpv", "placebo", "avfilter", "avformat", "avcodec", "swscale",
+        "swresample", "avutil", "xml2", "dav1d",
+    ];
+    for lib in STATIC {
+        println!("cargo:rustc-link-lib=static={lib}");
+    }
+    // macOS ld dead-strips C entry points that nothing in the Rust/C call
+    // graph names but mpv/FFmpeg reach through internal dispatch tables
+    // (render.h exports). Keep only the ones real code calls; the FFmpeg
+    // "register all" entry points were removed in FFmpeg 5.
+    for sym in ["mpv_create", "mpv_render_context_create", "mpv_wait_event",
+                "mpv_set_property", "mpv_set_property_string", "mpv_command",
+                "mpv_command_async", "mpv_get_property", "mpv_observe_property",
+                "mpv_terminate_destroy", "avformat_network_init"] {
+        println!("cargo:rustc-link-arg=-Wl,-u,_{sym}");
+    }
+
+    // mpv/FFmpeg's dynamic tail on macOS is Apple frameworks + system libs.
+    const FRAMEWORKS: &[&str] = &[
+        // video
+        "Cocoa", "QuartzCore", "IOSurface", "CoreVideo", "CoreMedia",
+        "CoreFoundation", "VideoToolbox", "OpenGL", "Metal", "MetalKit",
+        "AVFoundation", "AudioToolbox", "AudioUnit", "CoreAudio",
+        // misc mpv/ffmpeg deps
+        "IOKit", "Security", "SystemConfiguration", "Carbon", "AppKit",
+        "UniformTypeIdentifiers",
+    ];
+    for f in FRAMEWORKS {
+        println!("cargo:rustc-link-lib=framework={f}");
+    }
+    // non-framework dynamic libs mpv still uses on macOS
+    for lib in ["z", "bz2", "iconv", "c++", "ass", "lcms2", "uchardet", "ssl", "crypto"] {
+        println!("cargo:rustc-link-lib=dylib={lib}");
+    }
+}
+
+/// Builds the tiny Swift package that holds the NSOpenGLView subclass mpv
+/// renders into (media_macos/), and links its static archive. Its drawRect:
+/// override is what gives Rust a callback with the CGL context current, and
+/// it cannot be expressed through plain objc2 FFI.
+fn link_swift_surface(manifest: &std::path::Path) {
+    let pkg = manifest.join("media_macos");
+    println!("cargo:rerun-if-changed={}", pkg.join("Sources/TestpatternSurface/MpvOpenGLView.swift").display());
+    let target_dir = pkg.join(".build");
+    let status = Command::new("swift")
+        .args(["build", "-c", "release", "--package-path", pkg.to_str().unwrap()])
+        .status()
+        .expect("swift toolchain not found");
+    assert!(status.success(), "swift build -c release failed in {}", pkg.display());
+    println!("cargo:rustc-link-search=native={}", target_dir.join("release").display());
+    println!("cargo:rustc-link-lib=static=TestpatternSurface");
+    // ObjC-class-only archives get their classes from the segment, not from
+    // referenced symbols; nothing else links them in on its own.
+    println!("cargo:rustc-link-arg=-force_load");
+    println!("cargo:rustc-link-arg={}/libTestpatternSurface.a", target_dir.join("release").display());
 }
 
 /// Links the embedded media engine built by `scripts/build-media.sh`:

@@ -200,7 +200,7 @@ binaries. Agents commit only when the user asks.
 ### Dependency policy (user requirement: always latest)
 Every dependency must be on its **latest stable** release. Audited
 2026-09-26 (re-audited later that day with `scripts/outdated.sh`: all current):
-- Rust **1.98.1** pinned in `rust-toolchain.toml` (+ `rust-version` in
+- Rust **1.99.0** pinned in `rust-toolchain.toml` (+ `rust-version` in
   `src-tauri/Cargo.toml`), edition **2024**. Bun **1.4.2**, pinned as
   `packageManager` in `package.json` (CI installs that one).
 - All direct crates at latest stable (checked against crates.io) **except**
@@ -905,41 +905,57 @@ UHF/Infuse feature, **P2** = later.
   …). Verified in the app: Series → Network "Apple TV" + Original language
   English = 180 shows, other facet counts follow.
 
+- **T-055 TMDB: keep current, cover titles without an id** — refresh runs
+  on TMDB's change lists (`/3/movie/changes`, `/3/tv/changes`, paged, at
+  most 14 days back via setting `tmdb.changes_since`) instead of refetching
+  everything after 30 days: changed ids are marked stale (`fetched_at = 0`)
+  before `todo()`. The ~1,100 works without a TMDB id are looked up with
+  `/3/search/movie` / `/3/search/tv` (title + year / first-air-date year);
+  only a single exact normalized-title match (`works::norm_title`) is
+  accepted and stored in the new `tmdb_map` table (title key → TMDB id,
+  empty string as the miss sentinel) so `assign_keys` joins them to the
+  TMDB group on the next rebuild — 'For All Mankind (2019)'-style titles
+  now group correctly. Settings shows the unmapped count. Regression
+  guards in `tmdb.rs`.
+
+- **T-056 Versions: HDR in track checks** — the track probe (`probe.rs`)
+  now decodes one frame per version (`vid=auto`, `hwdec=no`, paused until
+  `video-params` reports, then stop) and sets `hdr` from the gamma
+  (`pq`/`hlg`), so HDR10 copies with no `dolby-vision-profile` in the
+  track list get the HDR badge too; DV files still light the chip from
+  the profile alone.
+
 ### 🟨 In progress
 
-_(nothing)_
+- **T-028 (P2) Other platforms — macOS port.** First-class AppKit port, all
+  native (WKWebView `transparent`/`macOSPrivateApi`, NSOpenGLView under the
+  webview via CGL, FFmpeg VideoToolbox, mpv OpenGL render API, Security
+  framework Keychain for passwords); Linux unaffected (every new piece is
+  `cfg(target_os = "macos")`) and still CI-checked. Media engine builds via
+  `scripts/build-media.sh` (now dual-platform; `-Dgl-cocoa=enabled
+  -Dcoreaudio=enabled -Davfoundation=enabled` on macOS, swift-build on for
+  cocoa-cb, videotoolbox on FFmpeg's side via auto-detect); mpv's static
+  archive is re-linked with `libtool -static` because its Swift step ships
+  `swift.o` already as an archive (ar's plain output is a stub otherwise).
+  Backend verified: 68 Rust unit tests + 35 vitest + clippy clean on macOS
+  arm64; `scripts/headless-macos.sh` runs the debug app against an isolated
+  profile (no GNOME Keyring on macOS — the login keychain's `testpattern:`
+  entries are namespaced by profile id and removed on `stop`); smoke passes
+  the "mpv render context ready" milestone. Remaining before Done: actual
+  keychain round-trip (add/edit/lock/unlock/remove + locked-keyring guide),
+  a packaged .dmg on the machine, and the T-047 replay on macOS (T-047 was
+  Linux-only).
 
 ### 🟦 To do
 
-#### T-055 (P2) TMDB: keep current, cover titles without an id
-- Refresh with TMDB's change lists instead of refetching everything after
-  30 days: `GET /3/movie/changes` and `/3/tv/changes` (`start_date`, at most
-  14 days back, paged) list ids changed since the last run; mark those
-  `tmdb` rows stale (`fetched_at = 0`) before `todo()` (`tmdb.rs`). Store the
-  last run date in a setting.
-- ~1,100 works have no TMDB id (`title:` keys). Look them up with
-  `GET /3/search/movie?query=<title>&year=<year>` / `/3/search/tv?query=…
-  &first_air_date_year=…`; accept a single exact normalized-title match
-  (`works::norm_title`), store it as a mapping table (title key → TMDB id)
-  so `assign_keys` can put them into the TMDB group. Spec:
-  https://developer.themoviedb.org/openapi/tmdb-api.json.
-
-#### T-056 (P2) Versions: HDR in track checks
-- The track check (`probe.rs`) doesn't decode, so `hdr` is only set when
-  mpv lists `dolby-vision-profile` for the track (For All Mankind's "4K
-  Dolby Vision" copy reported none). HDR10/DV need `video-params` (decode
-  one frame: `vid=auto`, `hwdec=no`, paused, wait for `video-params` gamma
-  `pq`/`hlg`, then stop) — measure the time/CPU on a 4K HEVC stream first;
-  playback already records it (`learn_tracks`).
-
 #### T-028 (P2) Other platforms
-- Windows/macOS: libmpv render API with WGL/CGL contexts or `wid` embedding;
-  build FFmpeg/mpv statically per platform. Mobile: HTML5 fallback player
-  (hls.js) fed by a local Rust HTTP proxy that remuxes TS → HLS/fMP4.
+- Windows: libmpv render API with a WGL context or `wid` embedding; build
+  FFmpeg/mpv statically per platform. Mobile: hls.js fallback player fed
+  by a local Rust HTTP proxy that remuxes TS → HLS/fMP4.
 
 ### ⛔ Blocked / needs the user
 - Pushing: only when the user asks (remote and project notes in §3 "Git").
-- T-028 needs Windows/macOS machines (and a decision about mobile).
+- T-028 needs a Windows machine (and a decision about mobile).
 - Optional: run the `sudo dnf install ...` from §3 so builds don't need the
   rootless sysroot. Anything with `sudo` is the user's to run in their own
   terminal: inside the agent's sandbox it fails ("no new privileges").
@@ -1072,3 +1088,37 @@ _(nothing)_
   (provider order) → guide channels first per genre (UK now opens with BBC
   One London, BBC 1, BBC 2, ITV 1 …). Tests added for both. Nothing
   committed yet (branch `content-grouping`, based on the merged PR #1).
+- **2026-10-02** — Status/hygiene session. Dependency audit
+  (`scripts/outdated.sh`): everything current except Rust (1.98.1 → 1.99.0,
+  re-pinned in `rust-toolchain.toml` + `rust-version`; the GTK3 pins stand)
+  and the local Bun install (1.3.9 → 1.4.2, matching the `packageManager`
+  pin). `cargo update` pulled tauri 2.11 → 2.12.1 (Cargo spec `2.11` is a
+  semver range); the new `tauri-codegen` 2.7 dropped `bundle.macOS.category`
+  and `bundle.linux.category` from the config schema (superseded by the
+  top-level `bundle.category`), so `tauri.conf.json` now has only
+  `category: "Video"` under `bundle` (plus this machine's `transparent` /
+  `macOSPrivateApi` edits). Fixed two Linux-only-code warnings that fail
+  `-D warnings` on macOS (`unused mpsc` import in devtools.rs, dead
+  `Mpv::raw` in mpv.rs) with `cfg_attr(not(target_os = "linux"), allow)`.
+  `bun.lock` regenerated with Bun 1.4.2 (lockfile v2, in-range bumps incl.
+  @tauri-apps/cli 2.11.5 → 2.12.1); `THIRD_PARTY_NOTICES.md` regenerated.
+  This checkout lives on macOS now (session 4's work was on Linux), so
+  `scripts/build-media.sh` was made dual-platform (`nproc` →
+  `sysctl -n hw.ncpu` fallback; VA-API/libdrm/EGL and
+  pipewire/pulse/alsa gated to Linux, VideoToolbox/Cocoa/CoreAudio on
+  macOS), Homebrew installed meson/ninja/cmake/nasm + libass/lcms2/uchardet
+  and the media engine built into `third_party/prefix`.
+  `src-tauri/build.rs` adds the Homebrew lib dirs to the macOS link search
+  and links the Apple frameworks mpv needs. `scripts/check.sh`: all green
+  on macOS (68 Rust unit tests, 35 vitest, clippy clean, notices current).
+- **2026-10-02 (hygiene)** — Gap analysis vs HEAD 8ff4463 (branch
+  `df49b9cd/macos-port`): T-055 (TMDB change-lists refresh + `tmdb_map`
+  search mapping for id-less works) and T-056 (`probe.rs` decodes one
+  frame per version, `hdr` from `video-params` gamma `pq`/`hlg`) were
+  committed but still open on the board — moved to Done. T-028 stays In
+  progress (macOS keychain round-trip, packaged .dmg and the T-047 replay
+  are still open); its To-do bullet is now Windows/mobile-only (the
+  macOS/CGL half is committed and tracked by the In-progress card), and
+  the Blocked line drops the macOS-machine premise (this checkout lives
+  on macOS arm64). The "push to GitHub" blocked-policy line stays as is —
+  it no longer gates T-037 (already Done: green run + merged PR #1).

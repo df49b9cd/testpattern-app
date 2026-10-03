@@ -29,7 +29,7 @@ TP="$ROOT/third_party"
 SRC="$TP/src"
 BUILD="${TP_MEDIA_BUILD:-$TP/build}"
 PREFIX="${TP_MEDIA_PREFIX:-$TP/prefix}"
-JOBS="${TP_JOBS:-$(nproc)}"
+JOBS="${TP_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
 
 [[ -f "$ROOT/.deps/env.sh" ]] && . "$ROOT/.deps/env.sh"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
@@ -118,11 +118,26 @@ meson_static() { # name [meson options...] — static meson build into $PREFIX
   shift
   echo "==> building $name $(cat "$SRC/$name.tag")"
   rm -rf "${BUILD:?}/$name"
-  meson setup "$BUILD/$name" "$SRC/$name" \
+  # stdout of meson setup is chatty; its error text goes to stderr AND to the
+  # configure.log. CI swallows the former — keep a copy visible on failure.
+  if ! meson setup "$BUILD/$name" "$SRC/$name" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release -Ddefault_library=static \
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" "$@" \
-    >"$BUILD/$name-configure.log"
+    >"$BUILD/$name-configure.log" 2>&1; then
+    local rc=$?
+    echo "==> $name configure FAILED (rc=$rc), meson log follows:" >&2
+    tail -60 "$BUILD/$name-configure.log" >&2 || true
+    echo "==> end $name configure failure" >&2
+    return $rc
+  fi
   meson compile -C "$BUILD/$name" -j "$JOBS" >"$BUILD/$name-make.log" 2>&1
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "==> $name build FAILED (rc=$rc); logs follow:" >&2
+    tail -40 "$BUILD/$name-make.log" >&2 || true
+    echo "==> end $name build failure" >&2
+    return $rc
+  fi
   meson install -C "$BUILD/$name" >/dev/null
   rebuilt "$name"
 }
@@ -137,6 +152,23 @@ built libxml2 || meson_static libxml2 \
   -Dhttp=disabled -Dmodules=disabled -Ddocs=disabled -Dcatalog=disabled -Dschematron=disabled
 
 # ---------------------------------------------------------------- FFmpeg
+# VA-API/libdrm (and mpv's drm/libplacebo-GL plumbing) are Linux-only; on
+# macOS FFmpeg auto-detects VideoToolbox and mpv's gl-cocoa covers the render
+# API (the app's own NSOpenGLView drives it — no cocoa-cb/swift build).
+if [ "$(uname)" = "Darwin" ]; then
+  FFMPEG_HW=(--enable-videotoolbox --enable-audiotoolbox)
+  PLACEBO_PLAT=()
+  MPV_PLAT=(-Dgl=enabled -Dgl-cocoa=enabled -Dcocoa=enabled -Dcoreaudio=enabled -Davfoundation=enabled \
+    -Ddrm=disabled -Degl=disabled -Dvaapi=disabled -Dvaapi-drm=disabled \
+    -Dpipewire=disabled -Dpulse=disabled -Dalsa=disabled -Daudiounit=disabled \
+    -Dmacos-cocoa-cb=disabled -Dswift-build=enabled)
+else
+  FFMPEG_HW=(--enable-vaapi --enable-libdrm)
+  MPV_PLAT=(-Dgl=enabled -Dplain-gl=enabled -Degl=enabled \
+    -Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled \
+    -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled)
+fi
+
 if ! built ffmpeg; then
   echo "==> building FFmpeg $FFMPEG_TAG"
   rm -rf "$BUILD/ffmpeg"
@@ -154,7 +186,7 @@ if ! built ffmpeg; then
       --disable-avdevice --disable-indevs --disable-outdevs \
       --enable-network --enable-openssl \
       --enable-libdav1d --enable-libxml2 --enable-zlib \
-      --enable-vaapi --enable-libdrm \
+      ${FFMPEG_HW[@]+"${FFMPEG_HW[@]}"} \
       --disable-vulkan --disable-cuda --disable-cuvid --disable-nvenc \
       --disable-nvdec --disable-ffnvcodec --disable-amf --disable-vdpau \
       --disable-xlib --disable-libxcb --disable-sdl2 \
@@ -168,13 +200,18 @@ if ! built ffmpeg; then
 fi
 
 # --------------------------------------------------- mpv's static deps
+# PLACEBO_PLAT is empty on macOS; "${arr[@]}" on bash 4.x still passes one
+# empty positional, which meson rejects as an unknown option. Use "${arr[@]+...}"
+# so an array that is empty expands to nothing on every supported shell.
 built libplacebo || meson_static libplacebo \
   -Dvulkan=disabled -Dopengl=enabled -Dd3d11=disabled -Dglslang=disabled -Dshaderc=disabled \
   -Dlcms=enabled -Ddovi=enabled -Dlibdovi=disabled -Dunwind=disabled -Dxxhash=disabled \
-  -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false
+  -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false "$@"
 
 # needed by mpv's drm feature, which VA-API decoding requires (no X11/Wayland here)
-built libdisplay-info || meson_static libdisplay-info
+if [ "$(uname)" != "Darwin" ]; then
+  built libdisplay-info || meson_static libdisplay-info
+fi
 
 # ------------------------------------------------------------------- mpv
 if ! built mpv; then
@@ -185,11 +222,9 @@ if ! built mpv; then
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" \
     -Ddefault_library=static \
     -Dlibmpv=true -Dcplayer=false -Dgpl=true \
-    -Dgl=enabled -Dplain-gl=enabled -Degl=enabled \
-    -Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled \
     -Dx11=disabled -Dwayland=disabled -Dvulkan=disabled \
     -Ddmabuf-wayland=disabled -Dvdpau=disabled \
-    -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled \
+    ${MPV_PLAT[@]+"${MPV_PLAT[@]}"} \
     -Dlua=disabled -Djavascript=disabled -Dlibarchive=disabled \
     -Dlibavdevice=disabled -Drubberband=disabled -Dzimg=disabled \
     -Duchardet=enabled -Dlcms2=enabled -Djpeg=disabled \
@@ -197,10 +232,24 @@ if ! built mpv; then
     -Dmanpage-build=disabled -Dhtml-build=disabled -Dpdf-build=disabled \
     >"$BUILD/mpv-configure.log"
   meson compile -C "$BUILD/mpv" -j "$JOBS" >"$BUILD/mpv-make.log" 2>&1
+  # macOS-only: if libmpv.a ended up empty (Swift-compiled delivery of swift.o
+  # being an ar archive, mimicking the statically linked but stubbed state a
+  # lingering inc/Darwin cache left behind), rebuild it via libtool's archive
+  # catalyst. Linux never runs this branch.
+  if [ "$(uname)" = "Darwin" ] && ! nm "$BUILD/mpv/libmpv.a" 2>/dev/null | grep -q _mpv_create; then
+    echo "==> libmpv.a stub detected; re-archiving with libtool (swift.o archive content)"
+    objs=$(find "$BUILD/mpv/libmpv.a.p" -name '*.o' -o -name '*.m.o')
+    libtool -static -o "$BUILD/mpv/libmpv.a" "$BUILD/mpv/osdep/mac/swift.o" $objs
+  fi
   meson install -C "$BUILD/mpv" >/dev/null
 fi
 
 echo "$SCRIPT_SUM" >"$STAMP"
 echo "==> media engine ready in $PREFIX"
-pkg-config --modversion libavcodec mpv libplacebo dav1d libxml-2.0 libdisplay-info | paste -sd' ' |
-  sed 's/^/    libavcodec mpv libplacebo dav1d libxml2 libdisplay-info: /'
+if [ "$(uname)" = "Darwin" ]; then
+  PKGCFG_MODS="libavcodec mpv libplacebo dav1d libxml-2.0"
+else
+  PKGCFG_MODS="libavcodec mpv libplacebo dav1d libxml-2.0 libdisplay-info"
+fi
+pkg-config --modversion $PKGCFG_MODS | paste -sd' ' - |
+  sed "s/^/    $PKGCFG_MODS: /"

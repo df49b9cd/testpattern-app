@@ -427,6 +427,8 @@ export interface TmdbStatus {
   /** catalog titles with TMDB details, of `titles` that have a TMDB id */
   known: number;
   titles: number;
+  /** titles with no TMDB id yet (searched but unmatched or not searched) */
+  unmapped: number;
   error?: string | null;
   lastRun?: number | null;
 }

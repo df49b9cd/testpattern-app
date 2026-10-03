@@ -203,7 +203,8 @@ pub fn tracks(conn: &Connection, source_id: i64, kind: &str, item_id: &str) -> R
         .and_then(|j| serde_json::from_str(&j).ok()))
 }
 
-/// What a file offers, from mpv's `track-list` (+ HDR from `video-params`):
+/// What a file offers, from mpv's `track-list` (+ HDR from `video-params`,
+/// seen during playback or — the probe — from one decoded frame):
 /// `{audio:[{lang,codec,channels,title}], subtitles:[{lang,codec,title}],
 /// video:{codec,width,height,hdr}}`. Subtitle files mpv found next to the
 /// stream are not part of the copy and are left out.
@@ -298,6 +299,32 @@ mod tests {
         save_tracks(&c, 1, "movie", "m", &s.to_string()).unwrap();
         save_tracks(&c, 1, "movie", "m", &s.to_string()).unwrap();
         assert_eq!(tracks(&c, 1, "movie", "m").unwrap().unwrap()["audio"][0]["lang"], "eng");
+    }
+
+    #[test]
+    fn summarize_tracks_sets_hdr_from_flag() {
+        // a plain HDR10 file: no DV profile in the track list, gamma said pq/hlg
+        let list = serde_json::json!([
+            {"id": 1, "type": "video", "codec": "hevc", "demux-w": 3840, "demux-h": 2160},
+        ]);
+        assert_eq!(summarize_tracks(&list, true).unwrap()["video"]["hdr"], true);
+    }
+
+    #[test]
+    fn summarize_tracks_hdr_false_without_gamma_or_dv() {
+        let list = serde_json::json!([
+            {"id": 1, "type": "video", "codec": "hevc", "demux-w": 3840, "demux-h": 2160},
+        ]);
+        assert_eq!(summarize_tracks(&list, false).unwrap()["video"]["hdr"], false);
+    }
+
+    #[test]
+    fn summarize_tracks_hdr_from_dv_profile() {
+        // DV is flagged even without a gamma reading (profile is in the track list)
+        let list = serde_json::json!([
+            {"id": 1, "type": "video", "codec": "hevc", "demux-w": 3840, "demux-h": 2160, "dolby-vision-profile": 5},
+        ]);
+        assert_eq!(summarize_tracks(&list, false).unwrap()["video"]["hdr"], true);
     }
 
     #[test]

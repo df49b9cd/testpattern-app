@@ -30,7 +30,8 @@ use crate::error::Result;
 use variant::Variant;
 
 /// Bump whenever grouping/facet rules change: startup then rebuilds.
-pub const RULES_VERSION: i64 = 4;
+/// v5: `tmdb_map` folds search-matched unidentified titles into TMDB groups.
+pub const RULES_VERSION: i64 = 5;
 
 /// Title for grouping: lower case, diacritics folded, `&` = "and",
 /// punctuation dropped ("Love & Anarchy" = "love and anarchy").
@@ -91,6 +92,26 @@ pub fn norm_title(s: &str) -> String {
 fn valid_tmdb(t: Option<&str>) -> Option<&str> {
     let t = t?.trim();
     (!t.is_empty() && t != "0" && !t.eq_ignore_ascii_case("null")).then_some(t)
+}
+
+/// TMDB ids found by title search (db.rs v9, tmdb.rs): (kind, source key) →
+/// TMDB id. `kind` is the tmdb table's spelling ('movie' | 'tv'); ids stored
+/// as '' are remembered misses, not mappings.
+pub fn load_tmdb_map(conn: &Connection) -> Result<HashMap<(String, String), String>> {
+    let rows: Vec<(String, String, String)> = conn
+        .prepare("SELECT kind, source_key, tmdb_id FROM tmdb_map WHERE tmdb_id != ''")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(rows.into_iter().map(|(kind, key, id)| ((kind, key), id)).collect())
+}
+
+/// The mapped TMDB id of a search-matched work key ('title:*' | 'item:*').
+#[cfg(test)]
+pub fn tmdb_id_of(conn: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT tmdb_id FROM tmdb_map WHERE source_key = ?1", [key], |r| r.get::<_, String>(0))
+        .ok()
+        .filter(|id| !id.is_empty()))
 }
 
 /// One catalog row as far as grouping cares.
@@ -200,10 +221,15 @@ fn load_members(conn: &Connection, kind: &str) -> Result<Vec<Member>> {
     Ok(rows)
 }
 
+/// The tmdb table's spelling of a work kind: our "series" are TMDB's "tv".
+pub fn tmdb_kind(kind: &str) -> &str {
+    if kind == "movie" { "movie" } else { "tv" }
+}
+
 /// Recomputes `work` / `work_facet` and the members' `work_key` for one kind.
 /// TMDB details stored for the kind's titles (`tmdb.rs`), by TMDB id.
 fn load_tmdb(conn: &Connection, kind: &str) -> Result<HashMap<String, crate::tmdb::Info>> {
-    let kind = if kind == "movie" { "movie" } else { "tv" };
+    let kind = tmdb_kind(kind);
     let rows: Vec<(String, String)> = conn
         .prepare("SELECT id, json FROM tmdb WHERE kind = ?1 AND json IS NOT NULL")?
         .query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -225,9 +251,21 @@ pub fn tmdb_fits(info: &crate::tmdb::Info, titles: &[&str], year: Option<i64>) -
 
 fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
     let members = load_members(conn, kind)?;
-    let keys = assign_keys(&members);
+    let mut keys = assign_keys(&members);
     let table = if kind == "movie" { "movie" } else { "series" };
     let tmdb = load_tmdb(conn, kind)?;
+    // titles identified by search (tmdb.rs) join the TMDB group the search
+    // found; `tmdb_fits` below still guards the group against bad matches
+    let search = tmdb_kind(kind);
+    let mapped = load_tmdb_map(conn)?;
+    for k in &mut keys {
+        if !(k.starts_with("title:") || k.starts_with("item:")) {
+            continue;
+        }
+        if let Some(id) = mapped.get(&(search.to_owned(), k.clone())) {
+            *k = format!("tmdb:{id}");
+        }
+    }
 
     let mut groups: HashMap<&str, Vec<&Member>> = HashMap::new();
     let mut order: Vec<&str> = Vec::new();
@@ -790,9 +828,50 @@ mod tests {
         assert_eq!(channel_variant_label("", ""), "Standard");
     }
 
+    /// The tmdb_map lookup used by rebuild (identify_test in tmdb.rs feeds it).
     #[test]
-    fn variant_ranking() {
-        assert!(channel_rank("HD") > channel_rank("RAW"));
+    fn rebuild_applies_tmdb_map() {
+        let c = crate::db::test_conn();
+        c.execute(
+            "INSERT INTO movie (source_id, id, name, title, year, position) VALUES (1, 'm', 'x', 'Jungle Cruise', 2021, 0)",
+            [],
+        )
+        .unwrap();
+        rebuild(&c).unwrap();
+        assert_eq!(c.query_row("SELECT key FROM work WHERE kind = 'movie'", [], |r| r.get::<_, String>(0)).unwrap(), "title:jungle cruise|2021");
+        c.execute(
+            "INSERT INTO tmdb_map (kind, source_key, tmdb_id, searched_at) VALUES ('movie', 'title:jungle cruise|2021', '522931', 0)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', '522931',
+                 '{\"title\":\"Jungle Cruise\",\"poster\":\"/p.jpg\"}', 0)",
+            [],
+        )
+        .unwrap();
+        rebuild(&c).unwrap();
+        let (key, poster): (String, String) =
+            c.query_row("SELECT key, poster FROM work WHERE kind = 'movie'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(key, "tmdb:522931");
+        assert!(poster.ends_with("/w500/p.jpg"));
+        assert_eq!(c.query_row("SELECT work_key FROM movie WHERE id = 'm'", [], |r| r.get::<_, String>(0)).unwrap(), key);
+    }
+
+    /// A miss sentinel ('' is stored) does not remap works and does not
+    /// count in load_tmdb_map; tmdb_id_of filters it.
+    #[test]
+    fn tmdb_map_miss_is_not_a_mapping() {
+        let c = crate::db::test_conn();
+        c.execute("INSERT INTO tmdb_map (kind, source_key, tmdb_id, searched_at) VALUES ('movie', 'item:1:x', '', 0)", []).unwrap();
+        rebuild(&c).unwrap();
+        let m = load_tmdb_map(&c).unwrap();
+        assert!(m.is_empty());
+        assert_eq!(tmdb_id_of(&c, "item:1:x").unwrap(), None);
+    }
+
+    #[test]
+    fn variant_ranking() {        assert!(channel_rank("HD") > channel_rank("RAW"));
         assert!(channel_rank("RAW") > channel_rank("RAW HEVC"));
         assert!(channel_rank("") > channel_rank("SD"));
         assert!(channel_rank("4K") > channel_rank("SD HEVC"));

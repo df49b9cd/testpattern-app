@@ -3,7 +3,7 @@ name = "testpattern"
 version = "0.1.0"
 description = "testpattern — an IPTV player"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.0"
 license = "GPL-3.0-or-later"
 
 [lib]
@@ -31,7 +31,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "g
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2.11", features = [] }
+tauri = { version = "2.11", features = ["macos-private-api"] }
 tauri-plugin-opener = "2.5"
 tauri-plugin-single-instance = "2.4"
 tauri-plugin-window-state = "2.4"
@@ -60,3 +60,16 @@ cairo-rs = { version = "0.18", features = ["png"] }
 javascriptcore-rs = "1.1"
 # source passwords in the desktop keyring (Secret Service: KWallet, GNOME Keyring)
 secret-service = { version = "5.2", features = ["rt-tokio-crypto-rust"] }
+
+# macOS video surface (player/macos.rs): the NSOpenGLView mpv renders into,
+# plus the dispatch block the mpv redraw callback hops onto the main queue with.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", features = [
+    "NSView", "NSWindow", "NSOpenGL", "NSOpenGLView", "NSColor",
+] }
+objc2-quartz-core = "0.3"
+objc2-core-video = "0.3"
+objc2-web-kit = { version = "0.3", features = ["WKWebView"] }

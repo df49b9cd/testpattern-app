@@ -42,8 +42,9 @@ pub fn cancel() {
     drop(RUNNING.lock());
 }
 
-/// Opens `stream` without decoding anything and returns its track summary
-/// (`versions::summarize_tracks`), or `None` when it didn't open in time.
+/// Opens `stream`, decodes one video frame and returns its track summary
+/// (`versions::summarize_tracks`, with HDR taken from the first frame's
+/// `video-params.gamma`), or `None` when it didn't open in time.
 fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
     let _running = RUNNING.try_lock_for(TIMEOUT).ok_or("another check is still running")?;
     BUSY.store(true, Ordering::SeqCst);
@@ -59,10 +60,9 @@ fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
         Mpv::new(&[
             ("vo", "null"),
             ("ao", "null"),
-            // no video decoding; tracks are listed whether selected or not.
-            // (Without any audio/video chain mpv gives up on the file before
-            // `file-loaded`, so audio stays on — decoded into the null output.)
-            ("vid", "no"),
+            // one software-decoded video frame, for HDR from its gamma
+            // (vo=null still runs the filter chain, no GPU/AudioUnit work).
+            ("hwdec", "no"),
             ("sid", "no"),
             ("idle", "yes"),
             ("terminal", "no"),
@@ -77,6 +77,7 @@ fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
         .map_err(|e| e.to_string())?,
     );
     mpv.request_log_messages("error");
+    mpv.observe("video-params", crate::player::mpv_sys::MPV_FORMAT_NODE).map_err(|e| e.to_string())?;
     *CURRENT.lock() = Some(mpv.clone());
     let opts = file_options(&LoadOptions {
         paused: true,
@@ -90,18 +91,37 @@ fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
     if let Some(u) = url {
         mpv.command(&["loadfile", u, "replace", "-1", &opts]).map_err(|e| e.to_string())?;
     }
-    let mut found = None;
-    while Instant::now() < deadline {
+    let mut track_list: Option<Value> = None;
+    let mut hdr = false;
+    let loadfile_at = Instant::now();
+    let mut gamma_deadline: Option<Instant> = None;
+    while Instant::now() < deadline && gamma_deadline.map(|d| Instant::now() < d).unwrap_or(true) {
         match mpv.wait_event(0.25) {
             Some(Event::FileLoaded) => {
-                found = mpv.get_json("track-list").and_then(|t| versions::summarize_tracks(&t, false));
+                track_list = mpv.get_json("track-list");
+                if track_list.is_none() {
+                    break; // nothing to summarize: don't hold the stream open
+                }
+                if !hdr {
+                    // the first frame's params: usually right after file-loaded on a 4K HEVC stream
+                    gamma_deadline = Some(Instant::now() + Duration::from_secs(6));
+                }
+            }
+            Some(Event::PropertyChange { name, value }) if name == "video-params" && track_list.is_some() => {
+                hdr = matches!(value["gamma"].as_str(), Some("pq" | "hlg"));
+                log::info!("probe: first video-params gamma after {}ms", loadfile_at.elapsed().as_millis());
                 break;
             }
             Some(Event::EndFile { reason: EndReason::Error, error }) => {
                 log::debug!("probe: stream failed: {}", crate::player::redact(error.as_deref().unwrap_or("?")));
                 url = urls.next();
                 match url {
-                    Some(u) => mpv.command(&["loadfile", u, "replace", "-1", &opts]).map_err(|e| e.to_string())?,
+                    Some(u) => {
+                        mpv.command(&["loadfile", u, "replace", "-1", &opts]).map_err(|e| e.to_string())?;
+                        track_list = None;
+                        hdr = false;
+                        gamma_deadline = None;
+                    }
                     None => break,
                 }
             }
@@ -113,6 +133,8 @@ fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
             _ => {}
         }
     }
+    // audio-only or a failed video decode: track list without gamma (hdr=false)
+    let found = track_list.and_then(|t| versions::summarize_tracks(&t, hdr));
     let _ = mpv.command(&["stop"]);
     *CURRENT.lock() = None;
     // the last reference: closes the connection before RUNNING is released

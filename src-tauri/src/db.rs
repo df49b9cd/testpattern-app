@@ -368,6 +368,18 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (kind, id)
     ) WITHOUT ROWID;
     "#,
+    // v9 — TMDB ids found by title search for works the provider did not id
+    // (tmdb.rs); tmdb_id '' = searched, no acceptable match ("miss" sentinel).
+    // The last change-list date the run covered is setting tmdb.changes_since.
+    r#"
+    CREATE TABLE tmdb_map (
+        kind        TEXT NOT NULL,               -- 'movie' | 'tv'
+        source_key  TEXT NOT NULL,               -- work key: 'title:<norm>|<year>' | 'item:<source>:<id>'
+        tmdb_id     TEXT NOT NULL,
+        searched_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, source_key)
+    ) WITHOUT ROWID;
+    "#,
 ];
 
 fn migrate(c: &Connection) -> Result<()> {
