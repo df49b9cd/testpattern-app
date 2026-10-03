@@ -168,8 +168,8 @@ else
   FFMPEG_HW=(--enable-vaapi --enable-libdrm)
   PLACEBO_PLAT=(-Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled)
   MPV_PLAT=(-Dgl=enabled -Dplain-gl=enabled -Degl=enabled \
-    -Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled \
-    -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled)
+    -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled -Dvaapi-drm=enabled)
+  PLACEBO_PLAT=(-Ddrm=enabled)
 fi
 
 if ! built ffmpeg; then
