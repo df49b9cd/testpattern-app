@@ -118,8 +118,11 @@ meson_static() { # name [meson options...] — static meson build into $PREFIX
   shift
   echo "==> building $name $(cat "$SRC/$name.tag")"
   rm -rf "${BUILD:?}/$name"
-  # stdout of meson setup is chatty; its error text goes to stderr AND to the
-  # configure.log. CI swallows the former — keep a copy visible on failure.
+  # A leftover meson-info from a previous invocation can carry the old option
+  # list forward (the earlier failure read 'Unknown options: drm, vaapi,
+  # vaapi-drm' from meson.build's own defaults, not the command line). Wipe
+  # it so the call below starts clean.
+  rm -rf "$BUILD/$name/meson-info" "$BUILD/$name/meson-private" "$BUILD/$name/meson-logs"
   if ! meson setup "$BUILD/$name" "$SRC/$name" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release -Ddefault_library=static \
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" "$@" \
