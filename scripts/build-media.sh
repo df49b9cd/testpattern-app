@@ -118,18 +118,24 @@ meson_static() { # name [meson options...] — static meson build into $PREFIX
   shift
   echo "==> building $name $(cat "$SRC/$name.tag")"
   rm -rf "${BUILD:?}/$name"
-  meson setup "$BUILD/$name" "$SRC/$name" \
+  # stdout of meson setup is chatty; its error text goes to stderr AND to the
+  # configure.log. CI swallows the former — keep a copy visible on failure.
+  if ! meson setup "$BUILD/$name" "$SRC/$name" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release -Ddefault_library=static \
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" "$@" \
-    >"$BUILD/$name-configure.log"
+    >"$BUILD/$name-configure.log"; then
+    local rc=$?
+    echo "==> $name configure FAILED (rc=$rc), meson log follows:" >&2
+    tail -60 "$BUILD/$name-configure.log" >&2 || true
+    echo "==> end $name configure failure" >&2
+    return $rc
+  fi
   meson compile -C "$BUILD/$name" -j "$JOBS" >"$BUILD/$name-make.log" 2>&1
   local rc=$?
   if [[ $rc -ne 0 ]]; then
-    # make the failing step visible on CI (the file is otherwise tiny+quiet)
-    echo "==> $name build FAILED (rc=$rc); logs follow:"
-    tail -60 "$BUILD/$name-configure.log" >&2 || true
+    echo "==> $name build FAILED (rc=$rc); logs follow:" >&2
     tail -40 "$BUILD/$name-make.log" >&2 || true
-    echo "==> end $name failure"
+    echo "==> end $name build failure" >&2
     return $rc
   fi
   meson install -C "$BUILD/$name" >/dev/null
