@@ -280,6 +280,13 @@ Every dependency must be on its **latest stable** release. Audited
 Legend: **P0** = needed for a usable app on Linux, **P1** = expected
 UHF/Infuse feature, **P2** = later.
 
+> Work state is also tracked in **planned** (the user's tracker): project
+> **testpattern-app** (team PL, `PLANNED_API_KEY` in
+> `/Users/smolesen/Dev/planned/data/.env`, MCP on `localhost:4000` — start it
+> with `just dev` or `planned serve` in `/Users/smolesen/Dev/planned`). This
+> file keeps the build notes; the kanban below stays the issue-of-record for
+> what is done.
+
 ### 🟩 Done
 
 - **T-001 Environment + provider survey.** Toolchain present (bun 1.4, rust
@@ -940,11 +947,24 @@ UHF/Infuse feature, **P2** = later.
   Backend verified: 68 Rust unit tests + 35 vitest + clippy clean on macOS
   arm64; `scripts/headless-macos.sh` runs the debug app against an isolated
   profile (no GNOME Keyring on macOS — the login keychain's `testpattern:`
-  entries are namespaced by profile id and removed on `stop`); smoke passes
-  the "mpv render context ready" milestone. Remaining before Done: actual
-  keychain round-trip (add/edit/lock/unlock/remove + locked-keyring guide),
-  a packaged .dmg on the machine, and the T-047 replay on macOS (T-047 was
-  Linux-only).
+  entries are namespaced by profile id and removed on `stop`). Keychain
+  round-trip verified 2026-10-03 (PL-75, workflow): `security`-CLI backend
+  set/get/upsert/delete/lock/unlock round-trip passes against a throwaway
+  keychain; a locked keychain surfaces as exit 128 with empty stderr, now
+  mapped to the friendly message in `secrets.rs` (PL-98 closed alongside).
+  T-047 replayed on macOS the same day (`scripts/smoke.sh` on
+  `scripts/headless-macos.sh`): 29/29 green — sync + keyring, works/versions
+  grouping, live play/zap/resume/recording, next-episode, hardening
+  (devtools origin rules, mpv `run` blocked); the GPU-decoding check is
+  Linux-only and skips here (PL-97: wire it to VideoToolbox). devtools `/eval`
+  on macOS was fixed the same day: Tauri/wry's `eval_with_callback`
+  completion returns empty on this webview, so the result now returns through
+  a devtools-only Tauri IPC channel instead. Packaged .dmg built on this
+  machine (PL-76): `~/.cache/cargo-target/cc-rs/release/bundle/dmg/
+  testpattern_0.1.0_aarch64.dmg` (21 MB, arm64, no /opt/homebrew linked
+  libraries); ad-hoc signed — manual launch check still open, tracked in PL-76.
+  Remaining before Done: none beyond the manual .dmg launch verification
+  and the GPU check port.
 
 ### 🟦 To do
 
