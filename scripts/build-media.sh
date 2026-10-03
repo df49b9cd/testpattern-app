@@ -232,12 +232,11 @@ if ! built mpv; then
     -Dmanpage-build=disabled -Dhtml-build=disabled -Dpdf-build=disabled \
     >"$BUILD/mpv-configure.log"
   meson compile -C "$BUILD/mpv" -j "$JOBS" >"$BUILD/mpv-make.log" 2>&1
-  # libmpv.a is only usable if it holds the mpv_* symbols; mpv's Swift
-  # step writes osdep/mac/swift.o as its own ar archive, which `ar rcs`
-  # then stores as a 0-byte member, and the stub passes ninja's mtime test
-  # on a re-run. Detect and redo from the object list of the STATIC_LINKER
-  # rule with `libtool -static` (which understands nested archives).
-  if ! nm "$BUILD/mpv/libmpv.a" 2>/dev/null | grep -q _mpv_create; then
+  # macOS-only: if libmpv.a ended up empty (Swift-compiled delivery of swift.o
+  # being an ar archive, mimicking the statically linked but stubbed state a
+  # lingering inc/Darwin cache left behind), rebuild it via libtool's archive
+  # catalyst. Linux never runs this branch.
+  if [ "$(uname)" = "Darwin" ] && ! nm "$BUILD/mpv/libmpv.a" 2>/dev/null | grep -q _mpv_create; then
     echo "==> libmpv.a stub detected; re-archiving with libtool (swift.o archive content)"
     objs=$(find "$BUILD/mpv/libmpv.a.p" -name '*.o' -o -name '*.m.o')
     libtool -static -o "$BUILD/mpv/libmpv.a" "$BUILD/mpv/osdep/mac/swift.o" $objs
