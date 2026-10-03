@@ -157,8 +157,29 @@ export function PlayerPage() {
 
   const seekBy = useCallback((secs: number) => {
     void api.command("seek", secs, "relative");
+    say(secs < 0 ? `« ${secs} s` : `» +${secs} s`);
     poke();
-  }, [poke]);
+  }, [poke, say]);
+
+  const nudgeVolume = useCallback((delta: number) => {
+    const st = usePlayer.getState();
+    void api.set("volume", Math.min(150, st.props.volume + delta)).then(() => {
+      // mpv applies async; read what it has a moment later so the chip shows
+      // the real level, not the pre-clamp guess.
+      window.setTimeout(() => {
+        void api.get("volume").then((v) => {
+          if (typeof v === "number") say(`Volume ${Math.round(v)}`);
+        }).catch(() => {});
+      }, 60);
+    }).catch(() => {});
+    poke();
+  }, [say, poke]);
+
+  const toggleMute = useCallback(() => {
+    const st = usePlayer.getState();
+    void api.set("mute", !st.props.mute).then(() => say(st.props.mute ? "Sound on" : "Muted")).catch(() => {});
+    poke();
+  }, [say, poke]);
 
   // ---- live zapping
   const zapList = now?.zapList ?? [];
@@ -201,7 +222,6 @@ export function PlayerPage() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === "INPUT") return;
-      const st = usePlayer.getState();
       const k = e.key;
       let handled = true;
       if (k === " " || k === "k" || k === "K") togglePause();
@@ -209,10 +229,10 @@ export function PlayerPage() {
       else if (k === "ArrowRight" && !live) seekBy(e.shiftKey ? 60 : 30);
       else if ((k === "ArrowUp" && live) || k === "PageUp") zap(-1);
       else if ((k === "ArrowDown" && live) || k === "PageDown") zap(1);
-      else if (k === "ArrowUp") void api.set("volume", Math.min(150, st.props.volume + 5));
-      else if (k === "ArrowDown") void api.set("volume", Math.max(0, st.props.volume - 5));
+      else if (k === "ArrowUp" && !live) nudgeVolume(5);
+      else if (k === "ArrowDown" && !live) nudgeVolume(-5);
       else if (k === "f" || k === "F") void toggleFullscreen().then(() => isFullscreen().then(setFullscreen));
-      else if (k === "m" || k === "M") void api.set("mute", !st.props.mute);
+      else if (k === "m" || k === "M") toggleMute();
       else if (k === "Escape") {
         if (panel) setPanel(null);
         else void exit();
@@ -239,7 +259,7 @@ export function PlayerPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePause, seekBy, zap, zapList, zapTo, exit, panel, digits, live, poke, toggleRecord, toPip]);
+  }, [togglePause, seekBy, zap, zapList, zapTo, exit, panel, digits, live, poke, toggleRecord, toPip, nudgeVolume, toggleMute]);
 
   if (!now) return null;
   const busy = status === "loading" || status === "reconnecting" || (p.buffering && status === "playing");
