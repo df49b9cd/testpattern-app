@@ -162,14 +162,12 @@ if [ "$(uname)" = "Darwin" ]; then
   FFMPEG_HW=(--enable-videotoolbox --enable-audiotoolbox)
   PLACEBO_PLAT=()
   MPV_PLAT=(-Dgl=enabled -Dgl-cocoa=enabled -Dcocoa=enabled -Dcoreaudio=enabled -Davfoundation=enabled \
-    -Ddrm=disabled -Degl=disabled -Dvaapi=disabled -Dvaapi-drm=disabled \
     -Dpipewire=disabled -Dpulse=disabled -Dalsa=disabled -Daudiounit=disabled \
     -Dmacos-cocoa-cb=disabled -Dswift-build=enabled)
 else
   FFMPEG_HW=(--enable-vaapi --enable-libdrm)
   PLACEBO_PLAT=(-Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled)
   MPV_PLAT=(-Dgl=enabled -Dplain-gl=enabled -Degl=enabled \
-    -Ddrm=enabled -Dvaapi=enabled -Dvaapi-drm=enabled \
     -Dpipewire=enabled -Dpulse=enabled -Dalsa=enabled)
 fi
 
