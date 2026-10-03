@@ -206,7 +206,7 @@ fi
 built libplacebo || meson_static libplacebo \
   -Dvulkan=disabled -Dopengl=enabled -Dd3d11=disabled -Dglslang=disabled -Dshaderc=disabled \
   -Dlcms=enabled -Ddovi=enabled -Dlibdovi=disabled -Dunwind=disabled -Dxxhash=disabled \
-  -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false ${PLACEBO_PLAT[@]+"${PLACEBO_PLAT[@]}"}
+  -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false "$@"
 
 # needed by mpv's drm feature, which VA-API decoding requires (no X11/Wayland here)
 if [ "$(uname)" != "Darwin" ]; then
