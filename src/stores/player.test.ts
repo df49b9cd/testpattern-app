@@ -9,7 +9,7 @@ vi.mock("../lib/api", () => ({
   errorMessage: (e: unknown) => String(e),
 }));
 
-import { applyProp, saveProgress, trackId, usePlayer, type NowPlaying } from "./player";
+import { applyProp, saveProgress, setSubsEnabled, toggleSubs, trackId, usePlayer, type NowPlaying } from "./player";
 
 const props = () => usePlayer.getState().props;
 
@@ -22,6 +22,10 @@ describe("applyProp", () => {
     expect(applyProp(props(), "track-list", "garbage")).toEqual({ tracks: [] });
     expect(applyProp(props(), "stream-record", "/v/BBC One.ts")).toEqual({ recording: "/v/BBC One.ts" });
     expect(applyProp(props(), "stream-record", null)).toEqual({ recording: "" });
+  });
+  it("maps sub-visibility to subVisible", () => {
+    expect(applyProp(props(), "sub-visibility", true)).toEqual({ subVisible: true });
+    expect(applyProp(props(), "sub-visibility", false)).toEqual({ subVisible: false });
   });
   it("keeps the last position while mpv reports none", () => {
     const p = { ...props(), timePos: 42 };
@@ -61,5 +65,19 @@ describe("saveProgress", () => {
       // episodes: series title first, episode title as subtitle (library.rs conventions)
       { kind: "episode", itemId: "e2", seriesId: "s1", title: "Show", subtitle: "Pilot", season: 1, episode: 2 },
     ]);
+  });
+});
+
+describe("subtitles toggle (PL-99)", () => {
+  it("persists the setting and patches the settings cache", async () => {
+    const { queryClient } = await import("../lib/queryClient");
+    const api = (await import("../lib/api")).api as unknown as { setSetting: ReturnType<typeof vi.fn> };
+    queryClient.setQueryData(["settings"], { "player.subsEnabled": false });
+    api.setSetting.mockClear();
+    setSubsEnabled(true);
+    expect(api.setSetting).toHaveBeenCalledWith("player.subsEnabled", true);
+    expect(queryClient.getQueryData(["settings"])).toMatchObject({ "player.subsEnabled": true });
+    toggleSubs(); // store says subVisible=false → turns on
+    expect(api.setSetting).toHaveBeenLastCalledWith("player.subsEnabled", true);
   });
 });

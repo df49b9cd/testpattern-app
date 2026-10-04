@@ -32,7 +32,8 @@ import { inTauri } from "../lib/bridge";
 import { clock, elapsed, hhmm, nowUnix } from "../lib/format";
 import { channelNowPlaying, playEpisode } from "../lib/play";
 import type { Channel, Episode, Track } from "../lib/types";
-import { usePlayer } from "../stores/player";
+import { usePlayer, setSubsEnabled } from "../stores/player";
+import { queryClient } from "../lib/queryClient";
 import { ChannelLogo } from "../components/media";
 import { Badge, Button, IconButton, LiveDot, ProgressBar } from "../components/ui";
 
@@ -76,6 +77,19 @@ export function PlayerPage() {
   }, []);
   const hideTimer = useRef(0);
   const digitTimer = useRef(0);
+
+  // PL-100: mpv picked a subtitle track (slang) but subs are hidden — tell the
+  // first-run user once how to turn them on instead of leaving them clueless
+  const sid = p.sid;
+  const subVisible = p.subVisible;
+  useEffect(() => {
+    if (typeof sid !== "number" || subVisible) return;
+    const seen = queryClient.getQueryData<Record<string, unknown>>(["settings"])?.["ui.subHintSeen"];
+    if (seen === true) return;
+    say("Subtitles are off — press S to turn them on");
+    queryClient.setQueryData(["settings"], (cur: Record<string, unknown> | undefined) => ({ ...cur, "ui.subHintSeen": true }));
+    void api.setSetting("ui.subHintSeen", true).catch(() => {});
+  }, [sid, subVisible, say]);
 
   const live = now?.kind === "live";
   const vod = now?.kind === "movie" || now?.kind === "episode" || now?.kind === "catchup";
@@ -237,8 +251,11 @@ export function PlayerPage() {
         if (panel) setPanel(null);
         else void exit();
       } else if (k === "a" || k === "A") void api.command("cycle", "audio");
-      else if (k === "s" || k === "S") void api.command("cycle", "sub");
-      else if (k === "i" || k === "I") setInfo((v) => !v);
+      else if (k === "s" || k === "S") {
+        const on = !usePlayer.getState().props.subVisible;
+        setSubsEnabled(on);
+        say(on ? "Subtitles on" : "Subtitles off");
+      } else if (k === "i" || k === "I") setInfo((v) => !v);
       else if ((k === "r" || k === "R") && live) toggleRecord();
       else if (k === "p" || k === "P") void toPip();
       else if ((k === "l" || k === "L" || k === "c" || k === "C") && live) setPanel((v) => (v === "channels" ? null : "channels"));
@@ -674,12 +691,22 @@ function trackLabel(t: Track): string {
 function TrackMenu({ type, onDone }: { type: "audio" | "sub"; onDone: () => void }) {
   const tracks = usePlayer((s) => s.props.tracks).filter((t) => t.type === type);
   const current = usePlayer((s) => (type === "audio" ? s.props.aid : s.props.sid));
+  const subVisible = usePlayer((s) => s.props.subVisible);
   const pick = (v: number | "no") => {
     void api.set(type === "audio" ? "aid" : "sid", v);
+    // picking a track while subtitles are hidden must show it (PL-100);
+    // "Off" persists the disabling so it survives the next session
+    if (type === "sub") setSubsEnabled(v !== "no");
     onDone();
   };
   return (
     <div className="flex flex-col">
+      {type === "sub" && (
+        <MenuItem active={subVisible} onClick={() => { setSubsEnabled(!subVisible); onDone(); }} hint="S">
+          Subtitles on/off
+        </MenuItem>
+      )}
+      {type === "sub" && <div className="mx-3 my-1 border-t border-white/[0.06]" />}
       {type === "sub" && (
         <MenuItem active={current === false || current === null} onClick={() => pick("no")}>
           Off

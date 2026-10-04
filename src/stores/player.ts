@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api, errorMessage } from "../lib/api";
-import { invalidateWatchState } from "../lib/queryClient";
+import { invalidateWatchState, queryClient } from "../lib/queryClient";
 import type { Channel, PlayKind, PlayerEvent, Track } from "../lib/types";
 
 /** What is (or is about to be) playing, with enough context for the UI. */
@@ -51,6 +51,8 @@ export interface PlaybackProps {
   tracks: Track[];
   aid: number | false | null;
   sid: number | false | null;
+  /** mpv sub-visibility: whether the selected subtitle track is shown (PL-99) */
+  subVisible: boolean;
   videoW: number;
   videoH: number;
   fps: number;
@@ -85,6 +87,7 @@ const initialProps: PlaybackProps = {
   tracks: [],
   aid: null,
   sid: null,
+  subVisible: false,
   videoW: 0,
   videoH: 0,
   fps: 0,
@@ -154,6 +157,8 @@ export function applyProp(p: PlaybackProps, name: string, v: unknown): Partial<P
       return { aid: trackId(v) };
     case "sid":
       return { sid: trackId(v) };
+    case "sub-visibility":
+      return { subVisible: bool(v) };
     case "video-params": {
       const vp = (v ?? {}) as Record<string, unknown>;
       return { videoW: num(vp.w), videoH: num(vp.h) };
@@ -257,6 +262,22 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     }
   },
 }));
+
+/**
+ * Subtitles on/off from the player chrome (PL-99): persists the setting and
+ * settings.rs applies mpv `sub-visibility` right away. The settings cache is
+ * patched so both toggles (player + Settings page) stay in sync.
+ */
+export function setSubsEnabled(v: boolean): void {
+  const cur = queryClient.getQueryData<Record<string, unknown>>(["settings"]);
+  queryClient.setQueryData(["settings"], { ...cur, "player.subsEnabled": v });
+  void api.setSetting("player.subsEnabled", v).catch(() => {});
+}
+
+/** Toggle-the-subtitles helper shared by Player.tsx ("S" key) and its menu. */
+export function toggleSubs(): void {
+  setSubsEnabled(!usePlayer.getState().props.subVisible);
+}
 
 let volumeTimer = 0;
 /** Persists the volume (applied at startup, settings.rs) once it settles. */
