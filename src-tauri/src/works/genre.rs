@@ -44,12 +44,17 @@ pub const GENRES: &[&str] = &[
 
 /// One genre word (any case, several languages) → canonical genre.
 fn genre_word(w: &str) -> Option<&'static str> {
-    let w = w.trim().trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_lowercase();
+    let w = w
+        .trim()
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+        .to_lowercase();
     Some(match w.as_str() {
         "drama" | "dram" => "Drama",
         "comedy" | "komedi" | "komedie" | "comedia" | "sketch" => "Comedy",
         "crime" | "kriminal" | "kriminalitet" | "suç" | "krimi" => "Crime",
-        "documentary" | "documentry" | "dokumentär" | "dokumentar" | "dokumentärer" => "Documentary",
+        "documentary" | "documentry" | "dokumentär" | "dokumentar" | "dokumentärer" => {
+            "Documentary"
+        }
         "action" => "Action",
         "adventure" | "eventyr" | "äventyr" => "Adventure",
         "sci-fi" | "science fiction" | "science-fiction" | "bilim kurgu" | "scifi" => "Sci-Fi",
@@ -86,7 +91,11 @@ fn push(out: &mut Vec<&'static str>, g: &'static str) {
 pub fn from_text(text: &str) -> Vec<&'static str> {
     let mut out = Vec::new();
     // "Action & Adventure", "Sci-Fi & Fantasy", "Action og eventyr"
-    let normalized = text.replace(" og ", "/").replace(" och ", "/").replace(" and ", "/").replace('&', "/");
+    let normalized = text
+        .replace(" og ", "/")
+        .replace(" och ", "/")
+        .replace(" and ", "/")
+        .replace('&', "/");
     for part in normalized.split(['/', ',', '|', ';']) {
         for piece in part.split(" - ") {
             if let Some(g) = genre_word(piece) {
@@ -190,7 +199,10 @@ pub fn countries_for_language(language: &str) -> &'static [&'static str] {
 
 fn words_match(hay: &str, words: &[&str]) -> bool {
     // match whole words/phrases: "NEWS" in "SKY NEWS" but not in "NEWSROOM"-less
-    let padded = format!(" {} ", hay.replace(['|', ':', '-', '/', '(', ')', '.', '!', '+'], " "));
+    let padded = format!(
+        " {} ",
+        hay.replace(['|', ':', '-', '/', '(', ')', '.', '!', '+'], " ")
+    );
     words.iter().any(|w| padded.contains(&format!(" {w} ")))
 }
 
@@ -236,41 +248,112 @@ pub fn live_from_title(title: &str) -> &'static str {
     let rules: &[(&[&str], &'static str)] = &[
         (
             &[
-                "NEWS", "NYHETER", "NYHEDER", "CNN", "MSNBC", "CNBC", "BLOOMBERG", "NEWSMAX", "EURONEWS", "AL JAZEERA",
-                "ALJAZEERA", "CGTN", "FRANCE 24", "DW", "WEATHER", "C SPAN", "CSPAN", "CBSN", "NEWSNATION", "LIVENOW",
+                "NEWS",
+                "NYHETER",
+                "NYHEDER",
+                "CNN",
+                "MSNBC",
+                "CNBC",
+                "BLOOMBERG",
+                "NEWSMAX",
+                "EURONEWS",
+                "AL JAZEERA",
+                "ALJAZEERA",
+                "CGTN",
+                "FRANCE 24",
+                "DW",
+                "WEATHER",
+                "C SPAN",
+                "CSPAN",
+                "CBSN",
+                "NEWSNATION",
+                "LIVENOW",
             ],
             "News",
         ),
         (
             &[
-                "SPORT", "SPORTS", "ESPN", "ESPN2", "EUROSPORT", "NFL", "NBA", "MLB", "NHL", "GOLF", "TENNIS", "BEIN",
-                "DAZN", "RACING", "CRICKET", "F1", "WWE", "UFC", "BOXING", "FOOTBALL", "SOCCER", "HOCKEY", "SPORTSNET",
-                "TSN", "MOTORSPORT", "FIGHT", "OLYMPICS",
+                "SPORT",
+                "SPORTS",
+                "ESPN",
+                "ESPN2",
+                "EUROSPORT",
+                "NFL",
+                "NBA",
+                "MLB",
+                "NHL",
+                "GOLF",
+                "TENNIS",
+                "BEIN",
+                "DAZN",
+                "RACING",
+                "CRICKET",
+                "F1",
+                "WWE",
+                "UFC",
+                "BOXING",
+                "FOOTBALL",
+                "SOCCER",
+                "HOCKEY",
+                "SPORTSNET",
+                "TSN",
+                "MOTORSPORT",
+                "FIGHT",
+                "OLYMPICS",
             ],
             "Sports",
         ),
         (
             &[
-                "KIDS", "JUNIOR", "NICK", "NICKELODEON", "NICKTOONS", "CARTOON", "BOOMERANG", "BABY", "DISNEY CHANNEL",
-                "DISNEY XD", "TOONS", "CBEEBIES", "CBBC", "POKEMON", "BARNE", "BARN", "TEENNICK",
+                "KIDS",
+                "JUNIOR",
+                "NICK",
+                "NICKELODEON",
+                "NICKTOONS",
+                "CARTOON",
+                "BOOMERANG",
+                "BABY",
+                "DISNEY CHANNEL",
+                "DISNEY XD",
+                "TOONS",
+                "CBEEBIES",
+                "CBBC",
+                "POKEMON",
+                "BARNE",
+                "BARN",
+                "TEENNICK",
             ],
             "Kids",
         ),
         (
             &[
-                "MOVIE", "MOVIES", "CINEMA", "CINE", "FILM", "FILMS", "HBO", "CINEMAX", "SHOWTIME", "STARZ", "TCM",
-                "MGM", "FLIX", "EPIX",
+                "MOVIE", "MOVIES", "CINEMA", "CINE", "FILM", "FILMS", "HBO", "CINEMAX", "SHOWTIME",
+                "STARZ", "TCM", "MGM", "FLIX", "EPIX",
             ],
             "Movies",
         ),
         (
             &[
-                "DOCUMENTARY", "DOCS", "DISCOVERY", "NAT GEO", "NATIONAL GEOGRAPHIC", "HISTORY", "ANIMAL PLANET",
-                "SCIENCE", "SMITHSONIAN", "EARTH", "CURIOSITY", "NATURE", "INVESTIGATION",
+                "DOCUMENTARY",
+                "DOCS",
+                "DISCOVERY",
+                "NAT GEO",
+                "NATIONAL GEOGRAPHIC",
+                "HISTORY",
+                "ANIMAL PLANET",
+                "SCIENCE",
+                "SMITHSONIAN",
+                "EARTH",
+                "CURIOSITY",
+                "NATURE",
+                "INVESTIGATION",
             ],
             "Documentary",
         ),
-        (&["MUSIC", "MTV", "VH1", "VEVO", "CMT", "STINGRAY", "TRACE"], "Music"),
+        (
+            &["MUSIC", "MTV", "VH1", "VEVO", "CMT", "STINGRAY", "TRACE"],
+            "Music",
+        ),
     ];
     for (words, genre) in rules {
         if words_match(&t, words) {
@@ -333,7 +416,11 @@ pub fn country_name(code: &str) -> String {
 /// "2019" → "2010s"; everything before 1960 is "Older".
 pub fn decade(year: Option<i64>) -> Option<String> {
     let y = year.filter(|y| (1880..=2100).contains(y))?;
-    Some(if y < 1960 { "Older".to_owned() } else { format!("{}s", y / 10 * 10) })
+    Some(if y < 1960 {
+        "Older".to_owned()
+    } else {
+        format!("{}s", y / 10 * 10)
+    })
 }
 
 #[cfg(test)]
@@ -342,10 +429,19 @@ mod tests {
 
     #[test]
     fn normalizes_translated_tmdb_genres() {
-        assert_eq!(from_text("Drama / Sci-Fi & Fantasy / War & Politics"), vec!["Drama", "Sci-Fi", "Fantasy", "War & Politics"]);
-        assert_eq!(from_text("Kriminal / Drama / Action & Adventure"), vec!["Crime", "Drama", "Action", "Adventure"]);
+        assert_eq!(
+            from_text("Drama / Sci-Fi & Fantasy / War & Politics"),
+            vec!["Drama", "Sci-Fi", "Fantasy", "War & Politics"]
+        );
+        assert_eq!(
+            from_text("Kriminal / Drama / Action & Adventure"),
+            vec!["Crime", "Drama", "Action", "Adventure"]
+        );
         assert_eq!(from_text("Drama / Kriminalitet"), vec!["Drama", "Crime"]);
-        assert_eq!(from_text("Action og eventyr, Komedie"), vec!["Action", "Adventure", "Comedy"]);
+        assert_eq!(
+            from_text("Action og eventyr, Komedie"),
+            vec!["Action", "Adventure", "Comedy"]
+        );
         assert_eq!(from_text("Dokumentär"), vec!["Documentary"]);
         assert_eq!(from_text("Livsstil  Reality  Livsstil"), vec!["Reality"]);
         assert!(from_text("").is_empty());
@@ -354,7 +450,10 @@ mod tests {
     #[test]
     fn genres_from_categories() {
         assert_eq!(from_category("EN - DRAMA"), vec!["Drama"]);
-        assert_eq!(from_category("NETFLIX STAND-UP COMEDY"), vec!["Stand-up", "Comedy"]);
+        assert_eq!(
+            from_category("NETFLIX STAND-UP COMEDY"),
+            vec!["Stand-up", "Comedy"]
+        );
         assert_eq!(from_category("NETFLIX DOCU-SERIES"), vec!["Documentary"]);
         assert_eq!(from_category("SVENSKA BARN"), vec!["Kids"]);
         assert_eq!(from_category("EN - MUSICAL"), vec!["Musical"]);

@@ -281,9 +281,9 @@ Legend: **P0** = needed for a usable app on Linux, **P1** = expected
 UHF/Infuse feature, **P2** = later.
 
 > Work state is also tracked in **planned** (the user's tracker): project
-> **testpattern-app** (team PL, `PLANNED_API_KEY` in
-> `/Users/smolesen/Dev/planned/data/.env`, MCP on `localhost:4000` — start it
-> with `just dev` or `planned serve` in `/Users/smolesen/Dev/planned`). This
+> **testpattern-app** (team PL, `PLANNED_API_KEY` in the planned repo's
+> `data/.env`, MCP on `localhost:4000` — start it
+> with `just dev` or `planned serve` in the planned checkout). This
 > file keeps the build notes; the kanban below stays the issue-of-record for
 > what is done.
 
@@ -1149,3 +1149,19 @@ UHF/Infuse feature, **P2** = later.
   the Blocked line drops the macOS-machine premise (this checkout lives
   on macOS arm64). The "push to GitHub" blocked-policy line stays as is —
   it no longer gates T-037 (already Done: green run + merged PR #1).
+
+- **2026-10-03** — PL-101/PL-99/PL-100/PL-97 (planned tracker). PL-101:
+  `src/app/Layout.tsx` gained a global-space listener — Space/K/M while
+  playback runs off-page routes to `/player` (after the existing input
+  guard; Space with a focus stays on the control). PL-99/PL-100:
+  `sub-visibility` is now an observed mpv prop (`player/mod.rs` +
+  `stores/player.ts` `subVisible`); the subs menu has an explicit
+  Subtitles on/off row (PL-99, also bound to the `S` key) and picking a
+  track while subs are hidden flips subsEnabled on; fresh profiles default
+  `player.subsEnabled=true` (PL-100) so slang-selected tracks actually
+  show, plus a one-time "Subtitles are off — press S" hint when a track
+  got auto-selected with subs off. PL-97: the smoke GPU check now uses
+  the live recording (no system ffmpeg needed) and, when hwdec never
+  engages on the clip (Linux without a render node, macOS in a headless
+  session with no window-server VT), *skips* rather than fails — matching
+  the previous Linux behavior.

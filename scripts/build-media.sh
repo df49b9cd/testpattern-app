@@ -29,7 +29,7 @@ TP="$ROOT/third_party"
 SRC="$TP/src"
 BUILD="${TP_MEDIA_BUILD:-$TP/build}"
 PREFIX="${TP_MEDIA_PREFIX:-$TP/prefix}"
-JOBS="${TP_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}"
+JOBS="${TP_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)}"
 
 [[ -f "$ROOT/.deps/env.sh" ]] && . "$ROOT/.deps/env.sh"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
@@ -120,11 +120,12 @@ meson_static() { # name [meson options...] — static meson build into $PREFIX
   rm -rf "${BUILD:?}/$name"
   # stdout of meson setup is chatty; its error text goes to stderr AND to the
   # configure.log. CI swallows the former — keep a copy visible on failure.
-  if ! meson setup "$BUILD/$name" "$SRC/$name" \
+  meson setup "$BUILD/$name" "$SRC/$name" \
     --prefix="$PREFIX" --libdir=lib --buildtype=release -Ddefault_library=static \
     -Dc_args="$EXTRA_CFLAGS" -Dc_link_args="$EXTRA_LDFLAGS" "$@" \
-    >"$BUILD/$name-configure.log" 2>&1; then
-    local rc=$?
+    >"$BUILD/$name-configure.log" 2>&1
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
     echo "==> $name configure FAILED (rc=$rc), meson log follows:" >&2
     tail -60 "$BUILD/$name-configure.log" >&2 || true
     echo "==> end $name configure failure" >&2
@@ -206,7 +207,7 @@ fi
 built libplacebo || meson_static libplacebo \
   -Dvulkan=disabled -Dopengl=enabled -Dd3d11=disabled -Dglslang=disabled -Dshaderc=disabled \
   -Dlcms=enabled -Ddovi=enabled -Dlibdovi=disabled -Dunwind=disabled -Dxxhash=disabled \
-  -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false "$@"
+  -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false ${PLACEBO_PLAT[@]+"${PLACEBO_PLAT[@]}"}
 
 # needed by mpv's drm feature, which VA-API decoding requires (no X11/Wayland here)
 if [ "$(uname)" != "Darwin" ]; then
@@ -238,8 +239,8 @@ if ! built mpv; then
   # catalyst. Linux never runs this branch.
   if [ "$(uname)" = "Darwin" ] && ! nm "$BUILD/mpv/libmpv.a" 2>/dev/null | grep -q _mpv_create; then
     echo "==> libmpv.a stub detected; re-archiving with libtool (swift.o archive content)"
-    objs=$(find "$BUILD/mpv/libmpv.a.p" -name '*.o' -o -name '*.m.o')
-    libtool -static -o "$BUILD/mpv/libmpv.a" "$BUILD/mpv/osdep/mac/swift.o" $objs
+    mapfile -t objs < <(find "$BUILD/mpv/libmpv.a.p" -name '*.o' -o -name '*.m.o')
+    libtool -static -o "$BUILD/mpv/libmpv.a" "$BUILD/mpv/osdep/mac/swift.o" "${objs[@]}"
   fi
   meson install -C "$BUILD/mpv" >/dev/null
 fi

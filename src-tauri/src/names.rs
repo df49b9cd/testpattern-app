@@ -27,17 +27,61 @@ pub struct CleanedTitle {
 /// Maps Unicode superscript/modifier letters to ASCII.
 fn unsuper(c: char) -> Option<char> {
     Some(match c {
-        '⁰' => '0', '¹' => '1', '²' => '2', '³' => '3', '⁴' => '4',
-        '⁵' => '5', '⁶' => '6', '⁷' => '7', '⁸' => '8', '⁹' => '9',
-        'ᴬ' => 'A', 'ᴮ' => 'B', 'ᴰ' => 'D', 'ᴱ' => 'E', 'ᴳ' => 'G', 'ᴴ' => 'H',
-        'ᴵ' => 'I', 'ᴶ' => 'J', 'ᴷ' => 'K', 'ᴸ' => 'L', 'ᴹ' => 'M', 'ᴺ' => 'N',
-        'ᴼ' => 'O', 'ᴾ' => 'P', 'ᴿ' => 'R', 'ᵀ' => 'T', 'ᵁ' => 'U', 'ⱽ' => 'V',
+        '⁰' => '0',
+        '¹' => '1',
+        '²' => '2',
+        '³' => '3',
+        '⁴' => '4',
+        '⁵' => '5',
+        '⁶' => '6',
+        '⁷' => '7',
+        '⁸' => '8',
+        '⁹' => '9',
+        'ᴬ' => 'A',
+        'ᴮ' => 'B',
+        'ᴰ' => 'D',
+        'ᴱ' => 'E',
+        'ᴳ' => 'G',
+        'ᴴ' => 'H',
+        'ᴵ' => 'I',
+        'ᴶ' => 'J',
+        'ᴷ' => 'K',
+        'ᴸ' => 'L',
+        'ᴹ' => 'M',
+        'ᴺ' => 'N',
+        'ᴼ' => 'O',
+        'ᴾ' => 'P',
+        'ᴿ' => 'R',
+        'ᵀ' => 'T',
+        'ᵁ' => 'U',
+        'ⱽ' => 'V',
         'ᵂ' => 'W',
-        'ᵃ' => 'a', 'ᵇ' => 'b', 'ᶜ' => 'c', 'ᵈ' => 'd', 'ᵉ' => 'e', 'ᶠ' => 'f',
-        'ᵍ' => 'g', 'ʰ' => 'h', 'ᶦ' => 'i', 'ⁱ' => 'i', 'ʲ' => 'j', 'ᵏ' => 'k',
-        'ˡ' => 'l', 'ᵐ' => 'm', 'ⁿ' => 'n', 'ᵒ' => 'o', 'ᵖ' => 'p', 'ʳ' => 'r',
-        'ˢ' => 's', 'ᵗ' => 't', 'ᵘ' => 'u', 'ᵛ' => 'v', 'ʷ' => 'w', 'ˣ' => 'x',
-        'ʸ' => 'y', 'ᶻ' => 'z',
+        'ᵃ' => 'a',
+        'ᵇ' => 'b',
+        'ᶜ' => 'c',
+        'ᵈ' => 'd',
+        'ᵉ' => 'e',
+        'ᶠ' => 'f',
+        'ᵍ' => 'g',
+        'ʰ' => 'h',
+        'ᶦ' => 'i',
+        'ⁱ' => 'i',
+        'ʲ' => 'j',
+        'ᵏ' => 'k',
+        'ˡ' => 'l',
+        'ᵐ' => 'm',
+        'ⁿ' => 'n',
+        'ᵒ' => 'o',
+        'ᵖ' => 'p',
+        'ʳ' => 'r',
+        'ˢ' => 's',
+        'ᵗ' => 't',
+        'ᵘ' => 'u',
+        'ᵛ' => 'v',
+        'ʷ' => 'w',
+        'ˣ' => 'x',
+        'ʸ' => 'y',
+        'ᶻ' => 'z',
         _ => return None,
     })
 }
@@ -65,7 +109,11 @@ const BADGES: &[(&str, &str)] = &[
 ];
 
 fn badge_for(token: &str) -> Option<&'static str> {
-    let t: String = token.chars().filter(|c| c.is_alphanumeric() || *c == '.').collect::<String>().to_uppercase();
+    let t: String = token
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.')
+        .collect::<String>()
+        .to_uppercase();
     BADGES.iter().find(|(k, _)| *k == t).map(|(_, v)| *v)
 }
 
@@ -89,11 +137,12 @@ fn take_superscripts(name: &str, badges: &mut Vec<&'static str>) -> String {
         let mut i = 0;
         while i < words.len() {
             if i + 1 < words.len()
-                && let Some(b) = badge_for(&format!("{}{}", words[i], words[i + 1])) {
-                    push_badge(badges, b);
-                    i += 2;
-                    continue;
-                }
+                && let Some(b) = badge_for(&format!("{}{}", words[i], words[i + 1]))
+            {
+                push_badge(badges, b);
+                i += 2;
+                continue;
+            }
             match badge_for(words[i]) {
                 Some(b) => push_badge(badges, b),
                 None => kept.push(words[i].to_uppercase()),
@@ -136,7 +185,8 @@ static SEPARATOR: LazyLock<Regex> =
 // "SC - ", and compound ones like "4K-AMZ - ", "4K-A+ - ", "EN-TOP - " (the
 // first part a quality or a two-letter code, so "X-MEN - …" stays a title)
 static TAG_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*((?:(?:4K|8K|UHD|FHD|HD|SD|[A-Z]{2})-[A-Z0-9+]{1,5})|[A-Z0-9+]{2,4})\s*-\s+").unwrap()
+    Regex::new(r"^\s*((?:(?:4K|8K|UHD|FHD|HD|SD|[A-Z]{2})-[A-Z0-9+]{1,5})|[A-Z0-9+]{2,4})\s*-\s+")
+        .unwrap()
 });
 static TRAILING_YEAR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s*[\(\[]((?:19|20)\d{2})[\)\]]\s*$").unwrap());
@@ -155,16 +205,19 @@ pub fn fold_superscripts(s: &str) -> String {
 /// keeping acronyms and codes ("HBO", "4K", "TV2", "PPV") as they are.
 pub fn title_case(s: &str) -> String {
     const KEEP: &[&str] = &[
-        "TV", "HD", "SD", "UHD", "FHD", "HDR", "HEVC", "HBO", "SVT", "NRK", "UFC", "WWE", "NBA", "NFL", "NHL", "MLB",
-        "MMA", "IMDB", "DC", "UK", "US", "USA", "EN", "PPV", "BBC", "ITV", "CNN", "ESPN", "DAZN", "MTV", "AMC", "TCM",
-        "TNT", "FX", "ABC", "CBS", "NBC", "RAW", "VIP", "EPL", "UEFA", "FIFA", "MLS", "NCAA", "WNBA", "GAA", "LOI",
-        "BT", "TSN", "DR", "RTL", "ARD", "ZDF", "SKY",
+        "TV", "HD", "SD", "UHD", "FHD", "HDR", "HEVC", "HBO", "SVT", "NRK", "UFC", "WWE", "NBA",
+        "NFL", "NHL", "MLB", "MMA", "IMDB", "DC", "UK", "US", "USA", "EN", "PPV", "BBC", "ITV",
+        "CNN", "ESPN", "DAZN", "MTV", "AMC", "TCM", "TNT", "FX", "ABC", "CBS", "NBC", "RAW", "VIP",
+        "EPL", "UEFA", "FIFA", "MLS", "NCAA", "WNBA", "GAA", "LOI", "BT", "TSN", "DR", "RTL",
+        "ARD", "ZDF", "SKY",
     ];
     s.split(' ')
         .map(|word| {
             let upper = word.to_uppercase();
             let core: String = upper.chars().filter(|c| c.is_alphanumeric()).collect();
-            if KEEP.contains(&core.as_str()) || (core.chars().any(|c| c.is_ascii_digit()) && core.len() <= 5) {
+            if KEEP.contains(&core.as_str())
+                || (core.chars().any(|c| c.is_ascii_digit()) && core.len() <= 5)
+            {
                 return upper;
             }
             // capitalize after start, '-', '(' and '/': "DOCU-SERIES" → "Docu-Series"
@@ -208,7 +261,10 @@ pub fn is_separator(name: &str) -> bool {
 fn tidy(s: &str) -> String {
     let s = DECOR.replace_all(s, " ");
     let s = SPACES.replace_all(&s, " ");
-    s.trim().trim_matches(|c: char| c == '|' || c == '-' || c == ':').trim().to_owned()
+    s.trim()
+        .trim_matches(|c: char| c == '|' || c == '-' || c == ':')
+        .trim()
+        .to_owned()
 }
 
 /// Strips trailing plain-text quality tokens ("... 4K", "... HD", "... HEVC").
@@ -254,7 +310,11 @@ pub fn channel(name: &str) -> Cleaned {
     }
     take_trailing_badges(&mut s, &mut badges);
     let title = tidy(&s);
-    Cleaned { title: if title.is_empty() { tidy(name) } else { title }, badges, region }
+    Cleaned {
+        title: if title.is_empty() { tidy(name) } else { title },
+        badges,
+        region,
+    }
 }
 
 /// Category names: like channels, but the prefix becomes the region.
@@ -293,12 +353,17 @@ pub fn title(name: &str) -> CleanedTitle {
     // "Possible Love (2026) Muhtemel Ask": the year splits the display title
     // from the original-language title
     if year.is_none()
-        && let Some(m) = MIDDLE_YEAR.captures(&s) {
-            year = m[2].parse().ok();
-            s = m[1].to_owned();
-        }
+        && let Some(m) = MIDDLE_YEAR.captures(&s)
+    {
+        year = m[2].parse().ok();
+        s = m[1].to_owned();
+    }
     let title = tidy(&s);
-    CleanedTitle { title: if title.is_empty() { tidy(name) } else { title }, tag, year }
+    CleanedTitle {
+        title: if title.is_empty() { tidy(name) } else { title },
+        tag,
+        year,
+    }
 }
 
 pub fn badges_str(badges: &[&str]) -> String {
@@ -342,7 +407,9 @@ mod tests {
         let c = channel("24/7: MILLION DOLLAR LISTING NEW YORK");
         assert_eq!(c.title, "MILLION DOLLAR LISTING NEW YORK");
 
-        let c = channel("US (ESPN+ 358) | NCAA Field Hockey: Syracuse vs. Virginia (2026-09-25 16:03:00)");
+        let c = channel(
+            "US (ESPN+ 358) | NCAA Field Hockey: Syracuse vs. Virginia (2026-09-25 16:03:00)",
+        );
         assert!(c.title.starts_with("US (ESPN+ 358)"));
     }
 
@@ -371,10 +438,16 @@ mod tests {
     #[test]
     fn readable_category_names() {
         assert_eq!(title_case("NETFLIX DOCU-SERIES"), "Netflix Docu-Series");
-        assert_eq!(title_case("TURKSIH SERIES (SUB EN)"), "Turksih Series (Sub EN)");
+        assert_eq!(
+            title_case("TURKSIH SERIES (SUB EN)"),
+            "Turksih Series (Sub EN)"
+        );
         assert_eq!(title_case("NORDIC HBO MAX"), "Nordic HBO Max");
         assert_eq!(title_case("SVENSK TV4 PLAY"), "Svensk TV4 Play");
-        assert_eq!(display_category("APPLE+ SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ"), "Apple+ Series · 4K Dolby Vision");
+        assert_eq!(
+            display_category("APPLE+ SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ"),
+            "Apple+ Series · 4K Dolby Vision"
+        );
         assert_eq!(display_category("EN - DRAMA"), "EN - Drama");
     }
 
@@ -390,7 +463,14 @@ mod tests {
     #[test]
     fn titles() {
         let t = title("SC - Cleanskin (2012)");
-        assert_eq!(t, CleanedTitle { title: "Cleanskin".into(), tag: Some("SC".into()), year: Some(2012) });
+        assert_eq!(
+            t,
+            CleanedTitle {
+                title: "Cleanskin".into(),
+                tag: Some("SC".into()),
+                year: Some(2012)
+            }
+        );
         let t = title("EN - Quiz Lady  (2023)");
         assert_eq!((t.title.as_str(), t.year), ("Quiz Lady", Some(2023)));
         let t = title("NF - SEAL Team (2017) (US)");
@@ -402,7 +482,10 @@ mod tests {
         let t = title("NF - Top Gun: Maverick (2022)");
         assert_eq!(t.title, "Top Gun: Maverick");
         let t = title("UNV - Blue Crush (2002)");
-        assert_eq!((t.title.as_str(), t.tag.as_deref()), ("Blue Crush", Some("UNV")));
+        assert_eq!(
+            (t.title.as_str(), t.tag.as_deref()),
+            ("Blue Crush", Some("UNV"))
+        );
         let t = title("EN - Possible Love (2026) Muhtemel Ask");
         assert_eq!((t.title.as_str(), t.year), ("Possible Love", Some(2026)));
         // a bare trailing number is part of the title, not a year
@@ -410,11 +493,24 @@ mod tests {
         assert_eq!((t.title.as_str(), t.year), ("Blade Runner 2049", None));
         // compound provider prefixes
         let t = title("4K-AMZ - Hunting With Tigers (2025)");
-        assert_eq!(t, CleanedTitle { title: "Hunting With Tigers".into(), tag: Some("4K-AMZ".into()), year: Some(2025) });
+        assert_eq!(
+            t,
+            CleanedTitle {
+                title: "Hunting With Tigers".into(),
+                tag: Some("4K-AMZ".into()),
+                year: Some(2025)
+            }
+        );
         let t = title("4K-A+ - Silo");
-        assert_eq!((t.title.as_str(), t.tag.as_deref()), ("Silo", Some("4K-A+")));
+        assert_eq!(
+            (t.title.as_str(), t.tag.as_deref()),
+            ("Silo", Some("4K-A+"))
+        );
         let t = title("EN-TOP - 01. The Shawshank Redemption");
-        assert_eq!((t.title.as_str(), t.tag.as_deref()), ("01. The Shawshank Redemption", Some("EN-TOP")));
+        assert_eq!(
+            (t.title.as_str(), t.tag.as_deref()),
+            ("01. The Shawshank Redemption", Some("EN-TOP"))
+        );
         let t = title("X-MEN - Apocalypse");
         assert_eq!((t.title.as_str(), t.tag), ("X-MEN - Apocalypse", None));
     }

@@ -106,9 +106,16 @@ js "$S for (const e of s.eps) await inv('history_remove', {kind: 'episode', sour
 # "videotoolbox".
 hwdec=""
 hwclip=""
+srv=""
 if [[ "$(uname -s)" == Darwin ]]; then
   hwdec=videotoolbox
-  hwclip=$(ls "$OUT"/recordings/*.ts 2>/dev/null | head -n1 || true)
+  # only trust the recording when it passed the size check above; a
+  # too-small/stale file would silently skip the GPU check
+  if [[ $size -gt 100000 ]]; then
+    hwclip=$(ls "$OUT"/recordings/*.ts 2>/dev/null | head -n1 || true)
+  else
+    report "GPU check clip ($(stat -c %s "$OUT"/recordings/*.ts 2>/dev/null | head -1 || echo 0) bytes)" 0 "recording too small/stale"
+  fi
 else
   hwdec=vaapi
   clip="$OUT/vp9.webm"
@@ -123,7 +130,7 @@ fi
 if [[ -n "$hwclip" && -s "$hwclip" ]]; then
   python3 -m http.server 18556 --bind 127.0.0.1 --directory "$(dirname "$hwclip")" >/dev/null 2>&1 &
   srv=$!
-  trap 'kill $srv 2>/dev/null || true' EXIT
+  trap '[[ -n "$srv" ]] && kill "$srv" 2>/dev/null || true' EXIT
   for _ in $(seq 1 20); do curl -s -m 1 -o /dev/null "http://127.0.0.1:18556/" && break; sleep 0.1; done
   hwurl=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$(basename "$hwclip")")
   # In a session where the GPU pipeline is unavailable (Linux without a

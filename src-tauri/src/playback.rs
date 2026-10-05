@@ -95,7 +95,10 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
                 (url, false)
             }
             "episode" => match &x {
-                Some(x) => (x.episode_url(&req.id, req.ext.as_deref().unwrap_or("mp4")), false),
+                Some(x) => (
+                    x.episode_url(&req.id, req.ext.as_deref().unwrap_or("mp4")),
+                    false,
+                ),
                 // M3U series (sources::write_m3u): the playlist's own URL
                 None => {
                     let (url, ua, referrer): (String, Option<String>, Option<String>) = conn
@@ -111,19 +114,34 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
                 }
             },
             "catchup" => {
-                let start = req.catchup_start.ok_or_else(|| Error::msg("missing catch-up start"))?;
+                let start = req
+                    .catchup_start
+                    .ok_or_else(|| Error::msg("missing catch-up start"))?;
                 let minutes = req.catchup_minutes.unwrap_or(60).max(1);
                 let url = match &x {
                     Some(x) => {
-                        let offset = src.account.as_ref().and_then(|a| i64_of(&a["serverUtcOffset"])).unwrap_or(0);
-                        let local = chrono::DateTime::from_timestamp(start + offset + src.catchup_shift_minutes * 60, 0)
-                            .ok_or_else(|| Error::msg("bad catch-up time"))?
-                            .naive_utc();
+                        let offset = src
+                            .account
+                            .as_ref()
+                            .and_then(|a| i64_of(&a["serverUtcOffset"]))
+                            .unwrap_or(0);
+                        let local = chrono::DateTime::from_timestamp(
+                            start + offset + src.catchup_shift_minutes * 60,
+                            0,
+                        )
+                        .ok_or_else(|| Error::msg("bad catch-up time"))?
+                        .naive_utc();
                         x.timeshift_url(&req.id, local, minutes)
                     }
                     // M3U: the playlist's catch-up scheme (sources::m3u::catchup_url)
                     None => {
-                        type Row = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+                        type Row = (
+                            Option<String>,
+                            Option<String>,
+                            Option<String>,
+                            Option<String>,
+                            Option<String>,
+                        );
                         let (stream, mode, template, ua, referrer): Row = conn
                             .query_row(
                                 "SELECT url, catchup_mode, catchup_source, user_agent, referrer
@@ -138,7 +156,15 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
                             .zip(mode)
                             .and_then(|(stream, mode)| {
                                 let shift = src.catchup_shift_minutes * 60;
-                                m3u::catchup_url(&mode, template.as_deref(), &stream, start, minutes * 60, crate::db::now(), shift)
+                                m3u::catchup_url(
+                                    &mode,
+                                    template.as_deref(),
+                                    &stream,
+                                    start,
+                                    minutes * 60,
+                                    crate::db::now(),
+                                    shift,
+                                )
                             })
                             .ok_or_else(|| Error::msg("This channel does not offer catch-up"))?
                     }
@@ -147,10 +173,27 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
             }
             other => return Err(Error::msg(format!("cannot play {other}"))),
         };
-        let alternates = x.as_ref().map(|x| x.alternates_for(&url)).unwrap_or_default();
-        (url, alternates, live, headers.0.or(src.user_agent), headers.1, channel)
+        let alternates = x
+            .as_ref()
+            .map(|x| x.alternates_for(&url))
+            .unwrap_or_default();
+        (
+            url,
+            alternates,
+            live,
+            headers.0.or(src.user_agent),
+            headers.1,
+            channel,
+        )
     };
-    Ok(Stream { url, alternates, live, user_agent, referrer, channel })
+    Ok(Stream {
+        url,
+        alternates,
+        live,
+        user_agent,
+        referrer,
+        channel,
+    })
 }
 
 #[tauri::command]
@@ -161,28 +204,55 @@ pub async fn play<R: Runtime>(
     req: PlayRequest,
 ) -> Result<()> {
     let st = state.inner().clone();
-    let Stream { url, alternates, live, user_agent, referrer, channel } = resolve(&st.db.read(), &req)?;
+    let Stream {
+        url,
+        alternates,
+        live,
+        user_agent,
+        referrer,
+        channel,
+    } = resolve(&st.db.read(), &req)?;
     if let Some((title, logo)) = channel {
         let w = st.db.write();
         library::touch_channel(&w, req.source_id, &req.id, &title, logo.as_deref())?;
     }
     // one stream per account: a running version check closes its stream first
     if crate::probe::running() {
-        tokio::task::spawn_blocking(crate::probe::cancel).await.map_err(|e| Error::msg(e.to_string()))?;
+        tokio::task::spawn_blocking(crate::probe::cancel)
+            .await
+            .map_err(|e| Error::msg(e.to_string()))?;
     }
 
-    log::info!("play {} {}:{} (live={live}, mirrors={})", req.kind, req.source_id, req.id, alternates.len());
+    log::info!(
+        "play {} {}:{} (live={live}, mirrors={})",
+        req.kind,
+        req.source_id,
+        req.id,
+        alternates.len()
+    );
     let media = match req.kind.as_str() {
         "movie" => Some("movie"),
         "episode" => Some("episode"),
         _ => None,
     }
-    .map(|kind| MediaRef { kind, source_id: req.source_id, id: req.id.clone() });
+    .map(|kind| MediaRef {
+        kind,
+        source_id: req.source_id,
+        id: req.id.clone(),
+    });
     player
         .load_with_fallbacks(
             &url,
             alternates,
-            LoadOptions { start: req.start, live, title: req.title, user_agent, referrer, paused: req.paused, media },
+            LoadOptions {
+                start: req.start,
+                live,
+                title: req.title,
+                user_agent,
+                referrer,
+                paused: req.paused,
+                media,
+            },
         )
         .map_err(|e| Error::msg(e.to_string()))
 }
@@ -207,12 +277,18 @@ pub async fn player_record<R: Runtime>(
     Ok(Some(file.display().to_string()))
 }
 
-fn recording_dir<R: Runtime>(app: &tauri::AppHandle<R>, st: &AppState) -> Result<std::path::PathBuf> {
+fn recording_dir<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    st: &AppState,
+) -> Result<std::path::PathBuf> {
     use tauri::Manager;
     let configured = settings::get_str(&st.db.read(), "recording.dir");
     if !configured.trim().is_empty() {
         return Ok(configured.trim().into());
     }
-    let videos = app.path().video_dir().or_else(|_| app.path().home_dir().map(|h| h.join("Videos")))?;
+    let videos = app
+        .path()
+        .video_dir()
+        .or_else(|_| app.path().home_dir().map(|h| h.join("Videos")))?;
     Ok(videos.join("testpattern"))
 }

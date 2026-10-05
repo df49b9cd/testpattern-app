@@ -30,7 +30,9 @@ pub fn defaults() -> Map<String, Value> {
 
 pub fn get(conn: &Connection, key: &str) -> Value {
     let stored: Option<String> = conn
-        .query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| r.get(0))
+        .query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
+            r.get(0)
+        })
         .optional()
         .ok()
         .flatten();
@@ -70,10 +72,21 @@ fn all(conn: &Connection) -> Result<Map<String, Value>> {
     Ok(map)
 }
 
+/// The mpv sub-visibility value for a connection's `player.subsEnabled`.
+pub fn sub_visibility(conn: &Connection) -> &'static str {
+    if get_bool(conn, "player.subsEnabled") {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
 /// Pushes player settings into mpv: all of them (startup) or just `only` —
 /// re-applying e.g. `hwdec` mid-playback would needlessly touch the decoder.
 pub fn apply_player<R: Runtime>(app: &AppHandle<R>, st: &AppState, only: Option<&str>) {
-    let Some(player) = app.try_state::<crate::player::Player>() else { return };
+    let Some(player) = app.try_state::<crate::player::Player>() else {
+        return;
+    };
     let conn = st.db.read();
     let wanted = |key: &str| only.is_none_or(|o| o == key);
     let set = |name: &str, v: String| {
@@ -91,7 +104,7 @@ pub fn apply_player<R: Runtime>(app: &AppHandle<R>, st: &AppState, only: Option<
         set("slang", get_str(&conn, "player.subLang"));
     }
     if wanted("player.subsEnabled") {
-        set("sub-visibility", if get_bool(&conn, "player.subsEnabled") { "yes" } else { "no" }.into());
+        set("sub-visibility", sub_visibility(&conn).into());
     }
     // the UI remembers the volume it last set (stores/player.ts)
     if wanted("player.volume")
@@ -137,5 +150,19 @@ mod tests {
     #[test]
     fn fresh_profiles_show_subtitles() {
         assert_eq!(defaults()["player.subsEnabled"], json!(true));
+    }
+
+    /// PL-100 through apply_player's mapping: a fresh conn (nothing stored)
+    /// resolves sub-visibility to "yes"; a stored false flips it to "no".
+    #[test]
+    fn apply_player_enables_subs_on_fresh_profiles() {
+        let conn = crate::db::test_conn();
+        assert_eq!(sub_visibility(&conn), "yes");
+        conn.execute(
+            "INSERT INTO setting (key, value) VALUES ('player.subsEnabled', 'false')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(sub_visibility(&conn), "no");
     }
 }

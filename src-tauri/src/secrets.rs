@@ -86,14 +86,24 @@ async fn timed<T>(unlock: Unlock, call: impl Future<Output = Result<T>>) -> Resu
 /// A random id per profile, so two profiles (e.g. the test one) never share
 /// keyring entries for "source 1".
 fn profile_id(conn: &Connection) -> Result<String> {
-    let stored: Option<String> =
-        conn.query_row("SELECT value FROM setting WHERE key = 'secrets.profile'", [], |r| r.get(0)).optional()?;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM setting WHERE key = 'secrets.profile'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
     if let Some(v) = stored.and_then(|v| serde_json::from_str::<String>(&v).ok()) {
         return Ok(v);
     }
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    );
     let id = format!("{:016x}", h.finish());
     conn.execute(
         "INSERT OR REPLACE INTO setting (key, value) VALUES ('secrets.profile', ?1)",
@@ -120,7 +130,11 @@ mod backend {
             Entry::Source(id) => ("source", id.to_string()),
             Entry::Named(name) => ("name", name.to_owned()),
         };
-        vec![("application", "testpattern".into()), ("profile", profile.into()), (key, value)]
+        vec![
+            ("application", "testpattern".into()),
+            ("profile", profile.into()),
+            (key, value),
+        ]
     }
 
     fn map<'a>(attrs: &'a [(&'static str, String)]) -> HashMap<&'a str, &'a str> {
@@ -132,13 +146,21 @@ mod backend {
     async fn connect() -> Result<SecretService<'static>> {
         match SecretService::connect(EncryptionType::Dh).await {
             Ok(ss) => Ok(ss),
-            Err(_) => SecretService::connect(EncryptionType::Plain).await.map_err(err),
+            Err(_) => SecretService::connect(EncryptionType::Plain)
+                .await
+                .map_err(err),
         }
     }
 
     /// Stores (replaces) the secret; Ok(false) when the keyring is locked and
     /// `unlock` forbids prompting.
-    pub async fn store(profile: &str, entry: Entry<'_>, label: &str, password: &str, unlock: Unlock) -> Result<bool> {
+    pub async fn store(
+        profile: &str,
+        entry: Entry<'_>,
+        label: &str,
+        password: &str,
+        unlock: Unlock,
+    ) -> Result<bool> {
         let ss = connect().await?;
         let collection = ss.get_default_collection().await.map_err(err)?;
         if collection.is_locked().await.map_err(err)? {
@@ -148,7 +170,13 @@ mod backend {
             collection.unlock().await.map_err(err)?;
         }
         collection
-            .create_item(label, map(&attributes(profile, entry)), password.as_bytes(), true, "text/plain")
+            .create_item(
+                label,
+                map(&attributes(profile, entry)),
+                password.as_bytes(),
+                true,
+                "text/plain",
+            )
             .await
             .map_err(err)?;
         Ok(true)
@@ -158,10 +186,15 @@ mod backend {
     /// unlocked when `unlock` allows it.
     pub async fn load(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<Option<String>> {
         let ss = connect().await?;
-        let found = ss.search_items(map(&attributes(profile, entry))).await.map_err(err)?;
+        let found = ss
+            .search_items(map(&attributes(profile, entry)))
+            .await
+            .map_err(err)?;
         let item = match (found.unlocked.first(), found.locked.first()) {
             (Some(item), _) => item,
-            (None, Some(_)) if unlock == Unlock::Never => return Err(Error::msg("keyring: locked")),
+            (None, Some(_)) if unlock == Unlock::Never => {
+                return Err(Error::msg("keyring: locked"));
+            }
             (None, Some(item)) => {
                 ss.unlock_all(&[item]).await.map_err(err)?;
                 item
@@ -175,12 +208,17 @@ mod backend {
     /// Removes the entry, unlocking the keyring first when `unlock` allows it.
     pub async fn delete(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<()> {
         let ss = connect().await?;
-        let found = ss.search_items(map(&attributes(profile, entry))).await.map_err(err)?;
+        let found = ss
+            .search_items(map(&attributes(profile, entry)))
+            .await
+            .map_err(err)?;
         if !found.locked.is_empty() {
             if unlock == Unlock::Never {
                 return Err(Error::msg("keyring: locked"));
             }
-            ss.unlock_all(&found.locked.iter().collect::<Vec<_>>()).await.map_err(err)?;
+            ss.unlock_all(&found.locked.iter().collect::<Vec<_>>())
+                .await
+                .map_err(err)?;
         }
         for item in found.unlocked.iter().chain(&found.locked) {
             item.delete().await.map_err(err)?;
@@ -206,74 +244,134 @@ mod backend {
         Error::msg(format!("keyring: {e}"))
     }
 
-    fn attrs(profile: &str, entry: Entry<'_>, label: &str) -> [(&'static str, String); 4] {
-        let (key, value) = match entry {
-            Entry::Source(id) => ("source", id.to_string()),
-            Entry::Named(name) => ("name", name.to_owned()),
+    /// Tests point the backend at a throwaway keychain this way; production
+    /// never sets it, so the login keychain is used.
+    fn test_keychain() -> Option<std::ffi::OsString> {
+        std::env::var_os("TP_KEYCHAIN").filter(|p| !p.is_empty())
+    }
+
+    /// macOS keychain items are identified by (service, account); the label
+    /// is display-only and never part of lookups.
+    pub(crate) fn attrs(
+        profile: &str,
+        entry: Entry<'_>,
+        label: &str,
+    ) -> [(&'static str, String); 3] {
+        let value = match entry {
+            Entry::Source(id) => id.to_string(),
+            Entry::Named(name) => name.to_owned(),
         };
         [
-            ("-s", "testpattern".into()), // kSecAttrService
-            ("-a", format!("{profile}:{}", value)), // kSecAttrAccount: profile + entry
-            ("-l", label.to_owned()),     // kSecAttrLabel (what Keychain Access shows)
-            ("-j", key.into()),           // kSecAttrComment: entry kind ("source"/"name")
+            ("-s", "testpattern".into()),         // kSecAttrService
+            ("-a", format!("{profile}:{value}")), // kSecAttrAccount: profile + entry
+            ("-l", label.to_owned()),             // kSecAttrLabel (what Keychain Access shows)
         ]
     }
 
-    /// `security` with the given args, stdin the secret when present.
-    /// Ok(Some(stdout)) / Ok(None) when the item is absent; Err on locked
-    /// keyring or other failure.
-    fn sec(args: &[(&str, String)], verb: &str, secret: Option<&str>) -> Result<Option<String>> {
+    /// Does this `security` failure mean the keychain is locked (or can't
+    /// prompt)? A locked login keychain says "user interaction is not
+    /// allowed"; a locked *throwaway* keychain (and some non-interactive
+    /// sessions) just exits 128 with empty stderr.
+    pub(crate) fn is_locked(status: Option<i32>, stderr: &str) -> bool {
+        stderr.contains("user interaction is not allowed")
+            || stderr.contains("The keychain is locked")
+            || (status == Some(128) && stderr.trim().is_empty())
+    }
+
+    /// Is this error one we returned for a locked keychain?
+    fn is_error_locked(e: &Error) -> bool {
+        e.to_string().contains("keychain is locked")
+    }
+
+    fn not_found(stderr: &str) -> bool {
+        stderr.contains("could not be found")
+    }
+
+    /// `-w` prints the raw password on stdout: strip only the one newline it
+    /// adds, so the secret's own bytes (backslashes, quotes, inner newlines)
+    /// survive the round-trip. (`security -w` can't *store* a trailing
+    /// newline, which is fine — passwords don't end in one.)
+    pub(crate) fn parse_w(stdout: &[u8]) -> String {
+        let s = String::from_utf8_lossy(stdout);
+        s.strip_suffix('\n').unwrap_or(&s).to_owned()
+    }
+
+    /// `security <verb> -w` with the given args. Ok(Some(password)) /
+    /// Ok(None) when the item is absent; Err on locked keychain or other
+    /// failure. Stdin is null: nothing is piped and the child never
+    /// inherits the app's stdin.
+    pub(crate) fn sec(args: &[(&str, String)], verb: &str) -> Result<Option<String>> {
         let mut cmd = std::process::Command::new("/usr/bin/security");
         cmd.arg(verb);
-        for (k, v) in args { cmd.arg(k).arg(v); }
-        cmd.arg("-g"); // print the password on stderr (and attributes on stdout)
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(err)?;
-        if let Some(s) = secret {
-            use std::io::Write;
-            child.stdin.take().map(|mut i| i.write_all(s.as_bytes()));
+        for (k, v) in args {
+            cmd.arg(k).arg(v);
         }
-        let out = child.wait_with_output().map_err(err)?;
+        cmd.arg("-w"); // print the password, unquoted, on stdout
+        if let Some(kc) = test_keychain() {
+            cmd.arg(kc);
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let out = cmd.output().map_err(err)?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         if out.status.success() {
-            // `security -g` prints `password: "…"` on stderr
-            let line = stderr.lines().find_map(|l| l.strip_prefix("password: ")).unwrap_or("");
-            let quoted = line.strip_prefix('"').and_then(|l| l.strip_suffix('"')).unwrap_or(line);
-            return Ok(Some(quoted.replace("\\\"", "\"")));
+            return Ok(Some(parse_w(&out.stdout)));
         }
-        if stderr.contains("could not be found") || stderr.contains("The specified item could not be found") {
+        if not_found(&stderr) {
             return Ok(None);
         }
-        // A locked login keychain says "user interaction is not allowed" on
-        // stderr; a locked *throwaway* keychain (and some non-interactive
-        // sessions) just exits 128 with empty stderr.
-        if out.status.code() == Some(128) && stderr.trim().is_empty() {
+        if is_locked(out.status.code(), &stderr) {
             return Err(err("the keychain is locked"));
         }
         Err(err(stderr.trim()))
     }
 
-    fn run(args: Vec<String>) -> Result<bool> {
-        let out = std::process::Command::new("/usr/bin/security").args(&args).output().map_err(err)?;
+    /// `security` for verbs with no secret output. Ok(false) when the item
+    /// is absent; Err on locked keychain or other failure.
+    pub(crate) fn run(args: Vec<String>) -> Result<bool> {
+        let mut cmd = std::process::Command::new("/usr/bin/security");
+        cmd.args(&args);
+        if let Some(kc) = test_keychain() {
+            cmd.arg(kc);
+        }
+        let out = cmd.stdin(Stdio::null()).output().map_err(err)?;
         let stderr = String::from_utf8_lossy(&out.stderr);
-        if out.status.success() { return Ok(true); }
-        if stderr.contains("could not be found") { return Ok(false); }
-        if out.status.code() == Some(128) && stderr.trim().is_empty() {
+        if out.status.success() {
+            return Ok(true);
+        }
+        if not_found(&stderr) {
+            return Ok(false);
+        }
+        if is_locked(out.status.code(), &stderr) {
             return Err(err("the keychain is locked"));
         }
         Err(err(stderr.trim()))
     }
 
-    pub async fn store(profile: &str, entry: Entry<'_>, label: &str, password: &str, unlock: Unlock) -> Result<bool> {
-        let a = attrs(profile, entry, label).to_vec();
+    pub async fn store(
+        profile: &str,
+        entry: Entry<'_>,
+        label: &str,
+        password: &str,
+        unlock: Unlock,
+    ) -> Result<bool> {
+        let a = attrs(profile, entry, label);
         // Upsert: add, or update when the entry exists.
         let mut add: Vec<String> = vec!["add-generic-password".into(), "-U".into()];
-        for (k, v) in a { add.push(k.to_string()); add.push(v); }
-        add.push("-w".into()); add.push(password.into());
+        for (k, v) in a {
+            add.push(k.to_string());
+            add.push(v);
+        }
+        add.push("-w".into());
+        add.push(password.into());
         // unlock-keychain prompts when locked; skip it for Unlock::Never
         if unlock == Unlock::Never {
-            let locked = run(vec!["show-keychain-info".into()]).is_err();
-            if locked { return Ok(false); }
+            match run(vec!["show-keychain-info".into()]) {
+                Ok(_) => {}
+                Err(e) if is_error_locked(&e) => return Ok(false),
+                Err(e) => return Err(e), // a real failure, not "locked"
+            }
         } else {
             let _ = run(vec!["unlock-keychain".into()]); // may prompt; ignore outcome
         }
@@ -281,17 +379,32 @@ mod backend {
     }
 
     pub async fn load(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<Option<String>> {
-        if unlock != Unlock::Never { let _ = run(vec!["unlock-keychain".into()]); }
         // service + account identify the entry; the label is display-only
-        let a: Vec<(&str, String)> = attrs(profile, entry, "").into_iter().filter(|(k, _)| *k != "-l").collect();
-        sec(&a, "find-generic-password", None)
+        let a: Vec<(&str, String)> = attrs(profile, entry, "")
+            .into_iter()
+            .filter(|(k, _)| *k != "-l")
+            .collect();
+        match sec(&a, "find-generic-password") {
+            Err(e) if unlock == Unlock::Prompt && is_error_locked(&e) => {
+                // only now that a lookup failed on a locked keychain: unlock
+                // (may prompt once), then retry
+                let _ = run(vec!["unlock-keychain".into()]);
+                sec(&a, "find-generic-password")
+            }
+            r => r,
+        }
     }
 
     pub async fn delete(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<()> {
-        if unlock != Unlock::Never { let _ = run(vec!["unlock-keychain".into()]); }
-        let a = attrs(profile, entry, "").to_vec();
+        if unlock != Unlock::Never {
+            let _ = run(vec!["unlock-keychain".into()]);
+        }
+        let a = attrs(profile, entry, "");
         let mut d: Vec<String> = vec!["delete-generic-password".into()];
-        for (k, v) in a.iter().filter(|(k, _)| *k != "-l") { d.push((*k).to_string()); d.push(v.to_string()); }
+        for (k, v) in a.iter().filter(|(k, _)| *k != "-l") {
+            d.push((*k).to_string());
+            d.push(v.to_string());
+        }
         run(d).map(|_| ())
     }
 }
@@ -315,29 +428,47 @@ mod backend {
 
 /// Moves a source's password into the keyring; on success the database
 /// keeps no copy. Returns whether it is in the keyring now.
-pub async fn move_to_keyring(st: &AppState, source_id: i64, password: &str, unlock: Unlock) -> bool {
+pub async fn move_to_keyring(
+    st: &AppState,
+    source_id: i64,
+    password: &str,
+    unlock: Unlock,
+) -> bool {
     let (profile, name) = {
         let conn = st.db.write();
-        let Ok(profile) = profile_id(&conn) else { return false };
+        let Ok(profile) = profile_id(&conn) else {
+            return false;
+        };
         let name: String = conn
-            .query_row("SELECT name FROM source WHERE id = ?1", [source_id], |r| r.get(0))
+            .query_row("SELECT name FROM source WHERE id = ?1", [source_id], |r| {
+                r.get(0)
+            })
             .unwrap_or_else(|_| format!("source {source_id}"));
         (profile, name)
     };
     let label = format!("testpattern: {name}");
-    match timed(unlock, backend::store(&profile, Entry::Source(source_id), &label, password, unlock)).await {
+    match timed(
+        unlock,
+        backend::store(&profile, Entry::Source(source_id), &label, password, unlock),
+    )
+    .await
+    {
         Ok(true) => {
             remember(source_id, password);
             match clear_plaintext(&st.db.write(), source_id) {
                 Ok(()) => true,
                 Err(e) => {
-                    log::warn!("keyring: stored source {source_id} but could not update the database: {e}");
+                    log::warn!(
+                        "keyring: stored source {source_id} but could not update the database: {e}"
+                    );
                     false
                 }
             }
         }
         Ok(false) => {
-            log::info!("source {source_id}: keyring locked, password stays in the database for now");
+            log::info!(
+                "source {source_id}: keyring locked, password stays in the database for now"
+            );
             false
         }
         Err(e) => {
@@ -350,7 +481,10 @@ pub async fn move_to_keyring(st: &AppState, source_id: i64, password: &str, unlo
 /// Drops the database copy without leaving it in freed pages or the WAL.
 fn clear_plaintext(conn: &Connection, source_id: i64) -> Result<()> {
     conn.query_row("PRAGMA secure_delete = ON", [], |_| Ok(()))?;
-    let updated = conn.execute("UPDATE source SET password = NULL, password_in_keyring = 1 WHERE id = ?1", [source_id]);
+    let updated = conn.execute(
+        "UPDATE source SET password = NULL, password_in_keyring = 1 WHERE id = ?1",
+        [source_id],
+    );
     conn.query_row("PRAGMA secure_delete = OFF", [], |_| Ok(()))?;
     updated?;
     // best effort: readers in the middle of a query keep older frames alive
@@ -363,9 +497,14 @@ fn clear_plaintext(conn: &Connection, source_id: i64) -> Result<()> {
 /// existing passwords out, rebuild the file once.
 fn scrub(conn: &Connection) {
     let t = std::time::Instant::now();
-    match conn.execute_batch("VACUUM").and_then(|()| conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())))
+    match conn
+        .execute_batch("VACUUM")
+        .and_then(|()| conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())))
     {
-        Ok(()) => log::info!("database rebuilt without old copies of secrets ({} ms)", t.elapsed().as_millis()),
+        Ok(()) => log::info!(
+            "database rebuilt without old copies of secrets ({} ms)",
+            t.elapsed().as_millis()
+        ),
         Err(e) => log::warn!("could not rebuild the database: {e}"),
     }
 }
@@ -374,8 +513,15 @@ fn scrub(conn: &Connection) {
 /// keyring can't delete anything.
 pub async fn forget(st: &AppState, source_id: i64) {
     uncache(source_id);
-    let Ok(profile) = profile_id(&st.db.write()) else { return };
-    if let Err(e) = timed(Unlock::Prompt, backend::delete(&profile, Entry::Source(source_id), Unlock::Prompt)).await {
+    let Ok(profile) = profile_id(&st.db.write()) else {
+        return;
+    };
+    if let Err(e) = timed(
+        Unlock::Prompt,
+        backend::delete(&profile, Entry::Source(source_id), Unlock::Prompt),
+    )
+    .await
+    {
         log::warn!("keyring: could not delete the entry of source {source_id}: {e}");
     }
 }
@@ -388,17 +534,19 @@ fn flag(name: &str) -> String {
 }
 
 fn setting(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| r.get::<_, String>(0))
-        .optional()
-        .ok()
-        .flatten()
-        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
-        .and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s),
-            serde_json::Value::Bool(true) => Some("true".into()),
-            _ => None,
-        })
-        .filter(|v| !v.trim().is_empty())
+    conn.query_row("SELECT value FROM setting WHERE key = ?1", [key], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+    .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+    .and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Bool(true) => Some("true".into()),
+        _ => None,
+    })
+    .filter(|v| !v.trim().is_empty())
 }
 
 /// Is the `NAMED` secret stored (keyring or database)?
@@ -417,7 +565,10 @@ pub fn named(conn: &Connection, name: &str) -> Option<String> {
 }
 
 fn label_of(name: &str) -> &'static str {
-    NAMED.iter().find(|(k, _)| *k == name).map_or("secret", |(_, l)| l)
+    NAMED
+        .iter()
+        .find(|(k, _)| *k == name)
+        .map_or("secret", |(_, l)| l)
 }
 
 /// Stores a `NAMED` secret: in the keyring (the database keeps no copy), or
@@ -426,9 +577,16 @@ fn label_of(name: &str) -> &'static str {
 pub async fn store_named(st: &AppState, name: &str, secret: &str, unlock: Unlock) -> Result<bool> {
     let profile = profile_id(&st.db.write())?;
     let label = format!("testpattern: {}", label_of(name));
-    match timed(unlock, backend::store(&profile, Entry::Named(name), &label, secret, unlock)).await {
+    match timed(
+        unlock,
+        backend::store(&profile, Entry::Named(name), &label, secret, unlock),
+    )
+    .await
+    {
         Ok(true) => {
-            NAMED_CACHE.lock().insert(name.to_owned(), secret.to_owned());
+            NAMED_CACHE
+                .lock()
+                .insert(name.to_owned(), secret.to_owned());
             clear_plaintext_setting(&st.db.write(), name)?;
             Ok(true)
         }
@@ -460,8 +618,15 @@ pub fn forget_named(st: &AppState, name: &str) -> Result<()> {
     NAMED_CACHE.lock().remove(name);
     let (st, name) = (st.clone(), name.to_owned());
     tauri::async_runtime::spawn(async move {
-        let Ok(profile) = profile_id(&st.db.write()) else { return };
-        if let Err(e) = timed(Unlock::Prompt, backend::delete(&profile, Entry::Named(&name), Unlock::Prompt)).await {
+        let Ok(profile) = profile_id(&st.db.write()) else {
+            return;
+        };
+        if let Err(e) = timed(
+            Unlock::Prompt,
+            backend::delete(&profile, Entry::Named(&name), Unlock::Prompt),
+        )
+        .await
+        {
             log::warn!("keyring: could not delete {name}: {e}");
         }
     });
@@ -472,9 +637,14 @@ pub fn forget_named(st: &AppState, name: &str) -> Result<()> {
 /// truncated) and marks it as living in the keyring.
 fn clear_plaintext_setting(conn: &Connection, name: &str) -> Result<()> {
     conn.query_row("PRAGMA secure_delete = ON", [], |_| Ok(()))?;
-    let done = conn.execute("DELETE FROM setting WHERE key = ?1", [name]).and_then(|_| {
-        conn.execute("INSERT OR REPLACE INTO setting (key, value) VALUES (?1, 'true')", [flag(name)])
-    });
+    let done = conn
+        .execute("DELETE FROM setting WHERE key = ?1", [name])
+        .and_then(|_| {
+            conn.execute(
+                "INSERT OR REPLACE INTO setting (key, value) VALUES (?1, 'true')",
+                [flag(name)],
+            )
+        });
     conn.query_row("PRAGMA secure_delete = OFF", [], |_| Ok(()))?;
     done?;
     conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
@@ -488,17 +658,23 @@ pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
     let (profile, missing) = {
         let conn = st.db.write();
         let ids: Vec<i64> = conn
-            .prepare("SELECT id FROM source WHERE password_in_keyring = 1 AND (?1 IS NULL OR id = ?1)")
+            .prepare(
+                "SELECT id FROM source WHERE password_in_keyring = 1 AND (?1 IS NULL OR id = ?1)",
+            )
             .and_then(|mut s| s.query_map([only], |r| r.get(0))?.collect())
             .unwrap_or_default();
-        let mut missing: Vec<Entry<'static>> =
-            ids.into_iter().filter(|id| cached(*id).is_none()).map(Entry::Source).collect();
+        let mut missing: Vec<Entry<'static>> = ids
+            .into_iter()
+            .filter(|id| cached(*id).is_none())
+            .map(Entry::Source)
+            .collect();
         if only.is_none() {
             missing.extend(
                 NAMED
                     .iter()
                     .filter(|(name, _)| {
-                        setting(&conn, &flag(name)).is_some() && !NAMED_CACHE.lock().contains_key(*name)
+                        setting(&conn, &flag(name)).is_some()
+                            && !NAMED_CACHE.lock().contains_key(*name)
                     })
                     .map(|(name, _)| Entry::Named(name)),
             );
@@ -506,12 +682,17 @@ pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
         if missing.is_empty() {
             return;
         }
-        let Ok(profile) = profile_id(&conn) else { return };
+        let Ok(profile) = profile_id(&conn) else {
+            return;
+        };
         (profile, missing)
     };
     let mut unlock = unlock;
     for entry in missing {
-        match (timed(unlock, backend::load(&profile, entry, unlock)).await, entry) {
+        match (
+            timed(unlock, backend::load(&profile, entry, unlock)).await,
+            entry,
+        ) {
             (Ok(Some(secret)), Entry::Source(id)) => remember(id, &secret),
             (Ok(Some(secret)), Entry::Named(name)) => {
                 NAMED_CACHE.lock().insert(name.to_owned(), secret);
@@ -548,11 +729,19 @@ pub async fn startup(st: &AppState) {
         moved += 1;
     }
     for (name, _) in NAMED {
-        let plain = setting(&st.db.read(), name).filter(|_| setting(&st.db.read(), &flag(name)).is_none());
+        let plain =
+            setting(&st.db.read(), name).filter(|_| setting(&st.db.read(), &flag(name)).is_none());
         if blocked || plain.is_none() {
             continue;
         }
-        match store_named(st, name, plain.as_deref().unwrap_or_default().trim(), Unlock::Never).await {
+        match store_named(
+            st,
+            name,
+            plain.as_deref().unwrap_or_default().trim(),
+            Unlock::Never,
+        )
+        .await
+        {
             Ok(true) => {
                 log::info!("{name}: moved to the system keyring");
                 moved += 1;
@@ -586,110 +775,137 @@ mod tests {
     #[ignore]
     async fn keyring_probe() {
         use secret_service::{EncryptionType, SecretService};
-        let ss = SecretService::connect(EncryptionType::Dh).await.expect("encrypted session");
-        let default = ss.get_default_collection().await.expect("default collection");
-        println!("default collection {:?}, locked: {:?}", default.get_label().await, default.is_locked().await);
+        let ss = SecretService::connect(EncryptionType::Dh)
+            .await
+            .expect("encrypted session");
+        let default = ss
+            .get_default_collection()
+            .await
+            .expect("default collection");
+        println!(
+            "default collection {:?}, locked: {:?}",
+            default.get_label().await,
+            default.is_locked().await
+        );
     }
 
-    /// Throwaway-keychain roundtrip for the macOS backend:
-    /// `TP_TEST_KEYCHAIN=/tmp/tp-test-keychain.$$.keychain-db cargo test --lib -- --ignored macos_keychain_roundtrip --exact --nocapture`
+    /// Throwaway-keychain roundtrip for the macOS backend — runs the real
+    /// backend functions against TP_KEYCHAIN (lock-keychain etc. likewise
+    /// go through `run`):
+    /// `TP_KEYCHAIN=/tmp/tp-test-keychain.$$.keychain-db cargo test --lib -- --ignored macos_keychain_roundtrip --exact --nocapture`
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore]
     fn macos_keychain_roundtrip() {
-        use std::process::Command;
-        let kc = std::env::var("TP_TEST_KEYCHAIN").expect("TP_TEST_KEYCHAIN (throwaway keychain path)");
-        assert!(kc.starts_with("/tmp/tp-test-keychain."), "refusing anything but a throwaway keychain: {kc}");
+        let kc = std::env::var("TP_KEYCHAIN").expect("TP_KEYCHAIN (throwaway keychain path)");
+        assert!(
+            kc.starts_with("/tmp/tp-test-keychain."),
+            "refusing anything but a throwaway keychain: {kc}"
+        );
 
-        let profile = "testprofile";
-        let label = "testpattern: roundtrip";
-        let pw = "s3cr3t-value";
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            use backend::{delete, load, run, store};
+            let profile = "testprofile";
+            let label = "testpattern: roundtrip";
+            let entry = Entry::Source(4242);
+            // backslashes and quotes must round-trip verbatim via `-w`
+            let pw = "s3cr3t-\\with\"funny\"chars";
 
-        // The same argument vector the backend builds in store()/load()/delete().
-        let attrs = |with_label: bool| -> Vec<String> {
-            let mut v = vec![
-                "-s".to_string(),
-                "testpattern".to_string(),
-                "-a".to_string(),
-                format!("{profile}:4242"),
-                "-j".to_string(),
-                "source".to_string(),
-            ];
-            if with_label {
-                v.push("-l".to_string());
-                v.push(label.to_string());
-            }
-            v
-        };
-        let sec = |args: Vec<String>, stdin: Option<&str>| -> (bool, String) {
-            let mut cmd = Command::new("/usr/bin/security");
-            cmd.args(&args).arg(&kc); // keychain path is a positional arg, not -k
-            if stdin.is_some() {
-                cmd.stdin(std::process::Stdio::piped());
-            }
-            cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-            let mut child = cmd.spawn().expect("spawn security");
-            if let Some(s) = stdin {
-                use std::io::Write;
-                child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
-            }
-            let out = child.wait_with_output().expect("wait security");
-            (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
-        };
-        let find = || -> (bool, String) {
-            let mut args = vec!["find-generic-password".to_string()];
-            args.extend(attrs(false));
-            args.push("-g".to_string());
-            sec(args, None)
-        };
+            // store -> load == value
+            assert!(matches!(
+                store(profile, entry, label, pw, Unlock::Never).await,
+                Ok(true)
+            ));
+            assert_eq!(
+                load(profile, entry, Unlock::Never)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(pw)
+            );
 
-        // set -> get == value
-        let mut add = vec!["add-generic-password".to_string(), "-U".to_string()];
-        add.extend(attrs(true));
-        add.push("-w".to_string());
-        add.push(pw.to_string());
-        assert!(sec(add, None).0, "add failed");
-        let (ok, err) = find();
-        assert!(ok, "find failed: {err}");
-        assert!(err.contains(&format!("password: \"{pw}\"")), "wrong value: {err}");
+            // storing again updates in place
+            let pw2 = "updated-\\value";
+            assert!(matches!(
+                store(profile, entry, label, pw2, Unlock::Never).await,
+                Ok(true)
+            ));
+            assert_eq!(
+                load(profile, entry, Unlock::Never)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(pw2)
+            );
 
-        // set same label again updates in place
-        let pw2 = "updated-value";
-        let mut add2 = vec!["add-generic-password".to_string(), "-U".to_string()];
-        add2.extend(attrs(true));
-        add2.push("-w".to_string());
-        add2.push(pw2.to_string());
-        assert!(sec(add2, None).0, "update failed");
-        let (ok, err) = find();
-        assert!(ok && err.contains(&format!("password: \"{pw2}\"")), "update not in place: {err}");
+            // an entry that was never stored loads as None
+            assert!(matches!(
+                load(profile, Entry::Source(9999), Unlock::Never).await,
+                Ok(None)
+            ));
 
-        // delete -> get fails
-        let mut del = vec!["delete-generic-password".to_string()];
-        del.extend(attrs(false));
-        assert!(sec(del, None).0, "delete failed");
-        let (ok, err) = find();
-        assert!(!ok && err.contains("could not be found"), "get after delete: ok={ok} err={err}");
+            // delete -> load is None
+            delete(profile, entry, Unlock::Never).await.unwrap();
+            assert!(matches!(
+                load(profile, entry, Unlock::Never).await,
+                Ok(None)
+            ));
 
-        // re-add, then lock -> set/get fail until unlocked
-        let mut add3 = vec!["add-generic-password".to_string(), "-U".to_string()];
-        add3.extend(attrs(true));
-        add3.push("-w".to_string());
-        add3.push(pw.to_string());
-        assert!(sec(add3, None).0, "re-add failed");
-        assert!(sec(vec!["lock-keychain".to_string()], None).0, "lock failed");
-        let (ok, err) = find();
-        assert!(!ok, "get on locked keychain succeeded: {err}");
-        eprintln!("locked find stderr: {err:?}");
-        let mut add4 = vec!["add-generic-password".to_string(), "-U".to_string()];
-        add4.extend(attrs(true));
-        add4.push("-w".to_string());
-        add4.push(pw.to_string());
-        let (ok, err) = sec(add4, None);
-        assert!(!ok, "set on locked keychain succeeded: {err}");
-        let pw_arg = std::env::var("TP_TEST_KEYCHAIN_PASSWORD").expect("TP_TEST_KEYCHAIN_PASSWORD");
-        assert!(sec(vec!["unlock-keychain".to_string(), "-p".to_string(), pw_arg], None).0, "unlock failed");
-        let (ok, err) = find();
-        assert!(ok && err.contains(&format!("password: \"{pw}\"")), "get after unlock: {err}");
+            // re-add, lock -> store(Never) is Ok(false), load a locked Err;
+            // load(Prompt) tries unlock-keychain once and still gets the
+            // locked marker (the throwaway keychain's unlock needs -p)
+            assert!(matches!(
+                store(profile, entry, label, pw, Unlock::Never).await,
+                Ok(true)
+            ));
+            assert!(matches!(run(vec!["lock-keychain".into()]), Ok(true)));
+            assert!(matches!(
+                store(profile, entry, label, "x", Unlock::Never).await,
+                Ok(false)
+            ));
+            let e = load(profile, entry, Unlock::Never).await.unwrap_err();
+            assert!(e.to_string().contains("locked"), "{e}");
+            let e = load(profile, entry, Unlock::Prompt).await.unwrap_err();
+            assert!(e.to_string().contains("locked"), "{e}");
+            eprintln!("locked load error: {e}");
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_locked_marker_classification() {
+        use backend::is_locked;
+        // the real "locked, no prompting" message of the login keychain
+        assert!(is_locked(
+            Some(1),
+            "security: SecKeychainSearchCopyNext: user interaction is not allowed."
+        ));
+        // a locked keychain reported in so many words
+        assert!(is_locked(Some(1), "The keychain is locked."));
+        // throwaway keychains / non-interactive sessions: bare exit 128
+        assert!(is_locked(Some(128), ""));
+        assert!(is_locked(Some(128), "  \n"));
+        // other failures are not "locked"
+        assert!(!is_locked(
+            Some(1),
+            "The specified item could not be found in the keychain."
+        ));
+        assert!(!is_locked(Some(1), "security: unable to open keychain"));
+        assert!(!is_locked(Some(2), "usage: security ..."));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn w_output_parsing_keeps_the_secret_verbatim() {
+        use backend::parse_w;
+        assert_eq!(parse_w(b"s3cr3t\n"), "s3cr3t"); // -w adds one newline
+        assert_eq!(parse_w(b""), "");
+        // no quoting, no unescaping: backslashes, quotes, inner newlines
+        assert_eq!(parse_w(b"a\\b\"c\n"), "a\\b\"c");
+        assert_eq!(parse_w(b"line1\nline2\n"), "line1\nline2");
+        // from_utf8_lossy: odd bytes never fail the load
+        assert_eq!(parse_w(b"a\xff\n"), "a\u{fffd}");
     }
 
     #[test]
@@ -697,12 +913,23 @@ mod tests {
         let c = crate::db::test_conn();
         let name = "test.secret";
         assert!(!named_configured(&c, name));
-        c.execute("INSERT INTO setting (key, value) VALUES (?1, '\"abc123\"')", [name]).unwrap();
+        c.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, '\"abc123\"')",
+            [name],
+        )
+        .unwrap();
         assert!(named_configured(&c, name));
         assert_eq!(named(&c, name).as_deref(), Some("abc123"));
         clear_plaintext_setting(&c, name).unwrap();
-        assert!(named_configured(&c, name), "still configured: it lives in the keyring");
-        assert_eq!(named(&c, name), None, "not loaded from the keyring yet (locked)");
+        assert!(
+            named_configured(&c, name),
+            "still configured: it lives in the keyring"
+        );
+        assert_eq!(
+            named(&c, name),
+            None,
+            "not loaded from the keyring yet (locked)"
+        );
         NAMED_CACHE.lock().insert(name.to_owned(), "abc123".into());
         assert_eq!(named(&c, name).as_deref(), Some("abc123"));
         NAMED_CACHE.lock().remove(name);
@@ -714,7 +941,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("library.db");
         let db = crate::db::Db::open(&path).unwrap();
-        let (old, new) = (format!("old-{}", "5e2a7c91".repeat(10)), format!("new-{}", "b04f13d6".repeat(12)));
+        let (old, new) = (
+            format!("old-{}", "5e2a7c91".repeat(10)),
+            format!("new-{}", "b04f13d6".repeat(12)),
+        );
         {
             let conn = db.write();
             let set = |v: &str| {
@@ -727,9 +957,14 @@ mod tests {
             };
             set(&old);
             // settings saved later sit in front of it on the page
-            conn.execute("INSERT INTO setting (key, value) VALUES ('ui.zzz', '1')", []).unwrap();
+            conn.execute(
+                "INSERT INTO setting (key, value) VALUES ('ui.zzz', '1')",
+                [],
+            )
+            .unwrap();
             set(&new); // the user entered another key
-            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+                .unwrap();
             clear_plaintext_setting(&conn, "test.secret").unwrap();
             scrub(&conn);
             assert!(named_configured(&conn, "test.secret"));
@@ -738,7 +973,10 @@ mod tests {
         bytes.extend(std::fs::read(dir.join("library.db-wal")).unwrap_or_default());
         for secret in [&old, &new] {
             let piece = &secret.as_bytes()[20..40];
-            assert!(!bytes.windows(piece.len()).any(|w| w == piece), "plaintext still on disk");
+            assert!(
+                !bytes.windows(piece.len()).any(|w| w == piece),
+                "plaintext still on disk"
+            );
         }
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
@@ -765,22 +1003,31 @@ mod tests {
             conn.execute("INSERT INTO source (kind, name, url, created_at) VALUES ('m3u', 'm', 'http://m', 0)", [])
                 .unwrap();
             // what syncs do over time: rewrite the row at another size
-            conn.execute("UPDATE source SET account_json = ?2 WHERE id = ?1", rusqlite::params![id, "{}".repeat(150)])
+            conn.execute(
+                "UPDATE source SET account_json = ?2 WHERE id = ?1",
+                rusqlite::params![id, "{}".repeat(150)],
+            )
+            .unwrap();
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
                 .unwrap();
-            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
             clear_plaintext(&conn, id).unwrap();
             scrub(&conn);
             let (pw, flag): (Option<String>, bool) = conn
-                .query_row("SELECT password, password_in_keyring FROM source WHERE id = ?1", [id], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
+                .query_row(
+                    "SELECT password, password_in_keyring FROM source WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
                 .unwrap();
             assert_eq!((pw, flag), (None, true));
         }
         let mut bytes = std::fs::read(&path).unwrap();
         bytes.extend(std::fs::read(dir.join("library.db-wal")).unwrap_or_default());
         let piece = &secret.as_bytes()[40..60];
-        assert!(!bytes.windows(piece.len()).any(|w| w == piece), "plaintext still on disk");
+        assert!(
+            !bytes.windows(piece.len()).any(|w| w == piece),
+            "plaintext still on disk"
+        );
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }

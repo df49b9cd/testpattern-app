@@ -16,10 +16,10 @@ public final class MpvOpenGLView: NSOpenGLView {
   private static var renderFn: RenderFn?
 
   public override func draw(_ dirtyRect: NSRect) {
-    guard let ctx = openGLContext else { return }
-    ctx.makeCurrentContext()
-    let cgl = ctx.cglContextObj!
+    guard let ctx = openGLContext, let cgl = ctx.cglContextObj else { return }
+    // Apple's documented order: lock, make current, render, flush, unlock.
     CGLLockContext(cgl)
+    ctx.makeCurrentContext()
     if let render = MpvOpenGLView.renderFn {
       render(Unmanaged.passUnretained(self).toOpaque())
     } else {

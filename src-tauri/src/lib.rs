@@ -28,8 +28,10 @@ const CATALOG_MAX_AGE: i64 = 12 * 3600;
 const EPG_MAX_AGE: i64 = 6 * 3600;
 
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,testpattern_lib=debug"))
-        .init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,testpattern_lib=debug"),
+    )
+    .init();
 
     tauri::Builder::default()
         // must be first: a second launch just focuses the running window
@@ -178,9 +180,18 @@ fn dev_hooks(app: &mut tauri::App) {
             let _ = p.mpv().set_string("ao", &ao);
         }
     }
-    if let (Ok(url), Some(p)) = (std::env::var("TP_DEV_AUTOPLAY_URL"), app.try_state::<player::Player>()) {
+    if let (Ok(url), Some(p)) = (
+        std::env::var("TP_DEV_AUTOPLAY_URL"),
+        app.try_state::<player::Player>(),
+    ) {
         let live = !url.contains("/movie/") && !url.contains("/series/");
-        if let Err(e) = p.load(&url, player::LoadOptions { live, ..Default::default() }) {
+        if let Err(e) = p.load(
+            &url,
+            player::LoadOptions {
+                live,
+                ..Default::default()
+            },
+        ) {
             log::error!("dev autoplay: {e}");
         }
     }

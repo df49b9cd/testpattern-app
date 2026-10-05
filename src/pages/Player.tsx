@@ -32,7 +32,7 @@ import { inTauri } from "../lib/bridge";
 import { clock, elapsed, hhmm, nowUnix } from "../lib/format";
 import { channelNowPlaying, playEpisode } from "../lib/play";
 import type { Channel, Episode, Track } from "../lib/types";
-import { usePlayer, setSubsEnabled } from "../stores/player";
+import { usePlayer, setSubsEnabled, subKeyAction, subKeyHint } from "../stores/player";
 import { queryClient } from "../lib/queryClient";
 import { ChannelLogo } from "../components/media";
 import { Badge, Button, IconButton, LiveDot, ProgressBar } from "../components/ui";
@@ -78,15 +78,22 @@ export function PlayerPage() {
   const hideTimer = useRef(0);
   const digitTimer = useRef(0);
 
-  // PL-100: mpv picked a subtitle track (slang) but subs are hidden — tell the
-  // first-run user once how to turn them on instead of leaving them clueless
+  // PL-100: subtitles are persisted-off but a subtitle track is selected and
+  // hidden — tell the first-run user once how to bring them up instead of
+  // leaving them clueless. Baselines on the persisted setting so a user whose
+  // subs are on doesn't the hint during the start-up gap before mpv pushes
+  // sub-visibility.
   const sid = p.sid;
   const subVisible = p.subVisible;
   useEffect(() => {
+    const settings = queryClient.getQueryData<Record<string, unknown> | undefined>(["settings"]);
+    // only for users whose persisted setting is off — the gap between
+    // start-up and mpv's sub-visibility push must not fire the hint when
+    // subs are on
+    if (settings?.["player.subsEnabled"] !== false) return;
     if (typeof sid !== "number" || subVisible) return;
-    const seen = queryClient.getQueryData<Record<string, unknown>>(["settings"])?.["ui.subHintSeen"];
-    if (seen === true) return;
-    say("Subtitles are off — press S to turn them on");
+    if (settings?.["ui.subHintSeen"] === true) return;
+    say(subKeyHint(usePlayer.getState().props) === "cycle" ? "Subtitles are off — press S to switch" : "Subtitles are off — press S to turn them on");
     queryClient.setQueryData(["settings"], (cur: Record<string, unknown> | undefined) => ({ ...cur, "ui.subHintSeen": true }));
     void api.setSetting("ui.subHintSeen", true).catch(() => {});
   }, [sid, subVisible, say]);
@@ -177,7 +184,7 @@ export function PlayerPage() {
 
   const nudgeVolume = useCallback((delta: number) => {
     const st = usePlayer.getState();
-    void api.set("volume", Math.min(150, st.props.volume + delta)).then(() => {
+    void api.set("volume", Math.max(0, Math.min(150, st.props.volume + delta))).then(() => {
       // mpv applies async; read what it has a moment later so the chip shows
       // the real level, not the pre-clamp guess.
       window.setTimeout(() => {
@@ -252,9 +259,28 @@ export function PlayerPage() {
         else void exit();
       } else if (k === "a" || k === "A") void api.command("cycle", "audio");
       else if (k === "s" || k === "S") {
-        const on = !usePlayer.getState().props.subVisible;
-        setSubsEnabled(on);
-        say(on ? "Subtitles on" : "Subtitles off");
+        const action = subKeyAction(usePlayer.getState().props);
+        if (!action) {
+          handled = false;
+          return;
+        }
+        if ("cycle" in action) {
+          void api
+            .set("sid", action.cycle)
+            .then(() => {
+              if (action.cycle !== false) void setSubsEnabled(true).catch(() => {});
+              say(action.cycle === false ? "Subtitles off" : "Subtitles on");
+            })
+            .catch(() => {});
+        } else if (action.toggle) {
+          // turning on: only claim it when the write landed
+          void setSubsEnabled(true)
+            .then(() => say("Subtitles on"))
+            .catch(() => {});
+        } else {
+          void setSubsEnabled(false).catch(() => {});
+          say("Subtitles off");
+        }
       } else if (k === "i" || k === "I") setInfo((v) => !v);
       else if ((k === "r" || k === "R") && live) toggleRecord();
       else if (k === "p" || k === "P") void toPip();
@@ -696,15 +722,39 @@ function TrackMenu({ type, onDone }: { type: "audio" | "sub"; onDone: () => void
     void api.set(type === "audio" ? "aid" : "sid", v);
     // picking a track while subtitles are hidden must show it (PL-100);
     // "Off" persists the disabling so it survives the next session
-    if (type === "sub") setSubsEnabled(v !== "no");
+    if (type === "sub") void setSubsEnabled(v !== "no").catch(() => {});
+    onDone();
+  };
+  // turning visibility on with no track selected: select the first one so
+  // something actually shows (visibility and selection are separate in mpv)
+  const toggleVisible = () => {
+    const on = !subVisible;
+    void setSubsEnabled(on).catch(() => {});
+    if (on && (current === false || current === null) && tracks.length > 0) void api.set("sid", tracks[0].id);
     onDone();
   };
   return (
     <div className="flex flex-col">
       {type === "sub" && (
-        <MenuItem active={subVisible} onClick={() => { setSubsEnabled(!subVisible); onDone(); }} hint="S">
-          Subtitles on/off
-        </MenuItem>
+        // a switch, not the selection dot: visibility is independent of which
+        // track is active below
+        <button
+          onClick={toggleVisible}
+          role="switch"
+          aria-checked={subVisible}
+          className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-dim transition-colors hover:bg-white/[0.06] hover:text-fg"
+        >
+          <span className="min-w-0 flex-1 truncate">Subtitles</span>
+          <span className="shrink-0 text-xs text-faint">S</span>
+          <span className={clsx("relative inline-flex h-5 w-8 shrink-0 items-center rounded-full transition-colors", subVisible ? "bg-accent" : "bg-white/15")}>
+            <span
+              className={clsx(
+                "absolute top-0.5 size-4 rounded-full bg-white shadow transition-transform duration-200",
+                subVisible ? "translate-x-[14px]" : "translate-x-0.5",
+              )}
+            />
+          </span>
+        </button>
       )}
       {type === "sub" && <div className="mx-3 my-1 border-t border-white/[0.06]" />}
       {type === "sub" && (

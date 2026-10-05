@@ -102,14 +102,21 @@ pub fn load_tmdb_map(conn: &Connection) -> Result<HashMap<(String, String), Stri
         .prepare("SELECT kind, source_key, tmdb_id FROM tmdb_map WHERE tmdb_id != ''")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;
-    Ok(rows.into_iter().map(|(kind, key, id)| ((kind, key), id)).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(kind, key, id)| ((kind, key), id))
+        .collect())
 }
 
 /// The mapped TMDB id of a search-matched work key ('title:*' | 'item:*').
 #[cfg(test)]
 pub fn tmdb_id_of(conn: &Connection, key: &str) -> Result<Option<String>> {
     Ok(conn
-        .query_row("SELECT tmdb_id FROM tmdb_map WHERE source_key = ?1", [key], |r| r.get::<_, String>(0))
+        .query_row(
+            "SELECT tmdb_id FROM tmdb_map WHERE source_key = ?1",
+            [key],
+            |r| r.get::<_, String>(0),
+        )
         .ok()
         .filter(|id| !id.is_empty()))
 }
@@ -154,7 +161,10 @@ fn assign_keys(members: &[Member]) -> Vec<String> {
     let mut by_title_year: HashMap<(String, i64), BTreeSet<String>> = HashMap::new();
     for m in members {
         if let (Some(t), Some(y)) = (valid_tmdb(m.tmdb.as_deref()), m.year) {
-            by_title_year.entry((norm_title(&m.title), y)).or_default().insert(format!("tmdb:{t}"));
+            by_title_year
+                .entry((norm_title(&m.title), y))
+                .or_default()
+                .insert(format!("tmdb:{t}"));
         }
     }
     members
@@ -175,19 +185,30 @@ fn assign_keys(members: &[Member]) -> Vec<String> {
         .collect()
 }
 
-fn most_common<T: Eq + std::hash::Hash + Clone>(items: impl Iterator<Item = (T, i64)>) -> Option<T> {
+fn most_common<T: Eq + std::hash::Hash + Clone>(
+    items: impl Iterator<Item = (T, i64)>,
+) -> Option<T> {
     let mut counts: HashMap<T, (i64, usize)> = HashMap::new();
     for (i, (item, w)) in items.enumerate() {
         let e = counts.entry(item).or_insert((0, i));
         e.0 += w;
     }
-    counts.into_iter().max_by(|a, b| a.1.0.cmp(&b.1.0).then(b.1.1.cmp(&a.1.1))).map(|(k, _)| k)
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.0.cmp(&b.1.0).then(b.1.1.cmp(&a.1.1)))
+        .map(|(k, _)| k)
 }
 
 fn load_members(conn: &Connection, kind: &str) -> Result<Vec<Member>> {
     let (table, art, backdrop, genre, added) = match kind {
         "movie" => ("movie", "x.poster", "NULL", "NULL", "x.added"),
-        _ => ("series", "x.cover", "x.backdrop", "x.genre", "x.last_modified"),
+        _ => (
+            "series",
+            "x.cover",
+            "x.backdrop",
+            "x.genre",
+            "x.last_modified",
+        ),
     };
     let sql = format!(
         "SELECT x.source_id, x.id, x.title, x.year, x.tmdb, x.tag, k.name, x.category_id, {art}, {backdrop},
@@ -234,16 +255,27 @@ fn load_tmdb(conn: &Connection, kind: &str) -> Result<HashMap<String, crate::tmd
         .prepare("SELECT id, json FROM tmdb WHERE kind = ?1 AND json IS NOT NULL")?
         .query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?;
-    Ok(rows.into_iter().filter_map(|(id, j)| serde_json::from_str(&j).ok().map(|i| (id, i))).collect())
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, j)| serde_json::from_str(&j).ok().map(|i| (id, i)))
+        .collect())
 }
 
 /// Is TMDB's title the one the provider means? Providers sometimes attach
 /// another title's id (a show's id to a movie): the title or the year must fit.
 pub fn tmdb_fits(info: &crate::tmdb::Info, titles: &[&str], year: Option<i64>) -> bool {
-    let names: Vec<String> =
-        [Some(info.title.as_str()), info.original_title.as_deref()].into_iter().flatten().map(norm_title).collect();
+    let names: Vec<String> = [Some(info.title.as_str()), info.original_title.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(norm_title)
+        .collect();
     let title_fits = titles.iter().map(|t| norm_title(t)).any(|t| {
-        names.iter().any(|n| *n == t || (t.len() >= 6 && n.len() >= 6 && (n.contains(t.as_str()) || t.contains(n.as_str()))))
+        names.iter().any(|n| {
+            *n == t
+                || (t.len() >= 6
+                    && n.len() >= 6
+                    && (n.contains(t.as_str()) || t.contains(n.as_str())))
+        })
     });
     let year_fits = matches!((year, info.year), (Some(a), Some(b)) if (a - b).abs() <= 1);
     title_fits || year_fits
@@ -255,15 +287,40 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
     let table = if kind == "movie" { "movie" } else { "series" };
     let tmdb = load_tmdb(conn, kind)?;
     // titles identified by search (tmdb.rs) join the TMDB group the search
-    // found; `tmdb_fits` below still guards the group against bad matches
+    // found — but only when TMDB's stored data actually fits the members, or
+    // a wrong match would infect the whole group assign_keys merged, and a
+    // NULL-json row ("not on TMDB") would hide the provider metadata; tmdb is
+    // pre-filtered to json IS NOT NULL, so a miss means: don't remap
     let search = tmdb_kind(kind);
     let mapped = load_tmdb_map(conn)?;
-    for k in &mut keys {
-        if !(k.starts_with("title:") || k.starts_with("item:")) {
-            continue;
+    let remap: HashMap<String, String> = {
+        let mut by_key: HashMap<&str, Vec<&Member>> = HashMap::new();
+        for (m, k) in members.iter().zip(&keys) {
+            by_key.entry(k.as_str()).or_default().push(m);
         }
-        if let Some(id) = mapped.get(&(search.to_owned(), k.clone())) {
-            *k = format!("tmdb:{id}");
+        let mut remap = HashMap::new();
+        for (k, ms) in by_key {
+            if !(k.starts_with("title:") || k.starts_with("item:")) {
+                continue;
+            }
+            let fits = mapped
+                .get(&(search.to_owned(), k.to_owned()))
+                .and_then(|id| tmdb.get(id))
+                .is_some_and(|info| {
+                    let titles: Vec<&str> = ms.iter().map(|m| m.title.as_str()).collect();
+                    let year = most_common(ms.iter().filter_map(|m| m.year.map(|y| (y, 1))));
+                    tmdb_fits(info, &titles, year)
+                });
+            if fits {
+                let id = mapped[&(search.to_owned(), k.to_owned())].clone();
+                remap.insert(k.to_owned(), format!("tmdb:{id}"));
+            }
+        }
+        remap
+    };
+    for k in &mut keys {
+        if let Some(new) = remap.get(k) {
+            *k = new.clone();
         }
     }
 
@@ -280,7 +337,9 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
     conn.execute("DELETE FROM work WHERE kind = ?1", [kind])?;
     conn.execute("DELETE FROM work_facet WHERE kind = ?1", [kind])?;
     {
-        let mut set_key = conn.prepare(&format!("UPDATE {table} SET work_key = ?3 WHERE source_id = ?1 AND id = ?2"))?;
+        let mut set_key = conn.prepare(&format!(
+            "UPDATE {table} SET work_key = ?3 WHERE source_id = ?1 AND id = ?2"
+        ))?;
         for (m, k) in members.iter().zip(&keys) {
             set_key.execute(params![m.source_id, m.id, k])?;
         }
@@ -290,8 +349,9 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
                            adult, source_id, item_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
     )?;
-    let mut insert_facet =
-        conn.prepare("INSERT OR IGNORE INTO work_facet (kind, facet, value, key) VALUES (?1, ?2, ?3, ?4)")?;
+    let mut insert_facet = conn.prepare(
+        "INSERT OR IGNORE INTO work_facet (kind, facet, value, key) VALUES (?1, ?2, ?3, ?4)",
+    )?;
 
     for key in &order {
         let ms = &groups[key];
@@ -301,7 +361,8 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
             .max_by_key(|m| (m.weight(), m.poster.is_some() as i64, m.added.unwrap_or(0)))
             .copied()
             .unwrap();
-        let title = most_common(ms.iter().map(|m| (m.title.clone(), m.weight().max(1)))).unwrap_or_else(|| rep.title.clone());
+        let title = most_common(ms.iter().map(|m| (m.title.clone(), m.weight().max(1))))
+            .unwrap_or_else(|| rep.title.clone());
         let year = most_common(ms.iter().filter_map(|m| m.year.map(|y| (y, 1))));
         let by_weight = |f: &dyn Fn(&Member) -> Option<String>| -> Option<String> {
             let mut best: Option<(i64, String)> = None;
@@ -316,20 +377,34 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
         };
         let mut poster = by_weight(&|m| m.poster.clone());
         let mut backdrop = by_weight(&|m| m.backdrop.clone());
-        let mut rating = ms.iter().filter_map(|m| m.rating).fold(None, |a: Option<f64>, r| Some(a.map_or(r, |a| a.max(r))));
+        let mut rating = ms
+            .iter()
+            .filter_map(|m| m.rating)
+            .fold(None, |a: Option<f64>, r| Some(a.map_or(r, |a| a.max(r))));
         let mut year = year;
-        let info = key.strip_prefix("tmdb:").and_then(|id| tmdb.get(id)).filter(|i| {
-            let titles: Vec<&str> = ms.iter().map(|m| m.title.as_str()).collect();
-            tmdb_fits(i, &titles, year)
-        });
+        let info = key
+            .strip_prefix("tmdb:")
+            .and_then(|id| tmdb.get(id))
+            .filter(|i| {
+                let titles: Vec<&str> = ms.iter().map(|m| m.title.as_str()).collect();
+                tmdb_fits(i, &titles, year)
+            });
         if let Some(i) = info {
             // the provider's own data wins; TMDB fills the gaps
             year = year.or(i.year);
             if rating.is_none_or(|r| r <= 0.0) && i.votes >= 20 {
                 rating = i.rating;
             }
-            poster = poster.or_else(|| i.poster.as_ref().map(|p| format!("{}/w500{p}", crate::tmdb::IMAGES)));
-            backdrop = backdrop.or_else(|| i.backdrop.as_ref().map(|p| format!("{}/w1280{p}", crate::tmdb::IMAGES)));
+            poster = poster.or_else(|| {
+                i.poster
+                    .as_ref()
+                    .map(|p| format!("{}/w500{p}", crate::tmdb::IMAGES))
+            });
+            backdrop = backdrop.or_else(|| {
+                i.backdrop
+                    .as_ref()
+                    .map(|p| format!("{}/w1280{p}", crate::tmdb::IMAGES))
+            });
         }
 
         let mut genres: Vec<&'static str> = Vec::new();
@@ -337,12 +412,22 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
         let mut languages: Vec<&'static str> = Vec::new();
         let mut quality: Vec<&'static str> = Vec::new();
         for m in ms {
-            for g in m.genre_text.as_deref().map(genre::from_text).unwrap_or_default() {
+            for g in m
+                .genre_text
+                .as_deref()
+                .map(genre::from_text)
+                .unwrap_or_default()
+            {
                 if !genres.contains(&g) {
                     genres.push(g);
                 }
             }
-            for g in m.category.as_deref().map(genre::from_category).unwrap_or_default() {
+            for g in m
+                .category
+                .as_deref()
+                .map(genre::from_category)
+                .unwrap_or_default()
+            {
                 if !genres.contains(&g) {
                     genres.push(g);
                 }
@@ -352,7 +437,10 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
             {
                 services.push(s);
             }
-            for l in [m.variant.language, m.variant.subtitles].into_iter().flatten() {
+            for l in [m.variant.language, m.variant.subtitles]
+                .into_iter()
+                .flatten()
+            {
                 if !languages.contains(&l) {
                     languages.push(l);
                 }
@@ -373,7 +461,12 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
                 }
             }
         }
-        genres.sort_by_key(|g| genre::GENRES.iter().position(|x| x == g).unwrap_or(usize::MAX));
+        genres.sort_by_key(|g| {
+            genre::GENRES
+                .iter()
+                .position(|x| x == g)
+                .unwrap_or(usize::MAX)
+        });
         let added = ms.iter().filter_map(|m| m.added).max();
         let adult = ms.iter().any(|m| m.adult);
 
@@ -394,7 +487,11 @@ fn rebuild_works(conn: &Connection, kind: &str) -> Result<usize> {
             rep.source_id,
             rep.id
         ])?;
-        let mut facet = |facet: &str, value: &str| insert_facet.execute(params![kind, facet, value, key]).map(|_| ());
+        let mut facet = |facet: &str, value: &str| {
+            insert_facet
+                .execute(params![kind, facet, value, key])
+                .map(|_| ())
+        };
         for g in &genres {
             facet("genre", g)?;
         }
@@ -462,7 +559,9 @@ pub fn channel_rank(badges: &str) -> i32 {
 /// ("V Sport Ultra UHD"); East/West feeds and "Sky Sports+" vs "Sky
 /// Sports" are not.
 pub fn channel_key(country: Option<&str>, title: &str) -> String {
-    const QUALITY: &[&str] = &["uhd", "fhd", "hd", "sd", "4k", "8k", "hevc", "h265", "raw", "50fps", "60fps"];
+    const QUALITY: &[&str] = &[
+        "uhd", "fhd", "hd", "sd", "4k", "8k", "hevc", "h265", "raw", "50fps", "60fps",
+    ];
     let norm = norm_title(&title.replace('+', " plus "));
     let mut t = String::new();
     let mut prev = "";
@@ -482,8 +581,14 @@ pub fn channel_variant_label(channel_badges: &str, category_badges: &str) -> Str
     const EXTRAS: &[&str] = &["VIP", "DOLBY AUDIO", "50FPS", "60FPS"];
     let own = crate::catalog::split_badges(channel_badges.to_owned());
     let cat = crate::catalog::split_badges(category_badges.to_owned());
-    let mut parts: Vec<String> =
-        if own.is_empty() { cat.iter().filter(|b| !EXTRAS.contains(&b.as_str())).cloned().collect() } else { own };
+    let mut parts: Vec<String> = if own.is_empty() {
+        cat.iter()
+            .filter(|b| !EXTRAS.contains(&b.as_str()))
+            .cloned()
+            .collect()
+    } else {
+        own
+    };
     for b in cat.iter().filter(|b| EXTRAS.contains(&b.as_str())) {
         if !parts.contains(b) {
             parts.push(b.clone());
@@ -494,8 +599,16 @@ pub fn channel_variant_label(channel_badges: &str, category_badges: &str) -> Str
         "50FPS" | "60FPS" => b.to_lowercase(),
         _ => b.to_owned(),
     };
-    let label = parts.iter().map(|b| nice(b)).collect::<Vec<_>>().join(" · ");
-    if label.is_empty() { "Standard".to_owned() } else { label }
+    let label = parts
+        .iter()
+        .map(|b| nice(b))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if label.is_empty() {
+        "Standard".to_owned()
+    } else {
+        label
+    }
 }
 
 fn rebuild_channel_groups(conn: &Connection) -> Result<usize> {
@@ -559,8 +672,12 @@ fn rebuild_channel_groups(conn: &Connection) -> Result<usize> {
         .collect::<Result<_, _>>()?;
 
     conn.execute("DELETE FROM channel_group", [])?;
-    conn.execute("UPDATE channel SET group_key = NULL WHERE separator = 1", [])?;
-    let mut set_key = conn.prepare("UPDATE channel SET group_key = ?3 WHERE source_id = ?1 AND id = ?2")?;
+    conn.execute(
+        "UPDATE channel SET group_key = NULL WHERE separator = 1",
+        [],
+    )?;
+    let mut set_key =
+        conn.prepare("UPDATE channel SET group_key = ?3 WHERE source_id = ?1 AND id = ?2")?;
     let mut insert = conn.prepare(
         "INSERT INTO channel_group (key, title, country, genre, logo, epg_id, variants, adult, position, source_id, item_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -575,19 +692,37 @@ fn rebuild_channel_groups(conn: &Connection) -> Result<usize> {
             .max_by_key(|c| (channel_rank(&c.badges), c.epg_id.is_some() as i32, -c.order))
             .copied()
             .unwrap();
-        let picked = prefs.get(key).and_then(|(sid, id)| cs.iter().find(|c| c.source_id == *sid && c.id == *id));
+        let picked = prefs
+            .get(key)
+            .and_then(|(sid, id)| cs.iter().find(|c| c.source_id == *sid && c.id == *id));
         let favorite = cs
             .iter()
-            .filter_map(|c| favorites.get(&(c.source_id, c.id.clone())).map(|at| (*at, c)))
+            .filter_map(|c| {
+                favorites
+                    .get(&(c.source_id, c.id.clone()))
+                    .map(|at| (*at, c))
+            })
             .max_by_key(|(at, _)| *at)
             .map(|(_, c)| c);
         let chosen = picked.or(favorite).copied().unwrap_or(best);
-        let title = most_common(cs.iter().map(|c| (c.title.clone(), 1))).unwrap_or_else(|| best.title.clone());
-        let category_genre =
-            most_common(cs.iter().filter_map(|c| c.category_title.as_deref().and_then(genre::live_from_category)).map(|g| (g, 1)));
+        let title = most_common(cs.iter().map(|c| (c.title.clone(), 1)))
+            .unwrap_or_else(|| best.title.clone());
+        let category_genre = most_common(
+            cs.iter()
+                .filter_map(|c| {
+                    c.category_title
+                        .as_deref()
+                        .and_then(genre::live_from_category)
+                })
+                .map(|g| (g, 1)),
+        );
         let genre = category_genre.unwrap_or_else(|| genre::live_from_title(&title));
         let epg_id = most_common(cs.iter().filter_map(|c| c.epg_id.clone()).map(|e| (e, 1)));
-        let logo = chosen.logo.clone().or_else(|| best.logo.clone()).or_else(|| cs.iter().find_map(|c| c.logo.clone()));
+        let logo = chosen
+            .logo
+            .clone()
+            .or_else(|| best.logo.clone())
+            .or_else(|| cs.iter().find_map(|c| c.logo.clone()));
         insert.execute(params![
             key,
             title,
@@ -617,14 +752,22 @@ pub fn rebuild(conn: &Connection) -> Result<()> {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [RULES_VERSION.to_string()],
     )?;
-    log::info!("grouped catalog: {movies} movies, {series} series, {channels} channels in {:?}", t.elapsed());
+    log::info!(
+        "grouped catalog: {movies} movies, {series} series, {channels} channels in {:?}",
+        t.elapsed()
+    );
     Ok(())
 }
 
 /// Startup: rebuild when the rules changed since the data was grouped.
 pub fn rebuild_if_stale(conn: &mut Connection) -> Result<()> {
-    let stored: Option<String> =
-        conn.query_row("SELECT value FROM setting WHERE key = 'works.rules'", [], |r| r.get(0)).ok();
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM setting WHERE key = 'works.rules'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
     if stored.as_deref().and_then(|v| v.parse::<i64>().ok()) == Some(RULES_VERSION) {
         return Ok(());
     }
@@ -642,13 +785,27 @@ mod tests {
     fn normalizes_titles_for_grouping() {
         assert_eq!(norm_title("Love & Anarchy"), "love and anarchy");
         assert_eq!(norm_title("Kärlek & Anarki"), "karlek and anarki");
-        assert_eq!(norm_title("DAHMER - Monster: The Jeffrey Dahmer Story"), "dahmer monster the jeffrey dahmer story");
-        assert_eq!(norm_title("Dahmer – Monster: The Jeffrey Dahmer Story"), "dahmer monster the jeffrey dahmer story");
+        assert_eq!(
+            norm_title("DAHMER - Monster: The Jeffrey Dahmer Story"),
+            "dahmer monster the jeffrey dahmer story"
+        );
+        assert_eq!(
+            norm_title("Dahmer – Monster: The Jeffrey Dahmer Story"),
+            "dahmer monster the jeffrey dahmer story"
+        );
         assert_eq!(norm_title("Børn"), "born");
         assert_eq!(norm_title("  WALL·E "), "wall e");
     }
 
-    fn insert_series(c: &Connection, id: &str, tag: &str, title: &str, year: Option<i64>, tmdb: Option<&str>, cat: &str) {
+    fn insert_series(
+        c: &Connection,
+        id: &str,
+        tag: &str,
+        title: &str,
+        year: Option<i64>,
+        tmdb: Option<&str>,
+        cat: &str,
+    ) {
         c.execute(
             "INSERT INTO series (source_id, id, name, title, tag, year, tmdb, category_id, genre, position)
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Drama / Kriminal', 0)",
@@ -659,7 +816,13 @@ mod tests {
 
     fn setup() -> Connection {
         let c = crate::db::test_conn();
-        for (id, name) in [("nf", "NETFLIX  SERIES"), ("ap", "APPLE+ SERIES"), ("ap4", "APPLE+ SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ"), ("sc", "NORDIC SERIES"), ("dk", "DANSK SERIE")] {
+        for (id, name) in [
+            ("nf", "NETFLIX  SERIES"),
+            ("ap", "APPLE+ SERIES"),
+            ("ap4", "APPLE+ SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ"),
+            ("sc", "NORDIC SERIES"),
+            ("dk", "DANSK SERIE"),
+        ] {
             c.execute(
                 "INSERT INTO category (source_id, kind, id, name, title, position) VALUES (1, 'series', ?1, ?2, ?2, 0)",
                 params![id, name],
@@ -672,12 +835,52 @@ mod tests {
     #[test]
     fn copies_of_a_show_become_one_work() {
         let c = setup();
-        insert_series(&c, "1", "NF", "For All Mankind", Some(2019), Some("87917"), "nf");
-        insert_series(&c, "2", "A+", "For All Mankind", Some(2019), Some("87917"), "ap");
-        insert_series(&c, "3", "4K-A+", "For All Mankind", Some(2019), Some("87917"), "ap4");
+        insert_series(
+            &c,
+            "1",
+            "NF",
+            "For All Mankind",
+            Some(2019),
+            Some("87917"),
+            "nf",
+        );
+        insert_series(
+            &c,
+            "2",
+            "A+",
+            "For All Mankind",
+            Some(2019),
+            Some("87917"),
+            "ap",
+        );
+        insert_series(
+            &c,
+            "3",
+            "4K-A+",
+            "For All Mankind",
+            Some(2019),
+            Some("87917"),
+            "ap4",
+        );
         insert_series(&c, "4", "SC", "For All Mankind", Some(2019), None, "sc"); // no id: joins by title + year
-        insert_series(&c, "5", "DK", "Kastanjemanden", Some(2021), Some("127865"), "dk");
-        insert_series(&c, "6", "NF", "The Chestnut Man", Some(2021), Some("127865"), "nf");
+        insert_series(
+            &c,
+            "5",
+            "DK",
+            "Kastanjemanden",
+            Some(2021),
+            Some("127865"),
+            "dk",
+        );
+        insert_series(
+            &c,
+            "6",
+            "NF",
+            "The Chestnut Man",
+            Some(2021),
+            Some("127865"),
+            "nf",
+        );
         insert_series(&c, "7", "SC", "Weekly Show", None, None, "sc");
         insert_series(&c, "8", "SC", "Weekly Show", None, None, "sc"); // no id, no year: stays apart
         rebuild(&c).unwrap();
@@ -692,13 +895,25 @@ mod tests {
         assert_eq!(works.len(), 4);
         assert_eq!(
             works[0],
-            ("item:1:7".into(), "Weekly Show".into(), 1, "".into(), "".into())
+            (
+                "item:1:7".into(),
+                "Weekly Show".into(),
+                1,
+                "".into(),
+                "".into()
+            )
         );
         let fam = works.iter().find(|w| w.0 == "tmdb:87917").unwrap();
-        assert_eq!((fam.1.as_str(), fam.2, fam.3.as_str()), ("For All Mankind", 4, "4K|Dolby Vision"));
+        assert_eq!(
+            (fam.1.as_str(), fam.2, fam.3.as_str()),
+            ("For All Mankind", 4, "4K|Dolby Vision")
+        );
         assert_eq!(fam.4, "Netflix|Apple TV+");
         // the international title wins over the local one
-        assert_eq!(works.iter().find(|w| w.0 == "tmdb:127865").unwrap().1, "The Chestnut Man");
+        assert_eq!(
+            works.iter().find(|w| w.0 == "tmdb:127865").unwrap().1,
+            "The Chestnut Man"
+        );
 
         let facets: Vec<(String, String)> = c
             .prepare("SELECT facet, value FROM work_facet WHERE kind = 'series' AND key = 'tmdb:87917' ORDER BY facet, value")
@@ -711,14 +926,22 @@ mod tests {
         assert!(has("genre", "Drama") && has("genre", "Crime"));
         assert!(has("service", "Apple TV+") && has("language", "Nordic") && has("quality", "4K"));
         assert!(has("decade", "2010s") && has("collection", "1:ap4"));
-        let key: String = c.query_row("SELECT work_key FROM series WHERE id = '4'", [], |r| r.get(0)).unwrap();
+        let key: String = c
+            .query_row("SELECT work_key FROM series WHERE id = '4'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(key, "tmdb:87917");
     }
 
     #[test]
     fn channel_variants_group_per_country() {
         let c = crate::db::test_conn();
-        for (id, title, region) in [("sp", "SPORT", "UK"), ("now", "NOW TV SPORT", "UK"), ("att", "AT&T", "US")] {
+        for (id, title, region) in [
+            ("sp", "SPORT", "UK"),
+            ("now", "NOW TV SPORT", "UK"),
+            ("att", "AT&T", "US"),
+        ] {
             c.execute(
                 "INSERT INTO category (source_id, kind, id, name, title, region, position) VALUES (1, 'live', ?1, ?2, ?2, ?3, 0)",
                 params![id, title, region],
@@ -734,7 +957,13 @@ mod tests {
             .unwrap();
         };
         ch("1", "SKY SPORTS F1", "RAW", "sp", Some("SkySportsF1.uk"));
-        ch("2", "SKY SPORTS F1", "RAW HEVC", "sp", Some("SkySportsF1.uk"));
+        ch(
+            "2",
+            "SKY SPORTS F1",
+            "RAW HEVC",
+            "sp",
+            Some("SkySportsF1.uk"),
+        );
         ch("3", "SKY SPORTS F1", "SD", "sp", Some("SkySportsF1.uk"));
         ch("4", "SKY SPORTS F1", "HD", "sp", Some("SkySportsF1.uk"));
         ch("5", "SKY SPORTS F1", "4K", "now", Some("skysportsf1.uk"));
@@ -745,7 +974,9 @@ mod tests {
         let groups: Vec<(String, String, String, i64, String)> = c
             .prepare("SELECT key, title, genre, variants, item_id FROM channel_group ORDER BY key")
             .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
@@ -758,10 +989,19 @@ mod tests {
         assert_eq!(groups.iter().find(|g| g.0 == "UK|tv2sport1").unwrap().3, 2);
 
         // a favorited variant plays, and the user's pick wins over that
-        c.execute("INSERT INTO favorite (source_id, kind, item_id, added_at) VALUES (1, 'live', '1', 5)", []).unwrap();
+        c.execute(
+            "INSERT INTO favorite (source_id, kind, item_id, added_at) VALUES (1, 'live', '1', 5)",
+            [],
+        )
+        .unwrap();
         rebuild(&c).unwrap();
         let playing = |c: &Connection| -> String {
-            c.query_row("SELECT item_id FROM channel_group WHERE key = 'UK|skysportsf1'", [], |r| r.get(0)).unwrap()
+            c.query_row(
+                "SELECT item_id FROM channel_group WHERE key = 'UK|skysportsf1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
         };
         assert_eq!(playing(&c), "1");
         c.execute("INSERT INTO channel_pref (key, source_id, item_id, updated_at) VALUES ('UK|skysportsf1', 1, '3', 0)", [])
@@ -789,8 +1029,15 @@ mod tests {
                                "collection": "Top Gun Collection", "rating": 8.2, "votes": 900, "poster": "/p.jpg"})
             .to_string()
         };
-        for (id, json) in [("361743", info("Top Gun: Maverick", 2022)), ("99", info("Other Show", 2015))] {
-            c.execute("INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', ?1, ?2, 0)", params![id, json]).unwrap();
+        for (id, json) in [
+            ("361743", info("Top Gun: Maverick", 2022)),
+            ("99", info("Other Show", 2015)),
+        ] {
+            c.execute(
+                "INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', ?1, ?2, 0)",
+                params![id, json],
+            )
+            .unwrap();
         }
         rebuild(&c).unwrap();
         let facets = |key: &str| -> Vec<(String, String)> {
@@ -802,27 +1049,56 @@ mod tests {
                 .unwrap()
         };
         let f = facets("tmdb:361743");
-        for want in [("genre", "Action"), ("genre", "Drama"), ("original", "English"), ("franchise", "Top Gun Collection")] {
-            assert!(f.contains(&(want.0.into(), want.1.into())), "{want:?} in {f:?}");
+        for want in [
+            ("genre", "Action"),
+            ("genre", "Drama"),
+            ("original", "English"),
+            ("franchise", "Top Gun Collection"),
+        ] {
+            assert!(
+                f.contains(&(want.0.into(), want.1.into())),
+                "{want:?} in {f:?}"
+            );
         }
         let (genre, rating, poster): (String, f64, String) = c
-            .query_row("SELECT genre, rating, poster FROM work WHERE key = 'tmdb:361743'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            .query_row(
+                "SELECT genre, rating, poster FROM work WHERE key = 'tmdb:361743'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .unwrap();
         assert_eq!((genre.as_str(), rating), ("Action, Drama", 8.2));
         assert!(poster.ends_with("/w500/p.jpg"));
-        assert!(!facets("tmdb:99").iter().any(|(f, _)| f == "genre" || f == "franchise"));
+        assert!(
+            !facets("tmdb:99")
+                .iter()
+                .any(|(f, _)| f == "genre" || f == "franchise")
+        );
     }
 
     #[test]
     fn channel_keys_and_variant_labels() {
-        assert_eq!(channel_key(Some("DK"), "V Sport Ultra UHD *MULTI*"), channel_key(Some("DK"), "V SPORT ULTRA SD *MULTI*"));
-        assert_ne!(channel_key(Some("UK"), "SKY SPORTS+"), channel_key(Some("UK"), "SKY SPORTS"));
-        assert_eq!(channel_key(Some("UK"), "SKY SPORTS +"), channel_key(Some("UK"), "SKY SPORTS+"));
+        assert_eq!(
+            channel_key(Some("DK"), "V Sport Ultra UHD *MULTI*"),
+            channel_key(Some("DK"), "V SPORT ULTRA SD *MULTI*")
+        );
+        assert_ne!(
+            channel_key(Some("UK"), "SKY SPORTS+"),
+            channel_key(Some("UK"), "SKY SPORTS")
+        );
+        assert_eq!(
+            channel_key(Some("UK"), "SKY SPORTS +"),
+            channel_key(Some("UK"), "SKY SPORTS+")
+        );
         assert_eq!(channel_key(None, "TV 2 / Fyn"), "-|tv2fyn");
-        assert_eq!(channel_key(Some("DK"), "V SPORT ULTRA *MULTI-AUDIO*"), channel_key(Some("DK"), "V Sport Ultra *MULTI*"));
-        assert_eq!(channel_variant_label("RAW HEVC", "RAW VIP DOLBY AUDIO"), "RAW · HEVC · VIP · Dolby Audio");
+        assert_eq!(
+            channel_key(Some("DK"), "V SPORT ULTRA *MULTI-AUDIO*"),
+            channel_key(Some("DK"), "V Sport Ultra *MULTI*")
+        );
+        assert_eq!(
+            channel_variant_label("RAW HEVC", "RAW VIP DOLBY AUDIO"),
+            "RAW · HEVC · VIP · Dolby Audio"
+        );
         assert_eq!(channel_variant_label("", "HD RAW"), "HD · RAW");
         assert_eq!(channel_variant_label("RAW 50FPS", "RAW"), "RAW · 50fps");
         assert_eq!(channel_variant_label("", ""), "Standard");
@@ -838,7 +1114,12 @@ mod tests {
         )
         .unwrap();
         rebuild(&c).unwrap();
-        assert_eq!(c.query_row("SELECT key FROM work WHERE kind = 'movie'", [], |r| r.get::<_, String>(0)).unwrap(), "title:jungle cruise|2021");
+        assert_eq!(
+            c.query_row("SELECT key FROM work WHERE kind = 'movie'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "title:jungle cruise|2021"
+        );
         c.execute(
             "INSERT INTO tmdb_map (kind, source_key, tmdb_id, searched_at) VALUES ('movie', 'title:jungle cruise|2021', '522931', 0)",
             [],
@@ -851,11 +1132,21 @@ mod tests {
         )
         .unwrap();
         rebuild(&c).unwrap();
-        let (key, poster): (String, String) =
-            c.query_row("SELECT key, poster FROM work WHERE kind = 'movie'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (key, poster): (String, String) = c
+            .query_row(
+                "SELECT key, poster FROM work WHERE kind = 'movie'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(key, "tmdb:522931");
         assert!(poster.ends_with("/w500/p.jpg"));
-        assert_eq!(c.query_row("SELECT work_key FROM movie WHERE id = 'm'", [], |r| r.get::<_, String>(0)).unwrap(), key);
+        assert_eq!(
+            c.query_row("SELECT work_key FROM movie WHERE id = 'm'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            key
+        );
     }
 
     /// A miss sentinel ('' is stored) does not remap works and does not
@@ -871,7 +1162,8 @@ mod tests {
     }
 
     #[test]
-    fn variant_ranking() {        assert!(channel_rank("HD") > channel_rank("RAW"));
+    fn variant_ranking() {
+        assert!(channel_rank("HD") > channel_rank("RAW"));
         assert!(channel_rank("RAW") > channel_rank("RAW HEVC"));
         assert!(channel_rank("") > channel_rank("SD"));
         assert!(channel_rank("4K") > channel_rank("SD HEVC"));
