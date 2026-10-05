@@ -25,7 +25,11 @@ fn check(code: c_int, context: impl FnOnce() -> String) -> Result<(), MpvError> 
     let message = unsafe { CStr::from_ptr(mpv_error_string(code)) }
         .to_string_lossy()
         .into_owned();
-    Err(MpvError { code, context: context(), message })
+    Err(MpvError {
+        code,
+        context: context(),
+        message,
+    })
 }
 
 fn cstr(s: &str) -> CString {
@@ -43,15 +47,25 @@ unsafe impl Sync for Mpv {}
 #[derive(Debug)]
 pub enum Event {
     Shutdown,
-    Log { prefix: String, level: String, text: String },
+    Log {
+        prefix: String,
+        level: String,
+        text: String,
+    },
     StartFile,
-    EndFile { reason: EndReason, error: Option<String> },
+    EndFile {
+        reason: EndReason,
+        error: Option<String>,
+    },
     FileLoaded,
     Idle,
     VideoReconfig,
     PlaybackRestart,
     Seek,
-    PropertyChange { name: String, value: Value },
+    PropertyChange {
+        name: String,
+        value: Value,
+    },
     Other,
 }
 
@@ -90,8 +104,9 @@ impl Mpv {
         Ok(mpv)
     }
 
-    /// The raw handle; only the Linux render-API surface needs it today.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// The raw handle; the Linux and macOS render-API surfaces use it to
+    /// create their mpv render contexts.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     pub fn raw(&self) -> *mut mpv_handle {
         self.handle
     }
@@ -129,7 +144,12 @@ impl Mpv {
         let n = cstr(name);
         let mut v: c_int = value.into();
         let rc = unsafe {
-            mpv_set_property(self.handle, n.as_ptr(), MPV_FORMAT_FLAG, &mut v as *mut _ as *mut c_void)
+            mpv_set_property(
+                self.handle,
+                n.as_ptr(),
+                MPV_FORMAT_FLAG,
+                &mut v as *mut _ as *mut c_void,
+            )
         };
         check(rc, || format!("set {name}={value}"))
     }
@@ -138,7 +158,12 @@ impl Mpv {
         let n = cstr(name);
         let mut v = value;
         let rc = unsafe {
-            mpv_set_property(self.handle, n.as_ptr(), MPV_FORMAT_DOUBLE, &mut v as *mut _ as *mut c_void)
+            mpv_set_property(
+                self.handle,
+                n.as_ptr(),
+                MPV_FORMAT_DOUBLE,
+                &mut v as *mut _ as *mut c_void,
+            )
         };
         check(rc, || format!("set {name}={value}"))
     }
@@ -147,7 +172,12 @@ impl Mpv {
         let n = cstr(name);
         let mut v = value;
         let rc = unsafe {
-            mpv_set_property(self.handle, n.as_ptr(), MPV_FORMAT_INT64, &mut v as *mut _ as *mut c_void)
+            mpv_set_property(
+                self.handle,
+                n.as_ptr(),
+                MPV_FORMAT_INT64,
+                &mut v as *mut _ as *mut c_void,
+            )
         };
         check(rc, || format!("set {name}={value}"))
     }
@@ -169,7 +199,12 @@ impl Mpv {
         let n = cstr(name);
         let mut node: mpv_node = unsafe { std::mem::zeroed() };
         let rc = unsafe {
-            mpv_get_property(self.handle, n.as_ptr(), MPV_FORMAT_NODE, &mut node as *mut _ as *mut c_void)
+            mpv_get_property(
+                self.handle,
+                n.as_ptr(),
+                MPV_FORMAT_NODE,
+                &mut node as *mut _ as *mut c_void,
+            )
         };
         if rc < 0 {
             return None;
@@ -263,9 +298,8 @@ unsafe fn format_to_json(format: mpv_format, data: *mut c_void) -> Value {
             }
             MPV_FORMAT_FLAG => Value::Bool(*(data as *const c_int) != 0),
             MPV_FORMAT_INT64 => Value::from(*(data as *const i64)),
-            MPV_FORMAT_DOUBLE => {
-                serde_json::Number::from_f64(*(data as *const f64)).map_or(Value::Null, Value::Number)
-            }
+            MPV_FORMAT_DOUBLE => serde_json::Number::from_f64(*(data as *const f64))
+                .map_or(Value::Null, Value::Number),
             MPV_FORMAT_NODE => node_to_json(&*(data as *const mpv_node)),
             _ => Value::Null,
         }

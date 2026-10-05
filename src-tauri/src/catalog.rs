@@ -94,11 +94,25 @@ pub struct WorkInfo {
     pub services: Vec<String>,
 }
 
-fn work_info(key: Option<String>, versions: Option<i64>, badges: Option<String>, services: Option<String>) -> WorkInfo {
+fn work_info(
+    key: Option<String>,
+    versions: Option<i64>,
+    badges: Option<String>,
+    services: Option<String>,
+) -> WorkInfo {
     let split = |s: Option<String>| -> Vec<String> {
-        s.unwrap_or_default().split('|').filter(|x| !x.is_empty()).map(str::to_owned).collect()
+        s.unwrap_or_default()
+            .split('|')
+            .filter(|x| !x.is_empty())
+            .map(str::to_owned)
+            .collect()
     };
-    WorkInfo { version_count: versions.unwrap_or(1), quality: split(badges), services: split(services), key }
+    WorkInfo {
+        version_count: versions.unwrap_or(1),
+        quality: split(badges),
+        services: split(services),
+        key,
+    }
 }
 
 /// A movie as listed: in browse lists one row per work (`work` table) whose
@@ -188,7 +202,17 @@ pub struct FacetFilter {
     pub value: String,
 }
 
-const FACETS: &[&str] = &["service", "language", "quality", "genre", "decade", "collection", "original", "franchise", "network"];
+const FACETS: &[&str] = &[
+    "service",
+    "language",
+    "quality",
+    "genre",
+    "decade",
+    "collection",
+    "original",
+    "franchise",
+    "network",
+];
 
 /// Badges are stored space separated; multi-word ones ("DOLBY VISION") are
 /// re-joined here.
@@ -220,7 +244,11 @@ async fn blocking<T: Send + 'static>(
 }
 
 fn like_pattern(q: &str) -> String {
-    let escaped = q.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let escaped = q
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
     format!("%{escaped}%")
 }
 
@@ -301,7 +329,11 @@ fn channel_select(grouped: bool) -> String {
 fn row_to_channel(r: &Row) -> rusqlite::Result<ChannelItem> {
     let brief = |i: usize| -> rusqlite::Result<Option<Brief>> {
         Ok(match r.get::<_, Option<String>>(i)? {
-            Some(title) => Some(Brief { title, start: r.get(i + 1)?, stop: r.get(i + 2)? }),
+            Some(title) => Some(Brief {
+                title,
+                start: r.get(i + 1)?,
+                stop: r.get(i + 2)?,
+            }),
             None => None,
         })
     };
@@ -320,7 +352,12 @@ fn row_to_channel(r: &Row) -> rusqlite::Result<ChannelItem> {
         now: brief(11)?,
         next: brief(14)?,
         group: match r.get::<_, Option<String>>(17)? {
-            Some(key) => Some(GroupInfo { key, variants: r.get(18)?, country: r.get(19)?, genre: r.get(20)? }),
+            Some(key) => Some(GroupInfo {
+                key,
+                variants: r.get(18)?,
+                country: r.get(19)?,
+                genre: r.get(20)?,
+            }),
             None => None,
         },
     })
@@ -340,7 +377,8 @@ pub fn query_channels(conn: &Connection, q: &ChannelQuery) -> Result<Page<Channe
             args.push((":cat".into(), Sql::Text(cat.clone())));
         }
         (Some(s), None, true) => {
-            filters.push("g.key IN (SELECT group_key FROM channel WHERE source_id = :source)".into());
+            filters
+                .push("g.key IN (SELECT group_key FROM channel WHERE source_id = :source)".into());
             args.push((":source".into(), Sql::Integer(s)));
         }
         (s, cat, false) => {
@@ -376,7 +414,14 @@ pub fn query_channels(conn: &Connection, q: &ChannelQuery) -> Result<Page<Channe
         );
     }
     if let Some(text) = q.q.as_deref().filter(|t| !t.trim().is_empty()) {
-        filters.push(if g { "g.title LIKE :q ESCAPE '\\'" } else { "c.title LIKE :q ESCAPE '\\'" }.into());
+        filters.push(
+            if g {
+                "g.title LIKE :q ESCAPE '\\'"
+            } else {
+                "c.title LIKE :q ESCAPE '\\'"
+            }
+            .into(),
+        );
         args.push((":q".into(), Sql::Text(like_pattern(text))));
     }
     let (join, order) = match (q.favorites, g) {
@@ -411,13 +456,20 @@ pub fn query_channels(conn: &Connection, q: &ChannelQuery) -> Result<Page<Channe
         .filter(|(k, _)| k != ":now")
         .map(|(k, v)| (k.as_str(), v as &dyn rusqlite::ToSql))
         .collect();
-    let total: i64 = conn.prepare_cached(&count_sql)?.query_row(count_args.as_slice(), |r| r.get(0))?;
+    let total: i64 = conn
+        .prepare_cached(&count_sql)?
+        .query_row(count_args.as_slice(), |r| r.get(0))?;
 
     let limit = q.limit.unwrap_or(500).clamp(1, 5000);
     let offset = q.offset.unwrap_or(0).max(0);
-    let sql = format!("{}{join} WHERE {where_sql} ORDER BY {order} LIMIT {limit} OFFSET {offset}", channel_select(g));
-    let named: Vec<(&str, &dyn rusqlite::ToSql)> =
-        args.iter().map(|(k, v)| (k.as_str(), v as &dyn rusqlite::ToSql)).collect();
+    let sql = format!(
+        "{}{join} WHERE {where_sql} ORDER BY {order} LIMIT {limit} OFFSET {offset}",
+        channel_select(g)
+    );
+    let named: Vec<(&str, &dyn rusqlite::ToSql)> = args
+        .iter()
+        .map(|(k, v)| (k.as_str(), v as &dyn rusqlite::ToSql))
+        .collect();
     let items = conn
         .prepare_cached(&sql)?
         .query_map(named.as_slice(), row_to_channel)?
@@ -426,21 +478,37 @@ pub fn query_channels(conn: &Connection, q: &ChannelQuery) -> Result<Page<Channe
 }
 
 #[tauri::command]
-pub async fn channels(state: State<'_, AppState>, query: ChannelQuery) -> Result<Page<ChannelItem>> {
+pub async fn channels(
+    state: State<'_, AppState>,
+    query: ChannelQuery,
+) -> Result<Page<ChannelItem>> {
     blocking(state.inner(), move |conn| {
         let t = Instant::now();
         let page = query_channels(conn, &query)?;
-        log::debug!("channels {:?}: {} of {} in {:?}", query.category_id, page.items.len(), page.total, t.elapsed());
+        log::debug!(
+            "channels {:?}: {} of {} in {:?}",
+            query.category_id,
+            page.items.len(),
+            page.total,
+            t.elapsed()
+        );
         Ok(page)
     })
     .await
 }
 
 pub fn channel_by_id(conn: &Connection, source_id: i64, id: &str) -> Result<ChannelItem> {
-    let sql = format!("{} WHERE c.source_id = :source AND c.id = :id", channel_select(false));
+    let sql = format!(
+        "{} WHERE c.source_id = :source AND c.id = :id",
+        channel_select(false)
+    );
     conn.prepare_cached(&sql)?
         .query_row(
-            &[(":now", &now() as &dyn rusqlite::ToSql), (":source", &source_id), (":id", &id)],
+            &[
+                (":now", &now() as &dyn rusqlite::ToSql),
+                (":source", &source_id),
+                (":id", &id),
+            ],
             row_to_channel,
         )
         .optional()?
@@ -448,15 +516,25 @@ pub fn channel_by_id(conn: &Connection, source_id: i64, id: &str) -> Result<Chan
 }
 
 #[tauri::command]
-pub async fn channel(state: State<'_, AppState>, source_id: i64, id: String) -> Result<ChannelItem> {
-    blocking(state.inner(), move |conn| channel_by_id(conn, source_id, &id)).await
+pub async fn channel(
+    state: State<'_, AppState>,
+    source_id: i64,
+    id: String,
+) -> Result<ChannelItem> {
+    blocking(state.inner(), move |conn| {
+        channel_by_id(conn, source_id, &id)
+    })
+    .await
 }
 
 /// A channel group as a row: its title, playing its chosen variant.
 pub fn channel_group_by_key(conn: &Connection, key: &str) -> Result<ChannelItem> {
     let sql = format!("{} WHERE g.key = :key", channel_select(true));
     conn.prepare_cached(&sql)?
-        .query_row(&[(":now", &now() as &dyn rusqlite::ToSql), (":key", &key)], row_to_channel)
+        .query_row(
+            &[(":now", &now() as &dyn rusqlite::ToSql), (":key", &key)],
+            row_to_channel,
+        )
         .optional()?
         .ok_or_else(|| Error::NotFound(format!("channel {key}")))
 }
@@ -508,9 +586,15 @@ fn country_order_sql(conn: &Connection) -> Result<String> {
         .countries
         .iter()
         .enumerate()
-        .filter_map(|(i, c)| c.code.as_ref().map(|code| format!(" WHEN '{}' THEN {i}", code.replace('\'', "''"))))
+        .filter_map(|(i, c)| {
+            c.code
+                .as_ref()
+                .map(|code| format!(" WHEN '{}' THEN {i}", code.replace('\'', "''")))
+        })
         .collect();
-    Ok(format!("CASE g.country{cases} ELSE 9999 END, g.epg_id IS NULL, g.position"))
+    Ok(format!(
+        "CASE g.country{cases} ELSE 9999 END, g.epg_id IS NULL, g.position"
+    ))
 }
 
 pub fn live_nav_for(conn: &Connection) -> Result<LiveNav> {
@@ -527,25 +611,46 @@ pub fn live_nav_for(conn: &Connection) -> Result<LiveNav> {
             Some(x) => x.count += c.count,
             None => countries.push(LiveCountry {
                 code: c.country.clone(),
-                name: c.country.as_deref().map(crate::works::genre::country_name).unwrap_or_else(|| "Other".into()),
+                name: c
+                    .country
+                    .as_deref()
+                    .map(crate::works::genre::country_name)
+                    .unwrap_or_else(|| "Other".into()),
                 count: c.count,
             }),
         }
     }
     let home: Vec<&str> = versions::language_prefs(conn)
         .into_iter()
-        .flat_map(|l| crate::works::genre::countries_for_language(l).iter().copied())
+        .flat_map(|l| {
+            crate::works::genre::countries_for_language(l)
+                .iter()
+                .copied()
+        })
         .collect();
-    let rank = |c: &LiveCountry| c.code.as_deref().and_then(|code| home.iter().position(|h| *h == code)).unwrap_or(usize::MAX);
+    let rank = |c: &LiveCountry| {
+        c.code
+            .as_deref()
+            .and_then(|code| home.iter().position(|h| *h == code))
+            .unwrap_or(usize::MAX)
+    };
     countries.sort_by(|a, b| {
-        rank(a).cmp(&rank(b)).then(a.code.is_none().cmp(&b.code.is_none())).then(b.count.cmp(&a.count)).then(a.name.cmp(&b.name))
+        rank(a)
+            .cmp(&rank(b))
+            .then(a.code.is_none().cmp(&b.code.is_none()))
+            .then(b.count.cmp(&a.count))
+            .then(a.name.cmp(&b.name))
     });
     let genres = crate::works::genre::LIVE_GENRES
         .iter()
         .filter(|g| cells.iter().any(|c| c.genre == **g))
         .map(|g| g.to_string())
         .collect();
-    Ok(LiveNav { countries, genres, cells })
+    Ok(LiveNav {
+        countries,
+        genres,
+        cells,
+    })
 }
 
 #[tauri::command]
@@ -569,7 +674,11 @@ pub struct ChannelVariant {
 
 pub fn variants_of(conn: &Connection, key: &str) -> Result<Vec<ChannelVariant>> {
     let chosen: Option<(i64, String)> = conn
-        .query_row("SELECT source_id, item_id FROM channel_group WHERE key = ?1", [key], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row(
+            "SELECT source_id, item_id FROM channel_group WHERE key = ?1",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .optional()?;
     type Row = (i64, String, String, Option<String>, Option<String>, i64);
     let rows: Vec<Row> = conn
@@ -585,9 +694,19 @@ pub fn variants_of(conn: &Connection, key: &str) -> Result<Vec<ChannelVariant>> 
     for (sid, id, badges, cat_badges, cat_name, order) in rows {
         let channel = channel_by_id(conn, sid, &id)?;
         let selected = chosen.as_ref().is_some_and(|(s, i)| *s == sid && *i == id);
-        let label = crate::works::channel_variant_label(&badges, cat_badges.as_deref().unwrap_or(""));
+        let label =
+            crate::works::channel_variant_label(&badges, cat_badges.as_deref().unwrap_or(""));
         let category = cat_name.as_deref().map(crate::names::display_category);
-        out.push((crate::works::channel_rank(&badges), order, ChannelVariant { channel, label, category, selected }));
+        out.push((
+            crate::works::channel_rank(&badges),
+            order,
+            ChannelVariant {
+                channel,
+                label,
+                category,
+                selected,
+            },
+        ));
     }
     out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     // identical feeds (backups in the same category) get a number
@@ -604,7 +723,10 @@ pub fn variants_of(conn: &Connection, key: &str) -> Result<Vec<ChannelVariant>> 
 }
 
 #[tauri::command]
-pub async fn channel_variants(state: State<'_, AppState>, key: String) -> Result<Vec<ChannelVariant>> {
+pub async fn channel_variants(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<Vec<ChannelVariant>> {
     blocking(state.inner(), move |conn| variants_of(conn, &key)).await
 }
 
@@ -706,7 +828,12 @@ fn row_to_series(r: &Row) -> rusqlite::Result<SeriesItem> {
 /// WHERE clause over `work w` for a browse query (`?1` = kind). Facet
 /// `skip` is left out — facet counts show what choosing another value of
 /// that facet would give.
-fn work_filters(conn: &Connection, q: &MediaQuery, kind: &str, skip: Option<&str>) -> Result<(String, Vec<Sql>)> {
+fn work_filters(
+    conn: &Connection,
+    q: &MediaQuery,
+    kind: &str,
+    skip: Option<&str>,
+) -> Result<(String, Vec<Sql>)> {
     let table = if kind == "movie" { "movie" } else { "series" };
     let mut args: Vec<Sql> = vec![Sql::Text(kind.to_owned())];
     let mut filters: Vec<String> = vec!["w.kind = ?1".into()];
@@ -725,7 +852,10 @@ fn work_filters(conn: &Connection, q: &MediaQuery, kind: &str, skip: Option<&str
         }
         (Some(s), None) => {
             args.push(Sql::Integer(s));
-            filters.push(format!("w.key IN (SELECT work_key FROM {table} WHERE source_id = ?{})", args.len()));
+            filters.push(format!(
+                "w.key IN (SELECT work_key FROM {table} WHERE source_id = ?{})",
+                args.len()
+            ));
         }
         _ => {}
     }
@@ -753,7 +883,10 @@ fn work_filters(conn: &Connection, q: &MediaQuery, kind: &str, skip: Option<&str
     if let Some(text) = q.q.as_deref().filter(|t| !t.trim().is_empty()) {
         // any copy's title: "Kastanjemanden" finds "The Chestnut Man"
         args.push(Sql::Text(like_pattern(text)));
-        filters.push(format!("w.key IN (SELECT work_key FROM {table} WHERE title LIKE ?{} ESCAPE '\\')", args.len()));
+        filters.push(format!(
+            "w.key IN (SELECT work_key FROM {table} WHERE title LIKE ?{} ESCAPE '\\')",
+            args.len()
+        ));
     }
     Ok((filters.join(" AND "), args))
 }
@@ -798,15 +931,28 @@ pub async fn movies(state: State<'_, AppState>, query: MediaQuery) -> Result<Pag
     blocking(state.inner(), move |conn| {
         let t = Instant::now();
         let page = query_works(conn, &query, "movie", &movie_work_select(), row_to_movie)?;
-        log::debug!("movies {:?}/{:?}: {} of {} in {:?}", query.category_id, query.sort, page.items.len(), page.total, t.elapsed());
+        log::debug!(
+            "movies {:?}/{:?}: {} of {} in {:?}",
+            query.category_id,
+            query.sort,
+            page.items.len(),
+            page.total,
+            t.elapsed()
+        );
         Ok(page)
     })
     .await
 }
 
 #[tauri::command]
-pub async fn series_list(state: State<'_, AppState>, query: MediaQuery) -> Result<Page<SeriesItem>> {
-    blocking(state.inner(), move |conn| query_works(conn, &query, "series", SERIES_WORK_SELECT, row_to_series)).await
+pub async fn series_list(
+    state: State<'_, AppState>,
+    query: MediaQuery,
+) -> Result<Page<SeriesItem>> {
+    blocking(state.inner(), move |conn| {
+        query_works(conn, &query, "series", SERIES_WORK_SELECT, row_to_series)
+    })
+    .await
 }
 
 #[derive(Debug, Serialize)]
@@ -841,7 +987,11 @@ pub struct Facets {
 /// Facet values with the number of works each would show, given the rest
 /// of `query` (its other facets, favorites, text filter).
 #[tauri::command]
-pub async fn work_facets(state: State<'_, AppState>, kind: String, query: Option<MediaQuery>) -> Result<Facets> {
+pub async fn work_facets(
+    state: State<'_, AppState>,
+    kind: String,
+    query: Option<MediaQuery>,
+) -> Result<Facets> {
     if kind != "movie" && kind != "series" {
         return Err(Error::msg(format!("no facets for {kind}")));
     }
@@ -862,7 +1012,9 @@ pub fn facets_for(conn: &Connection, kind: &str, q: &MediaQuery) -> Result<Facet
         .query_row(params_from_iter(args.iter()), |r| r.get(0))?;
     let count = |facet: Option<&str>| -> Result<Vec<(String, String, i64)>> {
         let (where_sql, args) = work_filters(conn, q, kind, facet)?;
-        let only = facet.map(|f| format!("AND f.facet = '{f}'")).unwrap_or_default();
+        let only = facet
+            .map(|f| format!("AND f.facet = '{f}'"))
+            .unwrap_or_default();
         Ok(conn
             .prepare_cached(&format!(
                 "SELECT f.facet, f.value, COUNT(*) FROM work_facet f
@@ -870,7 +1022,9 @@ pub fn facets_for(conn: &Connection, kind: &str, q: &MediaQuery) -> Result<Facet
                   WHERE f.kind = ?1 {only} AND {where_sql}
                   GROUP BY f.facet, f.value"
             ))?
-            .query_map(params_from_iter(args.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map(params_from_iter(args.iter()), |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
             .collect::<Result<_, _>>()?)
     };
     let narrowed = q.favorites
@@ -901,17 +1055,27 @@ pub fn facets_for(conn: &Connection, kind: &str, q: &MediaQuery) -> Result<Facet
     };
     // provider categories behind the collection values
     let cats: std::collections::HashMap<String, (String, i64, i64, bool)> = conn
-        .prepare_cached("SELECT source_id, id, name, position, adult FROM category WHERE kind = ?1")?
+        .prepare_cached(
+            "SELECT source_id, id, name, position, adult FROM category WHERE kind = ?1",
+        )?
         .query_map([kind], |r| {
             let sid: i64 = r.get(0)?;
             let id: String = r.get(1)?;
-            Ok((format!("{sid}:{id}"), (r.get(2)?, sid, r.get(3)?, r.get(4)?)))
+            Ok((
+                format!("{sid}:{id}"),
+                (r.get(2)?, sid, r.get(3)?, r.get(4)?),
+            ))
         })?
         .collect::<Result<_, _>>()?;
     let mut collections: Vec<(i64, i64, FacetValue)> = Vec::new();
     for (facet, value, count) in rows {
         let label = value.clone();
-        let fv = FacetValue { value, label, count, group: None };
+        let fv = FacetValue {
+            value,
+            label,
+            count,
+            group: None,
+        };
         match facet.as_str() {
             "service" => out.service.push(fv),
             "genre" => out.genre.push(fv),
@@ -928,24 +1092,50 @@ pub fn facets_for(conn: &Connection, kind: &str, q: &MediaQuery) -> Result<Facet
                     let v = crate::works::variant::parse(None, Some(name));
                     let group = v.service.or(v.language).unwrap_or("Other").to_owned();
                     let label = crate::names::display_category(name);
-                    collections.push((*sid, *pos, FacetValue { label, group: Some(group), ..fv }));
+                    collections.push((
+                        *sid,
+                        *pos,
+                        FacetValue {
+                            label,
+                            group: Some(group),
+                            ..fv
+                        },
+                    ));
                 }
             }
             _ => {}
         }
     }
-    let by_count = |v: &mut Vec<FacetValue>| v.sort_by(|a, b| b.count.cmp(&a.count).then(a.label.cmp(&b.label)));
+    let by_count = |v: &mut Vec<FacetValue>| {
+        v.sort_by(|a, b| b.count.cmp(&a.count).then(a.label.cmp(&b.label)))
+    };
     by_count(&mut out.service);
     by_count(&mut out.language);
     by_count(&mut out.original);
     by_count(&mut out.franchise);
     by_count(&mut out.network);
-    out.genre.sort_by_key(|g| crate::works::genre::GENRES.iter().position(|x| *x == g.value).unwrap_or(usize::MAX));
+    out.genre.sort_by_key(|g| {
+        crate::works::genre::GENRES
+            .iter()
+            .position(|x| *x == g.value)
+            .unwrap_or(usize::MAX)
+    });
     const QUALITY: &[&str] = &["4K", "Dolby Vision", "Dolby Audio", "HEVC", "Blu-ray"];
-    out.quality.sort_by_key(|q| QUALITY.iter().position(|x| *x == q.value).unwrap_or(usize::MAX));
+    out.quality.sort_by_key(|q| {
+        QUALITY
+            .iter()
+            .position(|x| *x == q.value)
+            .unwrap_or(usize::MAX)
+    });
     // newest decade first, "Older" last
     out.decade.sort_by(|a, b| {
-        let key = |v: &str| if v == "Older" { 0 } else { v.trim_end_matches('s').parse::<i64>().unwrap_or(0) };
+        let key = |v: &str| {
+            if v == "Older" {
+                0
+            } else {
+                v.trim_end_matches('s').parse::<i64>().unwrap_or(0)
+            }
+        };
         key(&b.value).cmp(&key(&a.value))
     });
     collections.sort_by_key(|(sid, pos, _)| (*sid, *pos));
@@ -1045,18 +1235,28 @@ fn cached(conn: &Connection, source_id: i64, kind: &str, id: &str) -> Result<Opt
 }
 
 /// Provider detail JSON with a TTL cache; serves stale data when offline.
-async fn provider_detail(st: &AppState, source_id: i64, kind: &'static str, id: &str, ttl: i64) -> Result<Option<Value>> {
+async fn provider_detail(
+    st: &AppState,
+    source_id: i64,
+    kind: &'static str,
+    id: &str,
+    ttl: i64,
+) -> Result<Option<Value>> {
     let (src, cache) = {
         let conn = st.db.read();
-        (sources::load(&conn, source_id)?, cached(&conn, source_id, kind, id)?)
+        (
+            sources::load(&conn, source_id)?,
+            cached(&conn, source_id, kind, id)?,
+        )
     };
     if src.kind != SourceKind::Xtream {
         return Ok(None);
     }
     if let Some(c) = &cache
-        && now() - c.fetched_at < ttl {
-            return Ok(Some(c.json.clone()));
-        }
+        && now() - c.fetched_at < ttl
+    {
+        return Ok(Some(c.json.clone()));
+    }
     let fetched = match sources::xtream_for(&src, http_client(src.user_agent.as_deref())) {
         Ok(x) if kind == "movie" => x.vod_info(id).await,
         Ok(x) => x.series_info(id).await,
@@ -1090,7 +1290,12 @@ const DETAIL_DEADLINE: std::time::Duration = std::time::Duration::from_millis(25
 /// what arrives within `DETAIL_DEADLINE` (or from the cache) is used, the rest
 /// keeps loading in the background (into the cache) and is reported as
 /// pending — the UI asks again. At least one copy is always waited for.
-async fn details_of(st: &AppState, kind: &'static str, copies: &[(i64, String)], ttl: i64) -> (Vec<Option<Value>>, bool) {
+async fn details_of(
+    st: &AppState,
+    kind: &'static str,
+    copies: &[(i64, String)],
+    ttl: i64,
+) -> (Vec<Option<Value>>, bool) {
     let mut handles: Vec<Option<tokio::task::JoinHandle<Result<Option<Value>>>>> = copies
         .iter()
         .map(|(sid, id)| {
@@ -1098,7 +1303,9 @@ async fn details_of(st: &AppState, kind: &'static str, copies: &[(i64, String)],
             Some(tokio::spawn(async move {
                 match provider_detail(&st, sid, kind, &id, ttl).await {
                     // M3U series: episodes come from the playlist
-                    Ok(None) if kind == "series" => blocking(&st, move |conn| m3u_series_json(conn, sid, &id)).await,
+                    Ok(None) if kind == "series" => {
+                        blocking(&st, move |conn| m3u_series_json(conn, sid, &id)).await
+                    }
                     other => other,
                 }
             }))
@@ -1121,8 +1328,11 @@ async fn details_of(st: &AppState, kind: &'static str, copies: &[(i64, String)],
     }
     if finished == 0 {
         // nothing within the deadline: take the first copy that answers
-        let pending: Vec<(usize, tokio::task::JoinHandle<Result<Option<Value>>>)> =
-            handles.iter_mut().enumerate().filter_map(|(i, h)| h.take().map(|h| (i, h))).collect();
+        let pending: Vec<(usize, tokio::task::JoinHandle<Result<Option<Value>>>)> = handles
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, h)| h.take().map(|h| (i, h)))
+            .collect();
         let (idx, futs): (Vec<usize>, Vec<_>) = pending.into_iter().unzip();
         if !futs.is_empty() {
             let (res, pos, rest) = futures_util::future::select_all(futs).await;
@@ -1139,7 +1349,11 @@ async fn details_of(st: &AppState, kind: &'static str, copies: &[(i64, String)],
 }
 
 #[tauri::command]
-pub async fn movie_detail(state: State<'_, AppState>, source_id: i64, id: String) -> Result<MovieDetail> {
+pub async fn movie_detail(
+    state: State<'_, AppState>,
+    source_id: i64,
+    id: String,
+) -> Result<MovieDetail> {
     let st = state.inner().clone();
     let (members, pref, langs, work, facts, tracks) = {
         let id = id.clone();
@@ -1155,7 +1369,10 @@ pub async fn movie_detail(state: State<'_, AppState>, source_id: i64, id: String
             };
             let work = match &key {
                 Some(k) => conn
-                    .prepare_cached(&format!("{} WHERE w.kind = 'movie' AND w.key = ?1", movie_work_select()))?
+                    .prepare_cached(&format!(
+                        "{} WHERE w.kind = 'movie' AND w.key = ?1",
+                        movie_work_select()
+                    ))?
                     .query_row([k], row_to_movie)
                     .optional()?,
                 None => None,
@@ -1164,18 +1381,37 @@ pub async fn movie_detail(state: State<'_, AppState>, source_id: i64, id: String
                 (Some(k), Some(w)) => crate::tmdb::facts_for(conn, "movie", k, &w.title, w.year)?,
                 _ => None,
             };
-            let tracks =
-                members.iter().map(|m| versions::tracks(conn, m.source_id, "movie", &m.id)).collect::<Result<Vec<_>>>()?;
-            Ok((members, pref, versions::language_prefs(conn), work, facts, tracks))
+            let tracks = members
+                .iter()
+                .map(|m| versions::tracks(conn, m.source_id, "movie", &m.id))
+                .collect::<Result<Vec<_>>>()?;
+            Ok((
+                members,
+                pref,
+                versions::language_prefs(conn),
+                work,
+                facts,
+                tracks,
+            ))
         })
         .await?
     };
     // provider details of every copy at once (cached for a week)
-    let copies: Vec<(i64, String)> = members.iter().map(|m| (m.source_id, m.id.clone())).collect();
+    let copies: Vec<(i64, String)> = members
+        .iter()
+        .map(|m| (m.source_id, m.id.clone()))
+        .collect();
     let (details, pending) = details_of(&st, "movie", &copies, MOVIE_DETAIL_TTL).await;
-    let info_of = |i: usize| details[i].as_ref().map(|d| d["info"].clone()).unwrap_or(Value::Null);
+    let info_of = |i: usize| {
+        details[i]
+            .as_ref()
+            .map(|d| d["info"].clone())
+            .unwrap_or(Value::Null)
+    };
     // a copy much shorter than the others is a trailer or cut off
-    let durations: Vec<Option<i64>> = (0..members.len()).map(|i| i64_of(&info_of(i)["duration_secs"]).filter(|d| *d > 0)).collect();
+    let durations: Vec<Option<i64>> = (0..members.len())
+        .map(|i| i64_of(&info_of(i)["duration_secs"]).filter(|d| *d > 0))
+        .collect();
     let longest = durations.iter().flatten().copied().max().unwrap_or(0);
     let sel = versions::choose(&members, pref.as_ref(), &langs, |i| match durations[i] {
         _ if versions::unavailable(&tracks[i]) => versions::BROKEN,
@@ -1186,16 +1422,19 @@ pub async fn movie_detail(state: State<'_, AppState>, source_id: i64, id: String
     let info = info_of(sel);
     // missing fields from the other copies' details
     let pick = |keys: &[&str]| -> Option<String> {
-        first_str(&info, keys).or_else(|| (0..members.len()).find_map(|i| first_str(&info_of(i), keys)))
+        first_str(&info, keys)
+            .or_else(|| (0..members.len()).find_map(|i| first_str(&info_of(i), keys)))
     };
 
     let mut item = {
         let (sid, mid) = (chosen.source_id, chosen.id.clone());
         blocking(&st, move |conn| {
-            conn.prepare_cached(&format!("{MOVIE_SELECT} WHERE m.source_id = ?1 AND m.id = ?2"))?
-                .query_row(params![sid, mid], row_to_movie)
-                .optional()?
-                .ok_or_else(|| Error::NotFound(format!("movie {mid}")))
+            conn.prepare_cached(&format!(
+                "{MOVIE_SELECT} WHERE m.source_id = ?1 AND m.id = ?2"
+            ))?
+            .query_row(params![sid, mid], row_to_movie)
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("movie {mid}")))
         })
         .await?
     };
@@ -1214,11 +1453,17 @@ pub async fn movie_detail(state: State<'_, AppState>, source_id: i64, id: String
         item.rating = f64_of(&info["rating"]).filter(|r| *r > 0.0);
     }
     // resume where any copy was left off (versions are the same film)
-    let latest = members.iter().filter(|m| m.played_at > 0).max_by_key(|m| m.played_at);
+    let latest = members
+        .iter()
+        .filter(|m| m.played_at > 0)
+        .max_by_key(|m| m.played_at);
     let position = if chosen.position > 0.0 {
         chosen.position
     } else {
-        latest.filter(|m| !m.watched).map(|m| m.position).unwrap_or(0.0)
+        latest
+            .filter(|m| !m.watched)
+            .map(|m| m.position)
+            .unwrap_or(0.0)
     };
     let multi_source = members.iter().any(|m| m.source_id != members[0].source_id);
     let versions = members
@@ -1236,9 +1481,11 @@ pub async fn movie_detail(state: State<'_, AppState>, source_id: i64, id: String
         .collect();
     let trailer = pick(&["youtube_trailer", "trailer"]).or_else(|| {
         let conn = st.db.read();
-        conn.query_row("SELECT trailer FROM movie WHERE source_id = ?1 AND id = ?2", params![chosen.source_id, chosen.id], |r| {
-            r.get(0)
-        })
+        conn.query_row(
+            "SELECT trailer FROM movie WHERE source_id = ?1 AND id = ?2",
+            params![chosen.source_id, chosen.id],
+            |r| r.get(0),
+        )
         .ok()
         .flatten()
     });
@@ -1332,21 +1579,37 @@ pub struct SeriesDetail {
 /// Episodes of an M3U series (`episode` table) in the shape of Xtream's
 /// `get_series_info` (`{"episodes": {"1": [...]}}`), so series pages, resume
 /// and Up next treat both source kinds alike.
-pub fn m3u_series_json(conn: &Connection, source_id: i64, series_id: &str) -> Result<Option<Value>> {
+pub fn m3u_series_json(
+    conn: &Connection,
+    source_id: i64,
+    series_id: &str,
+) -> Result<Option<Value>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, season, episode, title, image, ext FROM episode
           WHERE source_id = ?1 AND series_id = ?2 ORDER BY season, episode, position",
     )?;
     type Row = (String, i64, i64, String, Option<String>, Option<String>);
     let rows: Vec<Row> = stmt
-        .query_map(params![source_id, series_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+        .query_map(params![source_id, series_id], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?
         .collect::<Result<_, _>>()?;
     if rows.is_empty() {
         return Ok(None);
     }
     let mut seasons = serde_json::Map::new();
     for (id, season, episode, title, image, ext) in rows {
-        if let Value::Array(list) = seasons.entry(season.to_string()).or_insert_with(|| Value::Array(Vec::new())) {
+        if let Value::Array(list) = seasons
+            .entry(season.to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+        {
             list.push(serde_json::json!({
                 "id": id, "episode_num": episode, "title": title, "container_extension": ext,
                 "info": { "movie_image": image },
@@ -1359,18 +1622,31 @@ pub fn m3u_series_json(conn: &Connection, source_id: i64, series_id: &str) -> Re
 /// Provider `episodes` payload ({"1": [...]} or [[...]]) → seasons in order,
 /// episodes sorted, without watch state. `source_id`/`series_id` name the
 /// copy the payload belongs to.
-fn parse_episodes(detail: &Value, series_title: &str, source_id: i64, series_id: &str) -> Vec<(i64, Vec<Episode>)> {
+fn parse_episodes(
+    detail: &Value,
+    series_title: &str,
+    source_id: i64,
+    series_id: &str,
+) -> Vec<(i64, Vec<Episode>)> {
     let mut groups: Vec<(i64, Vec<Value>)> = match &detail["episodes"] {
         Value::Object(map) => map
             .iter()
-            .map(|(k, v)| (k.parse().unwrap_or(0), v.as_array().cloned().unwrap_or_default()))
+            .map(|(k, v)| {
+                (
+                    k.parse().unwrap_or(0),
+                    v.as_array().cloned().unwrap_or_default(),
+                )
+            })
             .collect(),
         Value::Array(arr) => arr
             .iter()
             .enumerate()
             .map(|(i, v)| {
                 let eps = v.as_array().cloned().unwrap_or_default();
-                let n = eps.first().and_then(|e| i64_of(&e["season"])).unwrap_or(i as i64 + 1);
+                let n = eps
+                    .first()
+                    .and_then(|e| i64_of(&e["season"]))
+                    .unwrap_or(i as i64 + 1);
                 (n, eps)
             })
             .collect(),
@@ -1387,7 +1663,9 @@ fn parse_episodes(detail: &Value, series_title: &str, source_id: i64, series_id:
                     let eid = str_of(&e["id"])?;
                     let ei = &e["info"];
                     let num = i64_of(&e["episode_num"]).unwrap_or(i as i64 + 1);
-                    let raw_title = first_str(ei, &["name"]).or_else(|| str_of(&e["title"])).unwrap_or_default();
+                    let raw_title = first_str(ei, &["name"])
+                        .or_else(|| str_of(&e["title"]))
+                        .unwrap_or_default();
                     Some(Episode {
                         title: episode_title(&raw_title, series_title, num),
                         season: n,
@@ -1431,7 +1709,12 @@ pub async fn up_next(state: State<'_, AppState>, limit: Option<i64>) -> Result<V
 
 /// Episodes of one series copy from what is stored locally (the provider
 /// detail cache, or the playlist for M3U series) — no network.
-pub fn stored_episodes(conn: &Connection, source_id: i64, series_id: &str, title: &str) -> Result<Vec<(i64, Vec<Episode>)>> {
+pub fn stored_episodes(
+    conn: &Connection,
+    source_id: i64,
+    series_id: &str,
+    title: &str,
+) -> Result<Vec<(i64, Vec<Episode>)>> {
     let json = match cached(conn, source_id, "series", series_id)? {
         Some(d) => d.json,
         None => match m3u_series_json(conn, source_id, series_id)? {
@@ -1444,12 +1727,16 @@ pub fn stored_episodes(conn: &Connection, source_id: i64, series_id: &str, title
 
 /// Union of all copies' episodes keyed by (season, episode), each taken from
 /// the first copy in `order` that has it.
-fn union_episodes(per_copy: &[Vec<(i64, Vec<Episode>)>], order: &[usize]) -> BTreeMap<(i64, i64), (usize, Episode)> {
+fn union_episodes(
+    per_copy: &[Vec<(i64, Vec<Episode>)>],
+    order: &[usize],
+) -> BTreeMap<(i64, i64), (usize, Episode)> {
     let mut out = BTreeMap::new();
     for &i in order {
         for (_, eps) in &per_copy[i] {
             for e in eps {
-                out.entry((e.season, e.episode)).or_insert_with(|| (i, e.clone()));
+                out.entry((e.season, e.episode))
+                    .or_insert_with(|| (i, e.clone()));
             }
         }
     }
@@ -1487,11 +1774,15 @@ fn up_next_rows(conn: &Connection, limit: usize) -> Result<Vec<UpNext>> {
         let key = versions::work_key(conn, "series", sid, &series_id)?;
         let series = match &key {
             Some(k) => conn
-                .prepare_cached(&format!("{SERIES_WORK_SELECT} WHERE w.kind = 'series' AND w.key = ?1"))?
+                .prepare_cached(&format!(
+                    "{SERIES_WORK_SELECT} WHERE w.kind = 'series' AND w.key = ?1"
+                ))?
                 .query_row([k], row_to_series)
                 .optional()?,
             None => conn
-                .prepare_cached(&format!("{SERIES_SELECT} WHERE s.source_id = ?1 AND s.id = ?2"))?
+                .prepare_cached(&format!(
+                    "{SERIES_SELECT} WHERE s.source_id = ?1 AND s.id = ?2"
+                ))?
                 .query_row(params![sid, series_id], row_to_series)
                 .optional()?,
         };
@@ -1501,12 +1792,20 @@ fn up_next_rows(conn: &Connection, limit: usize) -> Result<Vec<UpNext>> {
             .map(|m| stored_episodes(conn, m.source_id, &m.id, &series.title))
             .collect::<Result<_>>()?;
         // continue in the copy that was being watched, then the chosen one
-        let watching = members.iter().position(|m| m.source_id == sid && m.id == series_id).unwrap_or(0);
+        let watching = members
+            .iter()
+            .position(|m| m.source_id == sid && m.id == series_id)
+            .unwrap_or(0);
         let pref = match &key {
             Some(k) => versions::preference(conn, "series", k)?,
             None => None,
         };
-        let chosen = versions::choose(&members, pref.as_ref(), &versions::language_prefs(conn), |_| 1.0);
+        let chosen = versions::choose(
+            &members,
+            pref.as_ref(),
+            &versions::language_prefs(conn),
+            |_| 1.0,
+        );
         let mut order = vec![watching, chosen];
         order.extend(0..members.len());
         order.dedup();
@@ -1514,10 +1813,16 @@ fn up_next_rows(conn: &Connection, limit: usize) -> Result<Vec<UpNext>> {
         // where we are: the history row's numbers, else find its episode id
         let here = match (season, episode) {
             (Some(s), Some(e)) => Some((s, e)),
-            _ => union.iter().find(|(_, (_, e))| e.id == last_id).map(|(k, _)| *k),
+            _ => union
+                .iter()
+                .find(|(_, (_, e))| e.id == last_id)
+                .map(|(k, _)| *k),
         };
         let Some(here) = here else { continue };
-        let Some((_, (copy, next))) = union.range((here.0, here.1 + 1)..).find(|((s, _), _)| *s > 0) else {
+        let Some((_, (copy, next))) = union
+            .range((here.0, here.1 + 1)..)
+            .find(|((s, _), _)| *s > 0)
+        else {
             continue;
         };
         let mut next = next.clone();
@@ -1535,7 +1840,10 @@ fn up_next_rows(conn: &Connection, limit: usize) -> Result<Vec<UpNext>> {
             )?
             .unwrap_or(false);
         if !seen {
-            out.push(UpNext { series, episode: next });
+            out.push(UpNext {
+                series,
+                episode: next,
+            });
         }
     }
     Ok(out)
@@ -1547,17 +1855,32 @@ fn episode_title(raw: &str, series_title: &str, n: i64) -> String {
         std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bS\d{1,3}\s*E\d{1,4}\b").unwrap());
     let mut t = raw.trim().to_owned();
     if let Some(m) = SXXEXX.find(&t) {
-        let after = t[m.end()..].trim().trim_start_matches(['-', ':', '.', '|']).trim().to_owned();
-        let before = t[..m.start()].trim().trim_end_matches(['-', ':', '.', '|']).trim().to_owned();
+        let after = t[m.end()..]
+            .trim()
+            .trim_start_matches(['-', ':', '.', '|'])
+            .trim()
+            .to_owned();
+        let before = t[..m.start()]
+            .trim()
+            .trim_end_matches(['-', ':', '.', '|'])
+            .trim()
+            .to_owned();
         t = if !after.is_empty() {
             after
-        } else if !before.is_empty() && !before.eq_ignore_ascii_case(series_title) && !series_title.contains(&before) {
+        } else if !before.is_empty()
+            && !before.eq_ignore_ascii_case(series_title)
+            && !series_title.contains(&before)
+        {
             before
         } else {
             String::new()
         };
     }
-    if t.is_empty() { format!("Episode {n}") } else { t }
+    if t.is_empty() {
+        format!("Episode {n}")
+    } else {
+        t
+    }
 }
 
 /// Long-form series fields that list rows don't carry.
@@ -1581,7 +1904,11 @@ struct Watched {
 }
 
 #[tauri::command]
-pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: String) -> Result<SeriesDetail> {
+pub async fn series_detail(
+    state: State<'_, AppState>,
+    source_id: i64,
+    id: String,
+) -> Result<SeriesDetail> {
     let st = state.inner().clone();
     let (members, pref, langs, work, text, history, facts) = {
         let id = id.clone();
@@ -1660,23 +1987,46 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
     };
 
     // every copy's episodes at once (cached for 12 h)
-    let copies: Vec<(i64, String)> = members.iter().map(|m| (m.source_id, m.id.clone())).collect();
+    let copies: Vec<(i64, String)> = members
+        .iter()
+        .map(|m| (m.source_id, m.id.clone()))
+        .collect();
     let (details, pending) = details_of(&st, "series", &copies, SERIES_DETAIL_TTL).await;
-    let details: Vec<Value> = details.into_iter().map(|d| d.unwrap_or(Value::Null)).collect();
+    let details: Vec<Value> = details
+        .into_iter()
+        .map(|d| d.unwrap_or(Value::Null))
+        .collect();
     let per_copy: Vec<Vec<(i64, Vec<Episode>)>> = members
         .iter()
         .zip(&details)
         .map(|(m, d)| parse_episodes(d, &work.title, m.source_id, &m.id))
         .collect();
-    let counts: Vec<usize> =
-        per_copy.iter().map(|seasons| seasons.iter().filter(|(n, _)| *n > 0).map(|(_, e)| e.len()).sum()).collect();
+    let counts: Vec<usize> = per_copy
+        .iter()
+        .map(|seasons| {
+            seasons
+                .iter()
+                .filter(|(n, _)| *n > 0)
+                .map(|(_, e)| e.len())
+                .sum()
+        })
+        .collect();
     let most = counts.iter().copied().max().unwrap_or(0).max(1);
     // tracks seen in each copy (the first of its episodes with any)
     let tracks: Vec<Option<Value>> = {
         let ids: Vec<(i64, Vec<String>)> = per_copy
             .iter()
             .zip(&members)
-            .map(|(seasons, m)| (m.source_id, seasons.iter().flat_map(|(_, e)| e.iter().map(|e| e.id.clone())).take(40).collect()))
+            .map(|(seasons, m)| {
+                (
+                    m.source_id,
+                    seasons
+                        .iter()
+                        .flat_map(|(_, e)| e.iter().map(|e| e.id.clone()))
+                        .take(40)
+                        .collect(),
+                )
+            })
             .collect();
         blocking(&st, move |conn| {
             ids.iter()
@@ -1693,14 +2043,22 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
         .await?
     };
     let sel = versions::choose(&members, pref.as_ref(), &langs, |i| {
-        if versions::unavailable(&tracks[i]) { versions::BROKEN } else { counts[i] as f64 / most as f64 }
+        if versions::unavailable(&tracks[i]) {
+            versions::BROKEN
+        } else {
+            counts[i] as f64 / most as f64
+        }
     });
 
     // selected copy first, then the others by their own fit
     let mut order: Vec<usize> = (0..members.len()).collect();
     order.sort_by_key(|&i| {
         let m = &members[i];
-        (i != sel, -(crate::works::variant::affinity(&m.variant, &langs) + crate::works::variant::score(&m.variant)))
+        (
+            i != sel,
+            -(crate::works::variant::affinity(&m.variant, &langs)
+                + crate::works::variant::score(&m.variant)),
+        )
     });
     let union = union_episodes(&per_copy, &order);
 
@@ -1741,13 +2099,20 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
             _ => {
                 // season names/art from the selected copy, else any copy
                 let meta = order.iter().find_map(|&i| {
-                    details[i]["seasons"].as_array().and_then(|a| a.iter().find(|m| i64_of(&m["season_number"]) == Some(*s_no)))
+                    details[i]["seasons"].as_array().and_then(|a| {
+                        a.iter()
+                            .find(|m| i64_of(&m["season_number"]) == Some(*s_no))
+                    })
                 });
                 seasons.push(Season {
                     season: *s_no,
-                    name: meta
-                        .and_then(|m| str_of(&m["name"]))
-                        .unwrap_or_else(|| if *s_no == 0 { "Specials".into() } else { format!("Season {s_no}") }),
+                    name: meta.and_then(|m| str_of(&m["name"])).unwrap_or_else(|| {
+                        if *s_no == 0 {
+                            "Specials".into()
+                        } else {
+                            format!("Season {s_no}")
+                        }
+                    }),
                     cover: meta.and_then(|m| first_str(m, &["cover_big", "cover"])),
                     overview: meta.and_then(|m| str_of(&m["overview"])),
                     air_date: meta.and_then(|m| str_of(&m["air_date"])),
@@ -1759,23 +2124,48 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
 
     // Resume: the most recent unfinished episode, else the one after the
     // most recently finished, else S1E1 — across all copies.
-    let flat: Vec<&Episode> = seasons.iter().filter(|s| s.season > 0).flat_map(|s| &s.episodes).collect();
-    let latest = history.iter().filter_map(|w| number_of(w).map(|k| (k, w))).max_by_key(|(_, w)| w.at);
+    let flat: Vec<&Episode> = seasons
+        .iter()
+        .filter(|s| s.season > 0)
+        .flat_map(|s| &s.episodes)
+        .collect();
+    let latest = history
+        .iter()
+        .filter_map(|w| number_of(w).map(|k| (k, w)))
+        .max_by_key(|(_, w)| w.at);
     let resume = match latest {
-        Some((k, w)) if !w.watched => flat.iter().find(|e| (e.season, e.episode) == k).map(|e| Resume {
-            episode_id: e.id.clone(),
-            season: e.season,
-            episode: e.episode,
-            position: w.position,
-            started: true,
-        }),
-        Some((k, _)) => flat.iter().position(|e| (e.season, e.episode) == k).and_then(|i| flat.get(i + 1)).map(|e| {
-            Resume { episode_id: e.id.clone(), season: e.season, episode: e.episode, position: 0.0, started: true }
-        }),
+        Some((k, w)) if !w.watched => {
+            flat.iter()
+                .find(|e| (e.season, e.episode) == k)
+                .map(|e| Resume {
+                    episode_id: e.id.clone(),
+                    season: e.season,
+                    episode: e.episode,
+                    position: w.position,
+                    started: true,
+                })
+        }
+        Some((k, _)) => flat
+            .iter()
+            .position(|e| (e.season, e.episode) == k)
+            .and_then(|i| flat.get(i + 1))
+            .map(|e| Resume {
+                episode_id: e.id.clone(),
+                season: e.season,
+                episode: e.episode,
+                position: 0.0,
+                started: true,
+            }),
         None => None,
     }
     .or_else(|| {
-        flat.first().map(|e| Resume { episode_id: e.id.clone(), season: e.season, episode: e.episode, position: 0.0, started: false })
+        flat.first().map(|e| Resume {
+            episode_id: e.id.clone(),
+            season: e.season,
+            episode: e.episode,
+            position: 0.0,
+            started: false,
+        })
     });
 
     let multi_source = members.iter().any(|m| m.source_id != members[0].source_id);
@@ -1784,7 +2174,11 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
         .enumerate()
         .map(|(i, m)| {
             let mut v = m.info(multi_source, i == sel);
-            v.seasons = per_copy[i].iter().filter(|(n, e)| *n > 0 && !e.is_empty()).map(|(n, _)| *n).collect();
+            v.seasons = per_copy[i]
+                .iter()
+                .filter(|(n, e)| *n > 0 && !e.is_empty())
+                .map(|(n, _)| *n)
+                .collect();
             v.episodes = counts[i] as i64;
             let first = per_copy[i].iter().flat_map(|(_, e)| e).next();
             v.video = first.and_then(|e| e.video.clone());
@@ -1796,7 +2190,9 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
 
     let mut item = work;
     if item.backdrop.is_none() {
-        item.backdrop = order.iter().find_map(|&i| first_url(&details[i]["info"]["backdrop_path"]));
+        item.backdrop = order
+            .iter()
+            .find_map(|&i| first_url(&details[i]["info"]["backdrop_path"]));
     }
     let info = &details[sel]["info"];
     Ok(SeriesDetail {
@@ -1804,7 +2200,9 @@ pub async fn series_detail(state: State<'_, AppState>, source_id: i64, id: Strin
         plot: text.plot.or_else(|| str_of(&info["plot"])),
         cast: text.cast.or_else(|| str_of(&info["cast"])),
         director: text.director.or_else(|| str_of(&info["director"])),
-        release_date: text.release.or_else(|| first_str(info, &["releaseDate", "release_date"])),
+        release_date: text
+            .release
+            .or_else(|| first_str(info, &["releaseDate", "release_date"])),
         trailer: text.trailer.or_else(|| str_of(&info["youtube_trailer"])),
         seasons,
         resume,
@@ -1922,9 +2320,15 @@ pub async fn epg_grid(state: State<'_, AppState>, query: GuideQuery) -> Result<P
                 Some(e) => epg::programmes(conn, channel.source_id, e, query.from, query.to)?,
                 None => Vec::new(),
             };
-            items.push(GuideRow { channel, programmes });
+            items.push(GuideRow {
+                channel,
+                programmes,
+            });
         }
-        Ok(Page { total: page.total, items })
+        Ok(Page {
+            total: page.total,
+            items,
+        })
     })
     .await
 }
@@ -1949,7 +2353,11 @@ fn fts_query(q: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn search(state: State<'_, AppState>, q: String, limit: Option<i64>) -> Result<SearchResults> {
+pub async fn search(
+    state: State<'_, AppState>,
+    q: String,
+    limit: Option<i64>,
+) -> Result<SearchResults> {
     let limit = limit.unwrap_or(30).clamp(1, 200);
     blocking(state.inner(), move |conn| {
         let Some(fts) = fts_query(&q) else {
@@ -2047,7 +2455,10 @@ mod tests {
 
     #[test]
     fn episode_titles() {
-        assert_eq!(episode_title("Deadly Ties - S01E01", "Deadly Ties", 1), "Episode 1");
+        assert_eq!(
+            episode_title("Deadly Ties - S01E01", "Deadly Ties", 1),
+            "Episode 1"
+        );
         assert_eq!(episode_title("S01E02 - The Pilot", "X", 2), "The Pilot");
         assert_eq!(episode_title("The Pilot", "X", 2), "The Pilot");
         assert_eq!(episode_title("", "X", 3), "Episode 3");
@@ -2055,8 +2466,14 @@ mod tests {
 
     #[test]
     fn backdrop_variants() {
-        assert_eq!(first_url(&Value::String("['https://a/b.jpg']".into())).as_deref(), Some("https://a/b.jpg"));
-        assert_eq!(first_url(&serde_json::json!(["https://c/d.jpg"])).as_deref(), Some("https://c/d.jpg"));
+        assert_eq!(
+            first_url(&Value::String("['https://a/b.jpg']".into())).as_deref(),
+            Some("https://a/b.jpg")
+        );
+        assert_eq!(
+            first_url(&serde_json::json!(["https://c/d.jpg"])).as_deref(),
+            Some("https://c/d.jpg")
+        );
         assert_eq!(first_url(&Value::String("".into())), None);
     }
 
@@ -2069,7 +2486,10 @@ mod tests {
 
     #[test]
     fn badge_joining() {
-        assert_eq!(split_badges("4K DOLBY VISION HEVC".into()), vec!["4K", "DOLBY VISION", "HEVC"]);
+        assert_eq!(
+            split_badges("4K DOLBY VISION HEVC".into()),
+            vec!["4K", "DOLBY VISION", "HEVC"]
+        );
     }
 
     #[test]
@@ -2077,7 +2497,11 @@ mod tests {
         let c = crate::db::test_conn();
         c.execute("INSERT INTO series (source_id, id, name, title, position) VALUES (1, 'sh', 'Show', 'Show', 0)", [])
             .unwrap();
-        for (id, season, ep, title) in [("a", 1, 2, "Second"), ("b", 1, 1, ""), ("c", 2, 1, "Premiere")] {
+        for (id, season, ep, title) in [
+            ("a", 1, 2, "Second"),
+            ("b", 1, 1, ""),
+            ("c", 2, 1, "Premiere"),
+        ] {
             c.execute(
                 "INSERT INTO episode (source_id, series_id, id, season, episode, title, url, ext, position)
                  VALUES (1, 'sh', ?1, ?2, ?3, ?4, 'http://h/x.mkv', 'mkv', 0)",
@@ -2090,12 +2514,25 @@ mod tests {
         type Shape = Vec<(i64, Vec<(String, i64, String)>)>;
         let shape: Shape = seasons
             .into_iter()
-            .map(|(n, eps)| (n, eps.into_iter().map(|e| (e.id, e.episode, e.title)).collect()))
+            .map(|(n, eps)| {
+                (
+                    n,
+                    eps.into_iter()
+                        .map(|e| (e.id, e.episode, e.title))
+                        .collect(),
+                )
+            })
             .collect();
         assert_eq!(
             shape,
             vec![
-                (1, vec![("b".into(), 1, "Episode 1".into()), ("a".into(), 2, "Second".into())]),
+                (
+                    1,
+                    vec![
+                        ("b".into(), 1, "Episode 1".into()),
+                        ("a".into(), 2, "Second".into())
+                    ]
+                ),
                 (2, vec![("c".into(), 1, "Premiere".into())]),
             ]
         );
@@ -2107,7 +2544,11 @@ mod tests {
             [],
         )
         .unwrap();
-        let next: Vec<String> = up_next_rows(&c, 20).unwrap().into_iter().map(|u| u.episode.id).collect();
+        let next: Vec<String> = up_next_rows(&c, 20)
+            .unwrap()
+            .into_iter()
+            .map(|u| u.episode.id)
+            .collect();
         assert_eq!(next, vec!["c"]);
     }
 
@@ -2159,7 +2600,15 @@ mod tests {
             up_next_rows(c, 20)
                 .unwrap()
                 .into_iter()
-                .map(|u| (u.episode.series_id, u.episode.id, u.episode.season, u.episode.episode, u.episode.version))
+                .map(|u| {
+                    (
+                        u.episode.series_id,
+                        u.episode.id,
+                        u.episode.season,
+                        u.episode.episode,
+                        u.episode.version,
+                    )
+                })
                 .collect()
         };
         // one entry per show, continuing in the copy being watched
@@ -2187,7 +2636,14 @@ mod tests {
         let u = up_next_rows(&c, 20).unwrap();
         assert_eq!(u.len(), 1);
         // S5E1 continues in the copy that was being watched
-        assert_eq!((u[0].episode.id.as_str(), u[0].episode.season, u[0].episode.episode), ("f51", 5, 1));
+        assert_eq!(
+            (
+                u[0].episode.id.as_str(),
+                u[0].episode.season,
+                u[0].episode.episode
+            ),
+            ("f51", 5, 1)
+        );
         assert_eq!(u[0].series.title, "Show");
         assert_eq!(u[0].series.work.version_count, 2);
     }
@@ -2202,7 +2658,10 @@ mod tests {
         )
         .unwrap();
         // the provider lists its 24/7 feeds (no guide data) before BBC One
-        for (id, title, epg, pos) in [("fast", "BAYWATCH", None, 0), ("bbc1", "BBC ONE", Some("BBCOne.uk"), 1)] {
+        for (id, title, epg, pos) in [
+            ("fast", "BAYWATCH", None, 0),
+            ("bbc1", "BBC ONE", Some("BBCOne.uk"), 1),
+        ] {
             c.execute(
                 "INSERT INTO channel (source_id, id, name, title, category_id, epg_id, position)
                  VALUES (1, ?1, ?2, ?2, 'ent', ?3, ?4)",
@@ -2212,11 +2671,24 @@ mod tests {
         }
         crate::works::rebuild(&c).unwrap();
         let titles = |q: ChannelQuery| -> Vec<String> {
-            query_channels(&c, &q).unwrap().items.into_iter().map(|i| i.title).collect()
+            query_channels(&c, &q)
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|i| i.title)
+                .collect()
         };
-        let uk = ChannelQuery { grouped: true, country: Some("UK".into()), ..Default::default() };
+        let uk = ChannelQuery {
+            grouped: true,
+            country: Some("UK".into()),
+            ..Default::default()
+        };
         assert_eq!(titles(uk), ["BBC ONE", "BAYWATCH"]);
-        let genre = ChannelQuery { grouped: true, genre: Some("Entertainment".into()), ..Default::default() };
+        let genre = ChannelQuery {
+            grouped: true,
+            genre: Some("Entertainment".into()),
+            ..Default::default()
+        };
         assert_eq!(titles(genre), ["BBC ONE", "BAYWATCH"]);
     }
 
@@ -2224,25 +2696,43 @@ mod tests {
     fn works_list_one_row_per_title_and_filter_through_copies() {
         let c = crate::db::test_conn();
         two_copy_show(&c);
-        let q = |q: MediaQuery| query_works(&c, &q, "series", SERIES_WORK_SELECT, row_to_series).unwrap();
+        let q = |q: MediaQuery| {
+            query_works(&c, &q, "series", SERIES_WORK_SELECT, row_to_series).unwrap()
+        };
         let all = q(MediaQuery::default());
         assert_eq!((all.total, all.items[0].work.version_count), (1, 2));
         // a category of either copy finds the work
-        let nordic = q(MediaQuery { source_id: Some(1), category_id: Some("sc".into()), ..Default::default() });
+        let nordic = q(MediaQuery {
+            source_id: Some(1),
+            category_id: Some("sc".into()),
+            ..Default::default()
+        });
         assert_eq!(nordic.total, 1);
         let by_service = q(MediaQuery {
-            facets: vec![FacetFilter { facet: "service".into(), value: "Apple TV+".into() }],
+            facets: vec![FacetFilter {
+                facet: "service".into(),
+                value: "Apple TV+".into(),
+            }],
             ..Default::default()
         });
         assert_eq!(by_service.total, 1);
         let none = q(MediaQuery {
-            facets: vec![FacetFilter { facet: "service".into(), value: "Netflix".into() }],
+            facets: vec![FacetFilter {
+                facet: "service".into(),
+                value: "Netflix".into(),
+            }],
             ..Default::default()
         });
         assert_eq!(none.total, 0);
         let bad = query_works(
             &c,
-            &MediaQuery { facets: vec![FacetFilter { facet: "x; DROP".into(), value: "1".into() }], ..Default::default() },
+            &MediaQuery {
+                facets: vec![FacetFilter {
+                    facet: "x; DROP".into(),
+                    value: "1".into(),
+                }],
+                ..Default::default()
+            },
             "series",
             SERIES_WORK_SELECT,
             row_to_series,
@@ -2250,8 +2740,16 @@ mod tests {
         assert!(bad.is_err());
         let f = facets_for(&c, "series", &MediaQuery::default()).unwrap();
         assert_eq!(f.total, 1);
-        assert!(f.service.iter().any(|v| v.value == "Apple TV+" && v.count == 1));
-        assert!(f.collection.iter().any(|v| v.value == "1:sc" && v.group.as_deref() == Some("Nordic")));
+        assert!(
+            f.service
+                .iter()
+                .any(|v| v.value == "Apple TV+" && v.count == 1)
+        );
+        assert!(
+            f.collection
+                .iter()
+                .any(|v| v.value == "1:sc" && v.group.as_deref() == Some("Nordic"))
+        );
         assert!(f.collection.iter().any(|v| v.label == "Apple+ Series"));
         // counts follow the other filters but not the facet's own choice
         c.execute(
@@ -2262,14 +2760,24 @@ mod tests {
         .unwrap();
         crate::works::rebuild(&c).unwrap();
         let netflix = MediaQuery {
-            facets: vec![FacetFilter { facet: "service".into(), value: "Netflix".into() }],
+            facets: vec![FacetFilter {
+                facet: "service".into(),
+                value: "Netflix".into(),
+            }],
             ..Default::default()
         };
         let f = facets_for(&c, "series", &netflix).unwrap();
         assert_eq!(f.total, 1);
-        let count = |v: &[FacetValue], value: &str| v.iter().find(|x| x.value == value).map(|x| x.count);
-        assert_eq!((count(&f.service, "Netflix"), count(&f.service, "Apple TV+")), (Some(1), Some(1)));
-        assert_eq!((count(&f.decade, "2000s"), count(&f.decade, "2010s")), (Some(1), None));
+        let count =
+            |v: &[FacetValue], value: &str| v.iter().find(|x| x.value == value).map(|x| x.count);
+        assert_eq!(
+            (count(&f.service, "Netflix"), count(&f.service, "Apple TV+")),
+            (Some(1), Some(1))
+        );
+        assert_eq!(
+            (count(&f.decade, "2000s"), count(&f.decade, "2010s")),
+            (Some(1), None)
+        );
     }
 
     #[test]
@@ -2291,7 +2799,13 @@ mod tests {
             )
             .unwrap();
         };
-        let next = |c: &Connection| -> Vec<String> { up_next_rows(c, 20).unwrap().into_iter().map(|u| u.episode.id).collect() };
+        let next = |c: &Connection| -> Vec<String> {
+            up_next_rows(c, 20)
+                .unwrap()
+                .into_iter()
+                .map(|u| u.episode.id)
+                .collect()
+        };
 
         finish(1, 100);
         assert_eq!(next(&c), vec!["e2"]);

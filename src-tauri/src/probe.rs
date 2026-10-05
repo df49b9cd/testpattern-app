@@ -16,9 +16,9 @@ use tauri::State;
 
 use crate::catalog;
 use crate::error::{Error, Result};
+use crate::playback::{PlayRequest, Stream, resolve};
 use crate::player::mpv::{EndReason, Event, Mpv};
 use crate::player::{LoadOptions, Player, USER_AGENT, file_options};
-use crate::playback::{PlayRequest, Stream, resolve};
 use crate::state::AppState;
 use crate::works::versions;
 
@@ -46,7 +46,9 @@ pub fn cancel() {
 /// (`versions::summarize_tracks`, with HDR taken from the first frame's
 /// `video-params.gamma`), or `None` when it didn't open in time.
 fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
-    let _running = RUNNING.try_lock_for(TIMEOUT).ok_or("another check is still running")?;
+    let _running = RUNNING
+        .try_lock_for(TIMEOUT)
+        .ok_or("another check is still running")?;
     BUSY.store(true, Ordering::SeqCst);
     struct Done;
     impl Drop for Done {
@@ -77,7 +79,8 @@ fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
         .map_err(|e| e.to_string())?,
     );
     mpv.request_log_messages("error");
-    mpv.observe("video-params", crate::player::mpv_sys::MPV_FORMAT_NODE).map_err(|e| e.to_string())?;
+    mpv.observe("video-params", crate::player::mpv_sys::MPV_FORMAT_NODE)
+        .map_err(|e| e.to_string())?;
     *CURRENT.lock() = Some(mpv.clone());
     let opts = file_options(&LoadOptions {
         paused: true,
@@ -89,46 +92,66 @@ fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
     let deadline = Instant::now() + TIMEOUT;
     let mut url = urls.next();
     if let Some(u) = url {
-        mpv.command(&["loadfile", u, "replace", "-1", &opts]).map_err(|e| e.to_string())?;
+        mpv.command(&["loadfile", u, "replace", "-1", &opts])
+            .map_err(|e| e.to_string())?;
     }
     let mut track_list: Option<Value> = None;
     let mut hdr = false;
     let loadfile_at = Instant::now();
-    let mut gamma_deadline: Option<Instant> = None;
-    while Instant::now() < deadline && gamma_deadline.map(|d| Instant::now() < d).unwrap_or(true) {
+    // Once the track list is known, keep waiting for the first video-params
+    // (its gamma decides hdr) until the overall deadline: on slow streams the
+    // params arrive many seconds after file-loaded, and a shorter gamma
+    // deadline would misreport hdr:false. The loop breaks as soon as any
+    // video-params shows up; a stream with no video at all (audio-only) waits
+    // the timeout out and is summarized with hdr=false.
+    while Instant::now() < deadline {
         match mpv.wait_event(0.25) {
             Some(Event::FileLoaded) => {
                 track_list = mpv.get_json("track-list");
                 if track_list.is_none() {
                     break; // nothing to summarize: don't hold the stream open
                 }
-                if !hdr {
-                    // the first frame's params: usually right after file-loaded on a 4K HEVC stream
-                    gamma_deadline = Some(Instant::now() + Duration::from_secs(6));
-                }
             }
-            Some(Event::PropertyChange { name, value }) if name == "video-params" && track_list.is_some() => {
+            Some(Event::PropertyChange { name, value })
+                if name == "video-params" && track_list.is_some() =>
+            {
                 hdr = matches!(value["gamma"].as_str(), Some("pq" | "hlg"));
-                log::info!("probe: first video-params gamma after {}ms", loadfile_at.elapsed().as_millis());
+                log::info!(
+                    "probe: first video-params gamma after {}ms",
+                    loadfile_at.elapsed().as_millis()
+                );
                 break;
             }
-            Some(Event::EndFile { reason: EndReason::Error, error }) => {
-                log::debug!("probe: stream failed: {}", crate::player::redact(error.as_deref().unwrap_or("?")));
+            Some(Event::EndFile {
+                reason: EndReason::Error,
+                error,
+            }) => {
+                log::debug!(
+                    "probe: stream failed: {}",
+                    crate::player::redact(error.as_deref().unwrap_or("?"))
+                );
                 url = urls.next();
                 match url {
                     Some(u) => {
-                        mpv.command(&["loadfile", u, "replace", "-1", &opts]).map_err(|e| e.to_string())?;
+                        mpv.command(&["loadfile", u, "replace", "-1", &opts])
+                            .map_err(|e| e.to_string())?;
                         track_list = None;
                         hdr = false;
-                        gamma_deadline = None;
                     }
                     None => break,
                 }
             }
             // cancelled (`play`) or finished otherwise
             Some(Event::EndFile { .. } | Event::Shutdown) => break,
-            Some(Event::Log { prefix, level, text }) => {
-                log::debug!("probe mpv[{prefix}] {level}: {}", crate::player::redact(text.trim_end()));
+            Some(Event::Log {
+                prefix,
+                level,
+                text,
+            }) => {
+                log::debug!(
+                    "probe mpv[{prefix}] {level}: {}",
+                    crate::player::redact(text.trim_end())
+                );
             }
             _ => {}
         }
@@ -153,7 +176,9 @@ pub async fn version_probe(
     id: String,
 ) -> Result<Option<Value>> {
     if player.busy() {
-        return Err(Error::msg("Stop playback first: the account allows one stream at a time"));
+        return Err(Error::msg(
+            "Stop playback first: the account allows one stream at a time",
+        ));
     }
     let st = state.inner().clone();
     // what to open: the movie, or a show's first two episodes (a single
@@ -161,7 +186,15 @@ pub async fn version_probe(
     let (reqs, item_kind) = {
         let conn = st.db.read();
         match kind.as_str() {
-            "movie" => (vec![PlayRequest { kind: "movie".into(), source_id, id: id.clone(), ..Default::default() }], "movie"),
+            "movie" => (
+                vec![PlayRequest {
+                    kind: "movie".into(),
+                    source_id,
+                    id: id.clone(),
+                    ..Default::default()
+                }],
+                "movie",
+            ),
             "series" => {
                 let seasons = catalog::stored_episodes(&conn, source_id, &id, "")?;
                 let regular = seasons.iter().filter(|(n, _)| *n > 0).flat_map(|(_, e)| e);
@@ -194,9 +227,19 @@ pub async fn version_probe(
             .await
             .map_err(|e| Error::msg(e.to_string()))?
             .map_err(Error::msg)?;
-        log::info!("checked tracks of {kind} {source_id}:{id} ({}): {}", req.id, if found.is_some() { "ok" } else { "no answer" });
+        log::info!(
+            "checked tracks of {kind} {source_id}:{id} ({}): {}",
+            req.id,
+            if found.is_some() { "ok" } else { "no answer" }
+        );
         if let Some(t) = found {
-            versions::save_tracks(&st.db.write(), source_id, item_kind, &req.id, &t.to_string())?;
+            versions::save_tracks(
+                &st.db.write(),
+                source_id,
+                item_kind,
+                &req.id,
+                &t.to_string(),
+            )?;
             return Ok(Some(t));
         }
         last = Some(req.id);
@@ -204,7 +247,13 @@ pub async fn version_probe(
     // the server couldn't open it: remembered (the version list says so and
     // the automatic choice avoids it) until a check or playback succeeds
     if let Some(item) = last {
-        versions::save_tracks(&st.db.write(), source_id, item_kind, &item, r#"{"unavailable":true}"#)?;
+        versions::save_tracks(
+            &st.db.write(),
+            source_id,
+            item_kind,
+            &item,
+            r#"{"unavailable":true}"#,
+        )?;
     }
     Ok(None)
 }

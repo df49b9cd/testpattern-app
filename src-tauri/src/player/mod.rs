@@ -25,15 +25,31 @@ pub const EVENT: &str = "player://event";
 pub const USER_AGENT: &str = concat!("testpattern/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlayerEvent {
-    Prop { name: String, value: Value },
+    Prop {
+        name: String,
+        value: Value,
+    },
     StartFile,
     FileLoaded,
-    EndFile { reason: EndReason, error: Option<String> },
+    EndFile {
+        reason: EndReason,
+        error: Option<String>,
+    },
     Restart,
-    Reconnecting { attempt: u32 },
-    Log { level: String, prefix: String, text: String },
+    Reconnecting {
+        attempt: u32,
+    },
+    Log {
+        level: String,
+        prefix: String,
+        text: String,
+    },
 }
 
 /// The catalog item a file belongs to (movie or episode), so what playback
@@ -91,8 +107,16 @@ struct Recording {
 
 impl Recording {
     fn file(&self) -> PathBuf {
-        let name = self.base.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let name = if self.part <= 1 { format!("{name}.ts") } else { format!("{name} (part {}).ts", self.part) };
+        let name = self
+            .base
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name = if self.part <= 1 {
+            format!("{name}.ts")
+        } else {
+            format!("{name} (part {}).ts", self.part)
+        };
         self.base.with_file_name(name)
     }
 }
@@ -102,12 +126,22 @@ impl Recording {
 pub fn file_name_for(title: &str) -> String {
     let cleaned: String = title
         .chars()
-        .map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() || r#"/\:*?"<>|"#.contains(c) {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     let words = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let short: String = words.chars().take(80).collect();
     let short = short.trim_matches(['.', ' ']).to_owned();
-    if short.is_empty() { "Live TV".to_owned() } else { short }
+    if short.is_empty() {
+        "Live TV".to_owned()
+    } else {
+        short
+    }
 }
 
 pub struct Player {
@@ -173,7 +207,10 @@ impl Player {
             ("demuxer-readahead-secs", "30"),
             ("network-timeout", "20"),
             ("user-agent", USER_AGENT),
-            ("stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=4"),
+            (
+                "stream-lavf-o",
+                "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=4",
+            ),
             ("audio-client-name", "testpattern"),
             ("sub-auto", "fuzzy"),
             ("deinterlace", "auto"),
@@ -188,7 +225,10 @@ impl Player {
         let (major, minor) = Mpv::api_version();
         log::info!("libmpv client API {major}.{minor}");
 
-        let player = Player { mpv, session: Arc::new(Mutex::new(None)) };
+        let player = Player {
+            mpv,
+            session: Arc::new(Mutex::new(None)),
+        };
         player.spawn_event_loop(app.clone());
         Ok(player)
     }
@@ -201,7 +241,9 @@ impl Player {
             .spawn(move || {
                 let mut last_time_emit = Instant::now() - Duration::from_secs(1);
                 loop {
-                    let Some(ev) = mpv.wait_event(-1.0) else { continue };
+                    let Some(ev) = mpv.wait_event(-1.0) else {
+                        continue;
+                    };
                     let out = match ev {
                         Event::Shutdown => break,
                         Event::PropertyChange { name, value } => {
@@ -239,10 +281,18 @@ impl Player {
                                 PlayerEvent::EndFile { reason, error }
                             }
                         }
-                        Event::Log { prefix, level, text } => {
+                        Event::Log {
+                            prefix,
+                            level,
+                            text,
+                        } => {
                             let text = redact(&text);
                             log::debug!("mpv[{prefix}] {level}: {text}");
-                            PlayerEvent::Log { level, prefix, text }
+                            PlayerEvent::Log {
+                                level,
+                                prefix,
+                                text,
+                            }
                         }
                         Event::Idle | Event::VideoReconfig | Event::Other => continue,
                     };
@@ -255,17 +305,28 @@ impl Player {
 
     /// Remembers the audio/subtitle/video tracks of the playing movie or
     /// episode (`media_info`, shown per version on the detail pages).
-    fn learn_tracks<R: Runtime>(app: &AppHandle<R>, session: &Mutex<Option<Session>>, name: &str, value: &Value) {
+    fn learn_tracks<R: Runtime>(
+        app: &AppHandle<R>,
+        session: &Mutex<Option<Session>>,
+        name: &str,
+        value: &Value,
+    ) {
         let (media, json) = {
             let mut guard = session.lock();
             let Some(s) = guard.as_mut() else { return };
-            let Some(media) = s.options.media.clone() else { return };
+            let Some(media) = s.options.media.clone() else {
+                return;
+            };
             if name == "video-params" {
                 s.hdr |= matches!(value["gamma"].as_str(), Some("pq" | "hlg"));
             } else {
                 s.track_list = Some(value.clone());
             }
-            let Some(summary) = s.track_list.as_ref().and_then(|t| crate::works::versions::summarize_tracks(t, s.hdr)) else {
+            let Some(summary) = s
+                .track_list
+                .as_ref()
+                .and_then(|t| crate::works::versions::summarize_tracks(t, s.hdr))
+            else {
                 return;
             };
             let json = summary.to_string();
@@ -278,16 +339,28 @@ impl Player {
         let app = app.clone();
         // off the mpv event thread: the database writer may be busy (sync)
         std::thread::spawn(move || {
-            let Some(st) = app.try_state::<crate::state::AppState>() else { return };
+            let Some(st) = app.try_state::<crate::state::AppState>() else {
+                return;
+            };
             let conn = st.db.write();
-            if let Err(e) = crate::works::versions::save_tracks(&conn, media.source_id, media.kind, &media.id, &json) {
+            if let Err(e) = crate::works::versions::save_tracks(
+                &conn,
+                media.source_id,
+                media.kind,
+                &media.id,
+                &json,
+            ) {
                 log::warn!("could not store tracks of {} {}: {e}", media.kind, media.id);
             }
         });
     }
 
     /// Live streams drop all the time; transparently re-open them a few times.
-    fn maybe_reconnect(mpv: &Arc<Mpv>, session: &Mutex<Option<Session>>, reason: EndReason) -> Option<u32> {
+    fn maybe_reconnect(
+        mpv: &Arc<Mpv>,
+        session: &Mutex<Option<Session>>,
+        reason: EndReason,
+    ) -> Option<u32> {
         if !matches!(reason, EndReason::Eof | EndReason::Error) {
             return None;
         }
@@ -301,14 +374,17 @@ impl Player {
             log::info!("player: stream failed to open, trying mirror #{attempt}");
             let (url, opts) = (s.url.clone(), file_options(&s.options));
             drop(guard);
-            mpv.command_async(&["loadfile", &url, "replace", "-1", &opts]).ok()?;
+            mpv.command_async(&["loadfile", &url, "replace", "-1", &opts])
+                .ok()?;
             return Some(attempt);
         }
         if !s.options.live {
             return None;
         }
         // A stream that played fine for a while earns a fresh retry budget.
-        if s.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) {
+        if s.loaded_at
+            .is_some_and(|t| t.elapsed() > Duration::from_secs(30))
+        {
             s.reconnects = 0;
         }
         if s.reconnects >= 5 {
@@ -361,22 +437,35 @@ impl Player {
     /// Records the playing live stream into `dir/<title> <date time>.ts`.
     pub fn start_recording(&self, dir: &Path) -> Result<PathBuf, String> {
         let mut guard = self.session.lock();
-        let s = guard.as_mut().filter(|s| s.options.live && s.ever_loaded).ok_or("No live channel is playing")?;
+        let s = guard
+            .as_mut()
+            .filter(|s| s.options.live && s.ever_loaded)
+            .ok_or("No live channel is playing")?;
         if let Some(rec) = &s.recording {
             return Ok(rec.file());
         }
         let title = file_name_for(s.options.title.as_deref().unwrap_or(""));
         let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M.%S");
-        let rec = Recording { base: dir.join(format!("{title} {stamp}")), part: 1 };
+        let rec = Recording {
+            base: dir.join(format!("{title} {stamp}")),
+            part: 1,
+        };
         let file = rec.file();
-        self.mpv.set_string("stream-record", &file.to_string_lossy()).map_err(|e| e.to_string())?;
+        self.mpv
+            .set_string("stream-record", &file.to_string_lossy())
+            .map_err(|e| e.to_string())?;
         s.recording = Some(rec);
         Ok(file)
     }
 
     /// Stops recording; returns the last file written.
     pub fn stop_recording(&self) -> Option<PathBuf> {
-        let file = self.session.lock().as_mut().and_then(|s| s.recording.take()).map(|r| r.file());
+        let file = self
+            .session
+            .lock()
+            .as_mut()
+            .and_then(|s| s.recording.take())
+            .map(|r| r.file());
         let _ = self.mpv.set_string("stream-record", "");
         file
     }
@@ -403,8 +492,9 @@ pub fn redact(text: &str) -> String {
     static PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"/(live|movie|series|timeshift)/[^/\s]+/[^/\s]+/").unwrap()
     });
-    static QUERY: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\b(username|password)=[^&\s]*").unwrap());
+    static QUERY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(username|password)=[^&\s]*").unwrap()
+    });
     let t = PATH.replace_all(text, "/$1/***/***/");
     QUERY.replace_all(&t, "$1=***").into_owned()
 }
@@ -456,11 +546,44 @@ pub fn init<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) -> Result
 
 /// Properties the UI may change.
 const UI_PROPERTIES: &[&str] = &[
-    "pause", "volume", "mute", "speed", "aid", "sid", "secondary-sid", "audio", "sub", "vid", "video",
-    "sub-visibility", "sub-delay", "audio-delay", "sub-scale", "sub-pos", "video-aspect-override", "panscan",
-    "video-zoom", "video-pan-x", "video-pan-y", "video-rotate", "video-margin-ratio-left", "video-margin-ratio-right",
-    "video-margin-ratio-top", "video-margin-ratio-bottom", "brightness", "contrast", "saturation", "gamma", "hue",
-    "deinterlace", "time-pos", "percent-pos", "chapter", "loop-file", "ab-loop-a", "ab-loop-b",
+    "pause",
+    "volume",
+    "mute",
+    "speed",
+    "aid",
+    "sid",
+    "secondary-sid",
+    "audio",
+    "sub",
+    "vid",
+    "video",
+    "sub-visibility",
+    "sub-delay",
+    "audio-delay",
+    "sub-scale",
+    "sub-pos",
+    "video-aspect-override",
+    "panscan",
+    "video-zoom",
+    "video-pan-x",
+    "video-pan-y",
+    "video-rotate",
+    "video-margin-ratio-left",
+    "video-margin-ratio-right",
+    "video-margin-ratio-top",
+    "video-margin-ratio-bottom",
+    "brightness",
+    "contrast",
+    "saturation",
+    "gamma",
+    "hue",
+    "deinterlace",
+    "time-pos",
+    "percent-pos",
+    "chapter",
+    "loop-file",
+    "ab-loop-a",
+    "ab-loop-b",
 ];
 
 fn property_allowed(name: &str) -> bool {
@@ -470,25 +593,36 @@ fn property_allowed(name: &str) -> bool {
 /// mpv commands the UI may run (property-changing ones only on `UI_PROPERTIES`).
 fn command_allowed(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
-        Some("seek" | "revert-seek" | "frame-step" | "frame-back-step" | "sub-seek" | "sub-step") => true,
-        Some("set" | "add" | "multiply" | "cycle" | "cycle-values") => args.get(1).is_some_and(|p| property_allowed(p)),
+        Some(
+            "seek" | "revert-seek" | "frame-step" | "frame-back-step" | "sub-seek" | "sub-step",
+        ) => true,
+        Some("set" | "add" | "multiply" | "cycle" | "cycle-values") => {
+            args.get(1).is_some_and(|p| property_allowed(p))
+        }
         _ => false,
     }
 }
 
 /// Properties that expose full stream URLs (with credentials) are not readable.
 fn readable(name: &str) -> bool {
-    !matches!(name, "path" | "stream-open-filename" | "stream-path") && !name.starts_with("playlist")
+    !matches!(name, "path" | "stream-open-filename" | "stream-path")
+        && !name.starts_with("playlist")
 }
 
 type Res<T> = Result<T, String>;
 
 #[tauri::command]
-pub fn player_load(player: State<'_, Player>, url: String, options: Option<LoadOptions>) -> Res<()> {
+pub fn player_load(
+    player: State<'_, Player>,
+    url: String,
+    options: Option<LoadOptions>,
+) -> Res<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("only http(s) streams can be loaded".into());
     }
-    player.load(&url, options.unwrap_or_default()).map_err(|e| e.to_string())
+    player
+        .load(&url, options.unwrap_or_default())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -499,7 +633,10 @@ pub fn player_stop(player: State<'_, Player>) -> Res<()> {
 #[tauri::command]
 pub fn player_command(player: State<'_, Player>, args: Vec<String>) -> Res<()> {
     if !command_allowed(&args) {
-        return Err(format!("mpv command not allowed: {}", args.first().map_or("", String::as_str)));
+        return Err(format!(
+            "mpv command not allowed: {}",
+            args.first().map_or("", String::as_str)
+        ));
     }
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     player.mpv.command(&args).map_err(|e| e.to_string())
@@ -510,12 +647,17 @@ pub fn player_set(player: State<'_, Player>, name: String, value: Value) -> Res<
     if !property_allowed(&name) {
         return Err(format!("mpv property not allowed: {name}"));
     }
-    player.mpv.set_json(&name, &value).map_err(|e| e.to_string())
+    player
+        .mpv
+        .set_json(&name, &value)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn player_get(player: State<'_, Player>, name: String) -> Option<Value> {
-    readable(&name).then(|| player.mpv.get_json(&name)).flatten()
+    readable(&name)
+        .then(|| player.mpv.get_json(&name))
+        .flatten()
 }
 
 #[cfg(test)]
@@ -535,11 +677,25 @@ mod tests {
         assert!(property_allowed("video-margin-ratio-left"));
         assert!(property_allowed("video-aspect-override"));
         // process spawning, scripts, file writes, arbitrary loads
-        for bad in [&["run", "sh", "-c", "id"][..], &["subprocess"], &["load-script", "/tmp/x.lua"], &["loadfile", "file:///etc/passwd"]] {
+        for bad in [
+            &["run", "sh", "-c", "id"][..],
+            &["subprocess"],
+            &["load-script", "/tmp/x.lua"],
+            &["loadfile", "file:///etc/passwd"],
+        ] {
             assert!(!command_allowed(&args(bad)), "{bad:?}");
         }
-        assert!(!command_allowed(&args(&["set", "stream-record", "/home/u/.bashrc"])));
-        assert!(!command_allowed(&args(&["cycle-values", "stream-record", "/tmp/a", ""])));
+        assert!(!command_allowed(&args(&[
+            "set",
+            "stream-record",
+            "/home/u/.bashrc"
+        ])));
+        assert!(!command_allowed(&args(&[
+            "cycle-values",
+            "stream-record",
+            "/tmp/a",
+            ""
+        ])));
         assert!(!command_allowed(&args(&["no-osd", "seek", "10"])));
         assert!(!command_allowed(&[]));
         assert!(!property_allowed("input-ipc-server"));
@@ -551,10 +707,19 @@ mod tests {
         assert_eq!(super::file_name_for("UK: BBC One / HD"), "UK BBC One HD");
         assert_eq!(super::file_name_for(" <?> "), "Live TV");
         assert_eq!(super::file_name_for(&"x".repeat(200)).len(), 80);
-        let mut rec = super::Recording { base: "/v/BBC One 2026-09-26 14.00.00".into(), part: 1 };
-        assert_eq!(rec.file().to_string_lossy(), "/v/BBC One 2026-09-26 14.00.00.ts");
+        let mut rec = super::Recording {
+            base: "/v/BBC One 2026-09-26 14.00.00".into(),
+            part: 1,
+        };
+        assert_eq!(
+            rec.file().to_string_lossy(),
+            "/v/BBC One 2026-09-26 14.00.00.ts"
+        );
         rec.part = 2;
-        assert_eq!(rec.file().to_string_lossy(), "/v/BBC One 2026-09-26 14.00.00 (part 2).ts");
+        assert_eq!(
+            rec.file().to_string_lossy(),
+            "/v/BBC One 2026-09-26 14.00.00 (part 2).ts"
+        );
     }
 
     #[test]

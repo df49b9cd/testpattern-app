@@ -32,7 +32,11 @@ pub const DEFAULT_CACHE_MB: u64 = 1024;
 /// provider (or our socket pool).
 static FETCH_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(16)));
 
-pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
+pub fn handle<R: Runtime>(
+    ctx: UriSchemeContext<'_, R>,
+    request: Request<Vec<u8>>,
+    responder: UriSchemeResponder,
+) {
     let app = ctx.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         let response = match app.try_state::<AppState>() {
@@ -56,7 +60,21 @@ fn content_type(bytes: &[u8]) -> &'static str {
         [0xff, 0xd8, ..] => "image/jpeg",
         [0x89, b'P', b'N', b'G', ..] => "image/png",
         [b'G', b'I', b'F', ..] => "image/gif",
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => "image/webp",
         b if b.windows(4).take(256).any(|w| w == b"<svg") => "image/svg+xml",
         _ => "application/octet-stream",
     }
@@ -107,13 +125,24 @@ pub async fn serve(st: AppState, request: Request<Vec<u8>>) -> Response<Vec<u8>>
     }
     // remember dead links for a day instead of hammering them
     if let Ok(meta) = tokio::fs::metadata(&miss).await
-        && meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age < MISS_TTL) {
-            return status(StatusCode::NOT_FOUND);
-        }
+        && meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age < MISS_TTL)
+    {
+        return status(StatusCode::NOT_FOUND);
+    }
 
     let fetched = async {
         let _slot = FETCH_SLOTS.clone().acquire_owned().await.ok()?;
-        let r = st.http.get(&url).timeout(Duration::from_secs(20)).send().await.ok()?;
+        let r = st
+            .http
+            .get(&url)
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await
+            .ok()?;
         if !r.status().is_success() {
             return None;
         }
@@ -127,7 +156,9 @@ pub async fn serve(st: AppState, request: Request<Vec<u8>>) -> Response<Vec<u8>>
         return status(StatusCode::NOT_FOUND);
     };
 
-    let processed = tokio::task::spawn_blocking(move || shrink(original, width)).await.ok();
+    let processed = tokio::task::spawn_blocking(move || shrink(original, width))
+        .await
+        .ok();
     let Some(bytes) = processed else {
         return status(StatusCode::INTERNAL_SERVER_ERROR);
     };
@@ -152,7 +183,9 @@ fn shrink(original: Vec<u8>, width: u32) -> Vec<u8> {
         }
         Err(_) => return original,
     };
-    let Ok(img) = reader.decode() else { return original };
+    let Ok(img) = reader.decode() else {
+        return original;
+    };
     let (w, h) = img.dimensions();
     let needs_resize = width > 0 && w > width;
     let is_jpeg = content_type(&original) == "image/jpeg";
@@ -167,12 +200,19 @@ fn shrink(original: Vec<u8>, width: u32) -> Vec<u8> {
     };
     let mut out = Vec::new();
     let encoded = if img.color().has_alpha() {
-        img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).is_ok()
+        img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .is_ok()
     } else {
         let rgb = img.to_rgb8();
-        JpegEncoder::new_with_quality(&mut out, 84).encode_image(&rgb).is_ok()
+        JpegEncoder::new_with_quality(&mut out, 84)
+            .encode_image(&rgb)
+            .is_ok()
     };
-    if encoded && !out.is_empty() { out } else { original }
+    if encoded && !out.is_empty() {
+        out
+    } else {
+        original
+    }
 }
 
 // ------------------------------------------------------------ cache size
@@ -227,7 +267,10 @@ pub fn prune(dir: &Path, cap: u64, now: SystemTime) -> std::io::Result<CacheStat
             images.push((modified, meta.len(), entry.path()));
         }
     }
-    let mut stats = CacheStats { files: images.len() as u64, bytes: images.iter().map(|i| i.1).sum() };
+    let mut stats = CacheStats {
+        files: images.len() as u64,
+        bytes: images.iter().map(|i| i.1).sum(),
+    };
     if stats.bytes > cap {
         images.sort_by_key(|i| i.0); // least recently used first
         let target = cap / 10 * 9;
@@ -252,11 +295,18 @@ fn cache_dir(st: &AppState) -> PathBuf {
 pub async fn enforce_limit(st: AppState) {
     let cap_mb = {
         let conn = st.db.read();
-        settings::get(&conn, "cache.imagesMb").as_u64().unwrap_or(DEFAULT_CACHE_MB).max(16)
+        settings::get(&conn, "cache.imagesMb")
+            .as_u64()
+            .unwrap_or(DEFAULT_CACHE_MB)
+            .max(16)
     };
     let dir = cache_dir(&st);
     match tokio::task::spawn_blocking(move || prune(&dir, cap_mb << 20, SystemTime::now())).await {
-        Ok(Ok(s)) => log::info!("artwork cache: {} images, {} MB (limit {cap_mb} MB)", s.files, s.bytes >> 20),
+        Ok(Ok(s)) => log::info!(
+            "artwork cache: {} images, {} MB (limit {cap_mb} MB)",
+            s.files,
+            s.bytes >> 20
+        ),
         Ok(Err(e)) => log::warn!("artwork cache: {e}"),
         Err(e) => log::warn!("artwork cache: {e}"),
     }
@@ -294,7 +344,12 @@ mod tests {
         let file = |name: &str, kb: usize, age_s: u64| {
             let p = dir.join(name);
             std::fs::write(&p, vec![0u8; kb * 1024]).unwrap();
-            std::fs::File::options().write(true).open(&p).unwrap().set_modified(now - Duration::from_secs(age_s)).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(now - Duration::from_secs(age_s))
+                .unwrap();
         };
         file("old", 40, 3 * 86400);
         file("mid", 40, 86400);
@@ -304,10 +359,26 @@ mod tests {
         file("fresh.miss", 0, 60);
 
         // under the limit: only the leftovers go
-        assert_eq!(prune(&dir, 1 << 30, now).unwrap(), CacheStats { files: 3, bytes: 120 * 1024 });
-        assert!(!dir.join("gone.tmp").exists() && !dir.join("dead.miss").exists() && dir.join("fresh.miss").exists());
+        assert_eq!(
+            prune(&dir, 1 << 30, now).unwrap(),
+            CacheStats {
+                files: 3,
+                bytes: 120 * 1024
+            }
+        );
+        assert!(
+            !dir.join("gone.tmp").exists()
+                && !dir.join("dead.miss").exists()
+                && dir.join("fresh.miss").exists()
+        );
         // 100 KB limit → down to 90 KB: the least recently used image goes
-        assert_eq!(prune(&dir, 100 * 1024, now).unwrap(), CacheStats { files: 2, bytes: 80 * 1024 });
+        assert_eq!(
+            prune(&dir, 100 * 1024, now).unwrap(),
+            CacheStats {
+                files: 2,
+                bytes: 80 * 1024
+            }
+        );
         assert!(!dir.join("old").exists() && dir.join("mid").exists() && dir.join("new").exists());
         // clear
         assert_eq!(prune(&dir, 0, now).unwrap(), CacheStats::default());

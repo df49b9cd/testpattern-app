@@ -31,6 +31,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "g
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# macos-private-api: the macOS port needs the private window APIs Tauri
+# gates behind this feature (fully transparent window background and the
+# non-activating panel behavior of the player overlay). It blocks Mac App
+# Store distribution — fine, this app ships outside the store.
 tauri = { version = "2.11", features = ["macos-private-api"] }
 tauri-plugin-opener = "2.5"
 tauri-plugin-single-instance = "2.4"

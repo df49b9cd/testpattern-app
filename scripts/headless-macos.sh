@@ -35,9 +35,11 @@ INTERACTIVE=0
 alive() { [[ -f "$STATE/$1.pid" ]] && kill -0 "$(cat "$STATE/$1.pid")" 2>/dev/null; }
 
 app_pid_file() {
-  # the rust binary is the (grand-)child of dev-run.sh: match it so `stop`
-  # works after the wrapper was re-exec'd
-  pgrep -f "target/debug/testpattern" 2>/dev/null | head -1 || true
+  # the rust binary is the (grand-)child of dev-run.sh: match its exact path
+  # (same default as dev-run.sh) so `stop` works after the wrapper re-exec'd
+  # and can never kill the user's other dev session's build
+  local bin="${TP_APP_BIN:-${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}/debug/testpattern}"
+  pgrep -xf "$bin" 2>/dev/null | head -1 || true
 }
 
 start_app() {
@@ -74,18 +76,29 @@ stop_pid() {
 }
 
 scrub_keychain() {
-  # remove this profile's keychain items (label prefix testpattern:, profile
-  # attribute keeps them namespaced; `secrets.rs` uses the `security` cli too)
-  while security find-generic-password -l "testpattern:" -g >/dev/null 2>&1; do
-    security delete-generic-password -l "testpattern:" >/dev/null 2>&1 || break
+  # remove ONLY this profile's keychain items. secrets.rs scopes entries as
+  # -s testpattern -a "<profile>:<entry>" where <profile> is the random id in
+  # the headless db — never touch other profiles' or the real profile's items.
+  local db="$STATE/data/dev.testpattern.app/testpattern.db" profile acct
+  profile=$(sqlite3 "$db" "select value from setting where key='secrets.profile'" 2>/dev/null | tr -d '"' || true)
+  if [[ -z "$profile" ]]; then
+    echo "no profile id in $db; no keychain scrub" >&2
+    return 0
+  fi
+  while acct=$(security find-generic-password -s testpattern -g 2>/dev/null \
+      | sed -n 's/.*"acct"<blob>="\(.*\)".*/\1/p' \
+      | grep "^$profile:" | head -1); [[ -n "$acct" ]]; do
+    security delete-generic-password -s testpattern -a "$acct" >/dev/null 2>&1 || break
   done || true
 }
 
 case "${1:-status}" in
   start)
     if alive app; then echo "already running"; exit 0; fi
-    # reuse a dev server that is already up; only servers we start get stopped
-    if curl -s -m 1 -o /dev/null http://localhost:1420/; then
+    # reuse a dev server that is already up, but only if it is THIS project
+    # (a stray :1420 server from elsewhere would break the run); only servers
+    # we start get stopped
+    if curl -s -m 1 http://localhost:1420/ | grep -q testpattern; then
       echo "reusing the dev server already running on :1420"
       rm -f "$STATE/vite.pid"
     else

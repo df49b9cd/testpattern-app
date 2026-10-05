@@ -35,7 +35,10 @@ const ALLOWED_ORIGINS: &[&str] = &["http://localhost:1420", "http://127.0.0.1:14
 const MAX_BODY: usize = 16 << 20;
 
 pub fn start<R: Runtime>(app: &AppHandle<R>) {
-    let port: u16 = std::env::var("TP_DEV_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(17777);
+    let port: u16 = std::env::var("TP_DEV_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(17777);
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
@@ -69,21 +72,28 @@ struct Headers {
 /// Lets in local tools and the dev server's pages, nothing else.
 fn check_request(method: &str, path: &str, port: u16, h: &Headers) -> Result<(), &'static str> {
     // DNS rebinding: a foreign name that resolves to 127.0.0.1
-    let host_ok = h
-        .host
-        .as_deref()
-        .is_some_and(|host| host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}"));
+    let host_ok = h.host.as_deref().is_some_and(|host| {
+        host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+    });
     if !host_ok {
         return Err("unexpected Host header");
     }
     if let Some(origin) = h.origin.as_deref() {
-        return if ALLOWED_ORIGINS.contains(&origin) { Ok(()) } else { Err("origin not allowed") };
+        return if ALLOWED_ORIGINS.contains(&origin) {
+            Ok(())
+        } else {
+            Err("origin not allowed")
+        };
     }
     // No Origin: a local tool, or a browser's no-cors load (<img src>, link
     // navigation), which may only reach the read-only endpoints.
     let from_browser = h.fetch_site.as_deref().is_some_and(|s| s != "none");
     let read_only = method == "GET" && matches!(path, "/img" | "/health");
-    if from_browser && !read_only { Err("cross-site request") } else { Ok(()) }
+    if from_browser && !read_only {
+        Err("cross-site request")
+    } else {
+        Ok(())
+    }
 }
 
 fn handle<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, port: u16) -> std::io::Result<()> {
@@ -116,7 +126,10 @@ fn handle<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, port: u16) -> s
     }
     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
     if let Err(why) = check_request(&method, path, port, &headers) {
-        log::warn!("devtools: refused {method} {path} ({why}; origin {:?})", headers.origin);
+        log::warn!(
+            "devtools: refused {method} {path} ({why}; origin {:?})",
+            headers.origin
+        );
         return respond(&mut stream, 403, "text/plain", why.as_bytes(), None);
     }
     // only allow-listed origins are echoed back (never `*`)
@@ -180,11 +193,23 @@ fn handle<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, port: u16) -> s
         },
         _ => (404, "not found".to_owned()),
     };
-    respond(&mut stream, status, "text/plain; charset=utf-8", response.as_bytes(), cors)
+    respond(
+        &mut stream,
+        status,
+        "text/plain; charset=utf-8",
+        response.as_bytes(),
+        cors,
+    )
 }
 
 /// `cors` is the request's (already allow-listed) Origin, if any.
-fn respond(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8], cors: Option<&str>) -> std::io::Result<()> {
+fn respond(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    cors: Option<&str>,
+) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
         204 => "No Content",
@@ -228,7 +253,11 @@ fn invoke_via_webview<R: Runtime>(app: &AppHandle<R>, body: &str) -> Result<Stri
             serde_json::Value::String(s) => s.clone(),
             other => other.to_string(),
         }),
-        None => Ok(v.get("ok").cloned().unwrap_or(serde_json::Value::Null).to_string()),
+        None => Ok(v
+            .get("ok")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+            .to_string()),
     }
 }
 
@@ -240,7 +269,8 @@ fn image<R: Runtime>(app: &AppHandle<R>, query: &str) -> (u16, String, Vec<u8>) 
     let Ok(request) = tauri::http::Request::builder().uri(uri).body(Vec::new()) else {
         return (400, "text/plain".into(), Vec::new());
     };
-    let response = tauri::async_runtime::block_on(crate::images::serve(st.inner().clone(), request));
+    let response =
+        tauri::async_runtime::block_on(crate::images::serve(st.inner().clone(), request));
     let ctype = response
         .headers()
         .get("Content-Type")
@@ -296,7 +326,8 @@ fn snapshot<R: Runtime>(app: &AppHandle<R>, out: &str) -> Result<(), String> {
         let _ = tx.send(result);
     })
     .map_err(|e| e.to_string())?;
-    rx.recv_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?
+    rx.recv_timeout(Duration::from_secs(10))
+        .map_err(|e| e.to_string())?
 }
 
 /// Synthesizes a primary-button press + release on the webview and runs it
@@ -336,7 +367,8 @@ fn click<R: Runtime>(app: &AppHandle<R>, x: f64, y: f64) -> Result<(), String> {
             let _ = tx.send(result);
         })
         .map_err(|e| e.to_string())?;
-    rx.recv_timeout(Duration::from_secs(10)).map_err(|e| e.to_string())?
+    rx.recv_timeout(Duration::from_secs(10))
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -379,7 +411,8 @@ fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
             );
         })
         .map_err(|e| e.to_string())?;
-    rx.recv_timeout(Duration::from_secs(20)).map_err(|e| e.to_string())?
+    rx.recv_timeout(Duration::from_secs(20))
+        .map_err(|e| e.to_string())?
 }
 
 /// macOS: WKWebView's `evaluateJavaScript` completion path loses the result
@@ -406,18 +439,30 @@ fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
     };
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     eval_bus::register(id, tx);
-    // The wrapper awaits the user JS, then hands the JSON string over IPC.
-    // `eval_with_callback`'s callback is ignored on macOS (see above).
-    let script = format!(
-        "(async () => {{ let out; try {{ const r = await (async () => {{ {js} }})(); out = JSON.stringify(r ?? null); }} catch (e) {{ out = JSON.stringify({{error: String(e && e.stack || e)}}); }} let done = false; while (!done) {{ try {{ await window.__TAURI_INTERNALS__.invoke('__devtools_eval_result', {{ id: {id}, result: out }}); done = true; }} catch (_) {{ await new Promise(r => setTimeout(r, 50)); }} }} }})(); 'ok'"
-    );
-    if window.eval_with_callback(&script, |_| {}).is_err() {
+    if window
+        .eval_with_callback(&eval_wrapper(id, js), |_| {})
+        .is_err()
+    {
         eval_bus::unregister(id);
         return Err("evaluateJavaScript dispatch failed".into());
     }
     let r = rx.recv_timeout(Duration::from_secs(25));
     eval_bus::unregister(id);
     r.map_err(|e| format!("evaluateJavaScript completion never fired: {e}"))?
+}
+
+/// The JS wrapper for the macOS eval path (a pure fn so tests can assert on
+/// its output): awaits the user JS, then posts the JSON string back over
+/// Tauri IPC. The post retries a bounded 200 times (50ms apart, ~10s: the
+/// Rust side's IPC handler may lag the webview's script start) and, when all
+/// attempts fail, posts once more with an error result so the caller fails
+/// fast instead of timing out blind. `eval_with_callback`'s callback is
+/// ignored on macOS (see above), so nothing else reports the outcome.
+#[cfg(target_os = "macos")]
+fn eval_wrapper(id: u64, js: &str) -> String {
+    format!(
+        "(async () => {{ let out; try {{ const r = await (async () => {{ {js} }})(); out = JSON.stringify(r ?? null); }} catch (e) {{ out = JSON.stringify({{error: String(e && e.stack || e)}}); }} const post = (result) => window.__TAURI_INTERNALS__.invoke('__devtools_eval_result', {{ id: {id}, result }}); let done = false; for (let i = 0; i < 200 && !done; i++) {{ try {{ await post(out); done = true; }} catch (_) {{ await new Promise(r => setTimeout(r, 50)); }} }} if (!done) {{ try {{ await post(JSON.stringify({{error: 'devtools /eval: result IPC failed after 200 retries'}})); }} catch (_) {{}} }} }})(); 'ok'"
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -480,21 +525,53 @@ mod tests {
     fn lets_in_local_tools_and_the_dev_server() {
         // curl / scripts
         assert!(check_request("POST", "/eval", 17777, &req("127.0.0.1:17777", None, None)).is_ok());
-        assert!(check_request("GET", "/snapshot", 17777, &req("localhost:17777", None, None)).is_ok());
+        assert!(
+            check_request(
+                "GET",
+                "/snapshot",
+                17777,
+                &req("localhost:17777", None, None)
+            )
+            .is_ok()
+        );
         // the UI preview in a plain browser (bridge.ts)
-        let preview = req("127.0.0.1:17777", Some("http://localhost:1420"), Some("cross-site"));
+        let preview = req(
+            "127.0.0.1:17777",
+            Some("http://localhost:1420"),
+            Some("cross-site"),
+        );
         assert!(check_request("POST", "/invoke", 17777, &preview).is_ok());
         assert!(check_request("OPTIONS", "/invoke", 17777, &preview).is_ok());
         // artwork <img> from the preview: no Origin on no-cors loads
-        assert!(check_request("GET", "/img", 17777, &req("127.0.0.1:17777", None, Some("cross-site"))).is_ok());
+        assert!(
+            check_request(
+                "GET",
+                "/img",
+                17777,
+                &req("127.0.0.1:17777", None, Some("cross-site"))
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn refuses_other_web_pages() {
-        let evil = req("127.0.0.1:17777", Some("https://evil.example"), Some("cross-site"));
+        let evil = req(
+            "127.0.0.1:17777",
+            Some("https://evil.example"),
+            Some("cross-site"),
+        );
         assert!(check_request("POST", "/eval", 17777, &evil).is_err());
         assert!(check_request("OPTIONS", "/eval", 17777, &evil).is_err());
-        assert!(check_request("POST", "/eval", 17777, &req("127.0.0.1:17777", Some("null"), None)).is_err());
+        assert!(
+            check_request(
+                "POST",
+                "/eval",
+                17777,
+                &req("127.0.0.1:17777", Some("null"), None)
+            )
+            .is_err()
+        );
         // <img src="http://127.0.0.1:17777/snapshot?path=…"> on a foreign page
         let img = req("127.0.0.1:17777", None, Some("cross-site"));
         assert!(check_request("GET", "/snapshot", 17777, &img).is_err());
@@ -503,5 +580,46 @@ mod tests {
         let rebound = req("attacker.example:17777", None, Some("same-origin"));
         assert!(check_request("POST", "/eval", 17777, &rebound).is_err());
         assert!(check_request("GET", "/health", 17777, &Headers::default()).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    mod eval_bus_tests {
+        use super::*;
+        use std::time::Duration;
+
+        #[test]
+        fn resolve_sends_to_the_registered_waiter() {
+            let (tx, rx) = mpsc::channel::<Result<String, String>>();
+            eval_bus::register(1, tx);
+            assert!(eval_bus::resolve(1, "\"ok\"".into()));
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(),
+                "\"ok\""
+            );
+            eval_bus::unregister(1);
+        }
+
+        #[test]
+        fn resolve_an_unknown_id_returns_false() {
+            assert!(!eval_bus::resolve(424242, "\"nope\"".into()));
+        }
+
+        #[test]
+        fn resolve_after_unregister_returns_false() {
+            let (tx, _rx) = mpsc::channel::<Result<String, String>>();
+            eval_bus::register(2, tx);
+            eval_bus::unregister(2);
+            assert!(!eval_bus::resolve(2, "\"late\"".into()));
+        }
+
+        #[test]
+        fn wrapper_embeds_the_id_the_script_and_the_retry_bound() {
+            let w = eval_wrapper(7, "return 1+1;");
+            assert!(w.contains("id: 7"));
+            assert!(w.contains("return 1+1;"));
+            assert!(w.contains("i < 200"));
+            assert!(w.contains("__devtools_eval_result"));
+            assert!(w.contains("result IPC failed after 200 retries"));
+        }
     }
 }
