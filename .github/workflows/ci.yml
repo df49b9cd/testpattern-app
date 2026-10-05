@@ -1,8 +1,9 @@
 # CI (WORKLOG T-037). Every push to main and every pull request runs
 # scripts/check.sh — Rust unit tests + clippy, TypeScript typecheck + vitest,
 # third-party notices — on Ubuntu 24.04 with the packages the release
-# container uses (packaging/ubuntu/packages.txt). Version tags (v*) and manual
-# runs also build the portable release bundles (T-049). The end-to-end smoke
+# container uses (packaging/ubuntu/packages.txt). Version tags (v*), pushes to
+# main and manual runs also build the portable release bundles (T-049); tag
+# builds additionally publish them on a GitHub release. The end-to-end smoke
 # test stays local: it needs the IPTV account, which allows one stream at a time.
 name: CI
 
@@ -65,10 +66,12 @@ jobs:
         run: scripts/check.sh
 
   bundle:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -116,3 +119,13 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: error
+
+      # version tags publish the bundles on a GitHub release
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/rpm/*.rpm

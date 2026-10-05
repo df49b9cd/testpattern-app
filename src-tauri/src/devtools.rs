@@ -440,7 +440,7 @@ fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     eval_bus::register(id, tx);
     if window
-        .eval_with_callback(&eval_wrapper(id, js), |_| {})
+        .eval_with_callback(eval_wrapper(id, js), |_| {})
         .is_err()
     {
         eval_bus::unregister(id);

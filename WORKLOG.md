@@ -975,6 +975,22 @@ UHF/Infuse feature, **P2** = later.
 
 ## 6. Log
 
+- **2026-10-03** — PL-101/PL-99/PL-100/PL-97 (planned tracker). PL-101:
+  `src/app/Layout.tsx` gained a global-space listener — Space/K/M while
+  playback runs off-page routes to `/player` (after the existing input
+  guard; Space with a focus stays on the control). PL-99/PL-100:
+  `sub-visibility` is now an observed mpv prop (`player/mod.rs` +
+  `stores/player.ts` `subVisible`); the subs menu has an explicit
+  Subtitles on/off row (PL-99, also bound to the `S` key) and picking a
+  track while subs are hidden flips subsEnabled on; fresh profiles default
+  `player.subsEnabled=true` (PL-100) so slang-selected tracks actually
+  show, plus a one-time "Subtitles are off — press S" hint when a track
+  got auto-selected with subs off. PL-97: the smoke GPU check now uses
+  the live recording (no system ffmpeg needed) and, when hwdec never
+  engages on the clip (Linux without a render node, macOS in a headless
+  session with no window-server VT), *skips* rather than fails — matching
+  the previous Linux behavior.
+
 - **2026-09-26** — Surveyed machine + provider. Chose embedded static
   libmpv/FFmpeg (system codecs unusable). Built rootless sysroot + media
   engine. Tauri skeleton + static linking. Native video surface under
