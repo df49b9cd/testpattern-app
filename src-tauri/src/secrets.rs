@@ -792,7 +792,7 @@ mod tests {
     /// Throwaway-keychain roundtrip for the macOS backend — runs the real
     /// backend functions against TP_KEYCHAIN (lock-keychain etc. likewise
     /// go through `run`):
-    /// `TP_KEYCHAIN=/tmp/tp-test-keychain.$$.keychain-db cargo test --lib -- --ignored macos_keychain_roundtrip --exact --nocapture`
+    /// `TP_KEYCHAIN=/tmp/tp-test-keychain.$$.keychain-db cargo test --lib -- --ignored secrets::tests::macos_keychain_roundtrip --exact --nocapture`
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore]
@@ -805,7 +805,7 @@ mod tests {
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            use backend::{delete, load, run, store};
+            use backend::{delete, load, store};
             let profile = "testprofile";
             let label = "testpattern: roundtrip";
             let entry = Entry::Source(4242);
@@ -852,23 +852,14 @@ mod tests {
                 Ok(None)
             ));
 
-            // re-add, lock -> store(Never) is Ok(false), load a locked Err;
-            // load(Prompt) tries unlock-keychain once and still gets the
-            // locked marker (the throwaway keychain's unlock needs -p)
-            assert!(matches!(
-                store(profile, entry, label, pw, Unlock::Never).await,
-                Ok(true)
-            ));
-            assert!(matches!(run(vec!["lock-keychain".into()]), Ok(true)));
-            assert!(matches!(
-                store(profile, entry, label, "x", Unlock::Never).await,
-                Ok(false)
-            ));
-            let e = load(profile, entry, Unlock::Never).await.unwrap_err();
-            assert!(e.to_string().contains("locked"), "{e}");
-            let e = load(profile, entry, Unlock::Prompt).await.unwrap_err();
-            assert!(e.to_string().contains("locked"), "{e}");
-            eprintln!("locked load error: {e}");
+            // The locked-keychain phase is deliberately not exercised: on any
+            // machine with a window server — a developer's Mac and the CI
+            // runner alike — every `security` call that has to open a locked
+            // keychain (even `show-keychain-info`) routes through a
+            // SecurityAgent password dialog and blocks the run until a human
+            // answers; tokio's timeout cannot preempt it (PL-113). Which
+            // failures map to "locked" is covered by
+            // keychain_locked_marker_classification below.
         });
     }
 
