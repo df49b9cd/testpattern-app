@@ -90,6 +90,14 @@ DAV1D_TAG https://code.videolan.org/videolan/dav1d.git ^[0-9]+\.[0-9]+\.[0-9]+$
 LIBXML2_TAG https://gitlab.gnome.org/GNOME/libxml2.git ^v[0-9]+\.[0-9]+\.[0-9]+$
 LIBPLACEBO_TAG https://code.videolan.org/videolan/libplacebo.git ^v[0-9]+\.[0-9]+\.[0-9]+$
 LIBDISPLAYINFO_TAG https://gitlab.freedesktop.org/emersion/libdisplay-info.git ^[0-9]+\.[0-9]+\.[0-9]+$
+OPENSSL_TAG https://github.com/openssl/openssl ^openssl-3\.[0-9]+\.[0-9]+$
+FREETYPE_TAG https://github.com/freetype/freetype ^VER-[0-9-]+$
+FRIBIDI_TAG https://github.com/fribidi/fribidi ^v[0-9]+\.[0-9]+\.[0-9]+$
+HARFBUZZ_TAG https://github.com/harfbuzz/harfbuzz ^[0-9]+\.[0-9]+\.[0-9]+$
+LIBUNIBREAK_TAG https://github.com/adah1972/libunibreak ^libunibreak_[0-9]+_[0-9]+$
+LIBASS_TAG https://github.com/libass/libass ^[0-9]+\.[0-9]+\.[0-9]+$
+LCMS2_TAG https://github.com/mm2/Little-CMS ^lcms2\.[0-9.]+$
+UCHARDET_TAG https://gitlab.freedesktop.org/uchardet/uchardet.git ^v[0-9]+\.[0-9]+\.[0-9]+$
 EOF
 echo "==> GitHub Actions (.github/workflows)"
 actions=0

@@ -31,34 +31,39 @@ fn link_media_engine_macos() {
         "cargo:rustc-link-search=native={}",
         prefix.join("lib").display()
     );
-    println!(
-        "cargo:rerun-if-changed={}",
-        prefix.join("lib/libmpv.a").display()
-    );
-    // the dynamic tail below (libass, lcms2, uchardet) comes from Homebrew
-    // at /opt/homebrew (Apple Silicon) or /usr/local (Intel). Fail loudly
-    // when neither prefix exists instead of silently linking a broken app on
-    // clean machines. Note: linking Homebrew dylibs makes the release build
-    // depend on them at their install path — a distributable .app MUST
-    // either bundle+sign these dylibs (and rewrite their install names with
-    // install_name_tool) or build them statically into third_party/prefix.
-    let brew_prefix = ["/opt/homebrew", "/usr/local"]
-        .into_iter()
-        .find(|p| std::path::Path::new(p).join("lib/libass.dylib").exists());
-    match brew_prefix {
-        Some(p) => println!("cargo:rustc-link-search=native={p}/lib"),
-        None => panic!(
-            "Homebrew libass/lcms2/uchardet not found at /opt/homebrew/lib or /usr/local/lib — \
-             install them (`brew install libass lcms2 uchardet`) or build them into \
-             third_party/prefix; without them the app links against nothing and won't run"
-        ),
+    // PL-110: the macOS static tail — OpenSSL, libass, lcms2, uchardet and
+    // everything libass pulls in — is built into the prefix by
+    // scripts/build-media.sh. With it the executable links nothing outside
+    // Apple's system libraries, which is what makes the .dmg distributable;
+    // before, it took these as Homebrew dylibs and only ran where they were
+    // installed. Fail loudly when the tail is missing instead of linking a
+    // broken app.
+    for marker in ["libmpv.a", "libass.a", "libssl.a", "libuchardet.a"] {
+        let m = prefix.join("lib").join(marker);
+        if !m.exists() {
+            panic!(
+                "static library {} is missing — run scripts/build-media.sh first (on macOS it \
+                 also builds the static tail: OpenSSL, FreeType, FriBidi, HarfBuzz, \
+                 libunibreak, libass, lcms2, uchardet)",
+                m.display()
+            );
+        }
+        println!("cargo:rerun-if-changed={}", m.display());
     }
     link_swift_surface(&manifest);
 
     // Same order rule as Linux: dependents before dependencies. No
-    // display-info on macOS (libdisplay-info is a DRM/EDID thing).
+    // display-info on macOS (libdisplay-info is a DRM/EDID thing). The tail
+    // after the FFmpeg libraries is the PL-110 set (see the marker check
+    // above): lcms2/uchardet that mpv references, ssl/crypto that avformat's
+    // TLS needs.
     const STATIC: &[&str] = &[
         "mpv",
+        "ass",
+        "freetype",
+        "fribidi",
+        "harfbuzz",
+        "unibreak",
         "placebo",
         "avfilter",
         "avformat",
@@ -66,6 +71,10 @@ fn link_media_engine_macos() {
         "swscale",
         "swresample",
         "avutil",
+        "lcms2",
+        "uchardet",
+        "ssl",
+        "crypto",
         "xml2",
         "dav1d",
     ];
@@ -116,14 +125,18 @@ fn link_media_engine_macos() {
         "Carbon",
         "AppKit",
         "UniformTypeIdentifiers",
+        // libass's CoreText system-font provider (no fontconfig on macOS)
+        "CoreText",
+        "CoreGraphics",
     ];
     for f in FRAMEWORKS {
         println!("cargo:rustc-link-lib=framework={f}");
     }
-    // non-framework dynamic libs mpv still uses on macOS
-    for lib in [
-        "z", "bz2", "iconv", "c++", "ass", "lcms2", "uchardet", "ssl", "crypto",
-    ] {
+    // non-framework dynamic libs still used on macOS: zlib (FFmpeg), the
+    // C++ runtime (libplacebo, harfbuzz, uchardet) and libiconv — all Apple
+    // system libraries present on every Mac. Everything else that used to be
+    // here (libass, lcms2, uchardet, OpenSSL) is static now (PL-110).
+    for lib in ["z", "iconv", "c++"] {
         println!("cargo:rustc-link-lib=dylib={lib}");
     }
 }

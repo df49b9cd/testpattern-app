@@ -68,6 +68,17 @@ reach a commit, enable the repository's hook once per clone:
 git config core.hooksPath scripts/git-hooks
 ```
 
+## Release
+
+Tag a commit on main as `v<version>` — `package.json`,
+`src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` must all carry that
+version (the release job enforces it). CI builds the Linux
+.deb/.rpm/AppImage and the macOS .dmg, writes `SHA256SUMS`, attests each
+asset's build provenance and opens a **draft** release with notes; review
+it and publish on GitHub. macOS assets are signed and notarized when the
+repository secrets are configured (see WORKLOG.md §3 "Releases"), ad-hoc
+signed otherwise.
+
 ## Status and roadmap
 
 See **[WORKLOG.md](WORKLOG.md)** — architecture decisions, how everything fits

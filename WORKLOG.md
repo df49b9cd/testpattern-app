@@ -82,7 +82,8 @@ import, image proxy, libmpv control. UI talks to it via Tauri commands/events.
 sudo dnf install $(scripts/fedora-sysroot.sh --print-packages)
 # ...or rootless (what the agent uses; creates .deps/sysroot + .deps/env.sh):
 scripts/fedora-sysroot.sh
-# one-time (~1 min on 32 threads): static FFmpeg + libmpv into third_party/prefix
+# one-time: static FFmpeg + libmpv into third_party/prefix
+# (macOS: also the static tail — OpenSSL, libass, lcms2, uchardet + deps)
 scripts/build-media.sh
 
 . .deps/env.sh            # only needed for the rootless sysroot
@@ -110,7 +111,21 @@ Fedora 40+ — as .deb, AppImage and .rpm in
 (`scripts/deb-depends.sh`). `scripts/ubuntu-build.sh debug` + `run-app` run
 the Ubuntu build inside the container against the headless session:
 `TP_APP_BIN="$PWD/scripts/ubuntu-build.sh run-app" scripts/headless.sh start`,
-then `scripts/smoke.sh`. CI builds the same bundles for version tags.
+then `scripts/smoke.sh`. CI builds the same bundles on every push to
+main (as run artifacts) and for version tags (see **Releases** below).
+
+**Releases** (T-057): a pushed tag `v<version>` — with `package.json`,
+`src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` all carrying that
+version, enforced by the release job — makes CI publish a **draft** release:
+both platforms' bundles (Linux .deb/AppImage/.rpm, macOS .dmg from the
+static tail), `SHA256SUMS`, a Sigstore build-provenance attestation per
+asset (`gh attestation verify <asset>`), install + GPL §6 source notes and
+GitHub's generated changelog; hyphenated tags are marked prerelease.
+Publishing the draft is a human step. macOS signing/notarization runs when
+the repo secrets are set (`APPLE_CERTIFICATE` +
+`APPLE_CERTIFICATE_PASSWORD`; notarization needs all of `APPLE_ID` +
+`APPLE_PASSWORD` + `APPLE_TEAM_ID`); without them the .dmg is ad-hoc
+signed (runs after right-click → Open).
 
 **This machine** (Ryzen 9 5950X): at 32 parallel jobs compilers crash
 sporadically (GCC "internal compiler error: Segmentation fault" on random
@@ -211,11 +226,15 @@ Every dependency must be on its **latest stable** release. Audited
 - npm: `bun outdated` clean (React 19.3, Vite 8.3, TS 7.0, Tailwind 4.3,
   react-router 8.4, @tauri-apps/* 2.11, vitest 5.0).
 - Media engine: FFmpeg **n9.0.2**, mpv **v0.41.0**, libplacebo **v7.360.1**,
-  dav1d **1.5.4**, libxml2 **v2.15.4**, libdisplay-info **0.4.0**
-  (`scripts/build-media.sh` re-fetches when a pinned tag changes and rebuilds
-  everything linking it; any edit of the script itself rebuilds everything).
+  dav1d **1.5.4**, libxml2 **v2.15.4**, libdisplay-info **0.4.0**; macOS
+  static tail: OpenSSL **3.6.5**, FreeType **2.14.3**, FriBidi **1.0.17**,
+  HarfBuzz **14.6.0**, libunibreak **8.0**, libass **0.17.5**, lcms2 **2.19**,
+  uchardet **0.0.8** (`scripts/build-media.sh` re-fetches when a pinned tag
+  changes and rebuilds everything linking it; any edit of the script itself
+  rebuilds everything).
 - GitHub Actions (`.github/workflows/ci.yml`): newest majors — checkout v7,
-  cache v6, setup-bun v2, rust-cache v2, upload-artifact v7.
+  cache v6, setup-bun v2, rust-cache v2, upload-artifact v7,
+  download-artifact v8, attest-build-provenance v4, action-gh-release v3.
 - After changing any dependency run `scripts/notices.py` (regenerates
   `THIRD_PARTY_NOTICES.md`; `scripts/check.sh` fails until you do).
 - How to re-audit: `scripts/outdated.sh` — compares every direct crate in
@@ -230,7 +249,7 @@ Every dependency must be on its **latest stable** release. Audited
 | Path | What |
 |---|---|
 | `scripts/fedora-sysroot.sh` | Rootless `-devel` sysroot (dnf download + extract) → `.deps/sysroot`, `.deps/env.sh` |
-| `scripts/build-media.sh` | Builds static FFmpeg + libmpv + libplacebo/dav1d/libxml2/libdisplay-info into `third_party/prefix` (tag-pinned, rebuilds dependents); vendors their license texts to `packaging/licenses/` |
+| `scripts/build-media.sh` | Builds static FFmpeg + libmpv + libplacebo/dav1d/libxml2/libdisplay-info into `third_party/prefix` (tag-pinned, rebuilds dependents); on macOS also the static tail: OpenSSL/libass/lcms2/uchardet + FreeType/FriBidi/HarfBuzz/libunibreak (PL-110); vendors their license texts to `packaging/licenses/` |
 | `scripts/dev-run.sh` | Runs the debug binary (`TP_DEV_AUTOPLAY`, `TP_DEV_MUTE`, `TP_DEV_AO`) |
 | `scripts/headless.sh` | Invisible test session: nested KWin + Vite (or reuse) + debug app, isolated profile, throwaway keyring |
 | `scripts/check.sh` | Rust unit tests + clippy `-D warnings` + `tsc` + vitest + notices up to date |
@@ -242,7 +261,7 @@ Every dependency must be on its **latest stable** release. Audited
 | `scripts/appimage-fix.sh` | Drops the bundled libwayland and the forced X11 backend from Tauri's AppImage, repacks it (T-049) |
 | `scripts/deb-depends.sh` | Checks `bundle.linux.deb.depends` against `dpkg-shlibdeps` (run on Ubuntu 24.04) |
 | `packaging/ubuntu/` | `Containerfile` + `packages.txt` (Ubuntu build packages, also installed by CI) |
-| `.github/workflows/ci.yml` | CI: `scripts/check.sh` on Ubuntu 24.04 for pushes/PRs; portable bundles for `v*` tags and manual runs (T-037) |
+| `.github/workflows/ci.yml` | CI: `scripts/check.sh` on Ubuntu 24.04 + macOS 26 (keychain round-trip) for pushes/PRs; Linux and macOS bundles on main pushes/tags; tag builds publish checksummed, attested draft releases (T-037, T-057) |
 | `scripts/notices.py` | Generates `THIRD_PARTY_NOTICES.md` (run after any dependency change; `check.sh` enforces) |
 | `LICENSE` · `THIRD_PARTY_NOTICES.md` · `packaging/debian/copyright` | GPLv3 text · generated third-party licenses · DEP-5 copyright for the deb |
 | `.gitignore` · `.gitattributes` · `.env.example` | Ignore rules (rebuildable + secrets) · LF/binary attributes · test-account template |
@@ -955,6 +974,59 @@ UHF/Infuse feature, **P2** = later.
   a visible, audible window). Follow-ups all closed 2026-10-03:
   PL-97/99/100/101 — see the 2026-10-03 log entry.
 
+- **T-057 Production-grade release pipeline.** A pushed `v*` tag now
+  produces a real release: the new `release` job gates the tag against the
+  versions in `package.json`, `src-tauri/tauri.conf.json` and
+  `src-tauri/Cargo.toml` (all three must match the tag — no more manual
+  version consistency), collects both platforms' bundles, writes
+  `SHA256SUMS`, attests each asset's **build provenance** with Sigstore
+  (`actions/attest-build-provenance@v4`, verifiable via
+  `gh attestation verify <asset>`), and publishes a **draft** release with
+  install + GPL §6 source notes plus GitHub's generated changelog; a
+  hyphenated tag (e.g. `v0.1.0-rc1`) is marked prerelease. Publishing stays
+  a human step. Two new build jobs make the release multi-platform: on
+  `macos-26` (arm64) CI runs `scripts/check.sh` **plus the keychain
+  round-trip** (`secrets::tests::macos_keychain_roundtrip` against a
+  throwaway keychain, bounded by a 2-minute watchdog — PL-111) and builds
+  the `.dmg`; the Linux job builds the deb/AppImage/rpm as before
+  (artifacts on every push to main). macOS signing is secret-gated:
+  with `APPLE_CERTIFICATE` (+ password) the bundler imports the
+  certificate and signs; with `APPLE_ID`+`APPLE_PASSWORD`+`APPLE_TEAM_ID`
+  it also notarizes; without secrets the dmg is ad-hoc signed (runs after
+  right-click → Open). The macOS dmg now also **verifies** in CI: the
+  bundle job mounts it and asserts the executable links nothing outside
+  Apple's system libraries, and that the code signature is valid. The
+  release-job scripts were rehearsed locally against the real tree
+  (version gate, checksums, prerelease flag, notes body). Verified:
+  `check.sh` green on macOS with the new static tail (89 Rust tests,
+  43 vitest), dmg built and `otool -L` clean (Apple libraries only),
+  `codesign --verify --deep --strict` green, keychain round-trip green
+  (0.17 s), notices regenerated for both platforms, actionlint clean.
+
+- **PL-110 macOS static tail** (done 2026-10-08, closing the .dmg
+  distributability gap): `scripts/build-media.sh` on Darwin also builds
+  OpenSSL 3.6.5, FreeType 2.14.3, FriBidi 1.0.17, HarfBuzz 14.6.0,
+  libunibreak 8.0 (checksum-pinned release tarball — the git checkout
+  would need autoreconf), libass 0.17.5, Little CMS 2.19 and uchardet
+  0.0.8 into `third_party/prefix`, all static with
+  `MACOSX_DEPLOYMENT_TARGET=13.0`; `src-tauri/build.rs` links them
+  statically and drops the Homebrew dylib path entirely — `otool -L` on
+  the bundled executable now lists Apple frameworks and `/usr/lib`
+  only. The same prefix keeps both platforms in sync (marker/dependents
+  graph extended; Linux untouched). Side fix: `bundle.macOS.files` moved
+  `LICENSE`/`THIRD_PARTY_NOTICES.md` from `Contents/` to
+  `Contents/Resources/` — codesign treats extension-less files in
+  `Contents/` as unsigned code objects and refused to sign the bundle.
+
+- **PL-113 (new, from this work)**: the macOS secrets backend runs
+  `security(1)` via blocking `std::process` inside async fns — tokio's
+  `Unlock` timeout cannot preempt a call securityd has routed through a
+  SecurityAgent dialog (stack-sampled; even `show-keychain-info` on a
+  locked keychain blocks behind UI). Until it runs on the blocking pool
+  or `tokio::process` with a hard kill, the round-trip test exercises the
+  unlocked keychain only (locked classification stays covered by the
+  pure unit test) and CI bounds it with the watchdog.
+
 ### 🟨 In progress
 
 ### 🟦 To do
@@ -1165,3 +1237,23 @@ UHF/Infuse feature, **P2** = later.
   engages on the clip (Linux without a render node, macOS in a headless
   session with no window-server VT), *skips* rather than fails — matching
   the previous Linux behavior.
+- **2026-10-08** — T-057 done (production-grade releases): CI now runs
+  `scripts/check.sh` on macOS 26 too (with the keychain round-trip, PL-111)
+  and builds a macOS `.dmg` alongside the Linux bundles; a `v*` tag
+  publishes a version-gated, SHA256-checksummed, Sigstore-attested **draft**
+  release with notes (publishing is a human step). PL-110 closed: the macOS
+  static tail (OpenSSL, libass, lcms2, uchardet + FreeType/FriBidi/
+  HarfBuzz/libunibreak) is built into `third_party/prefix` and linked
+  statically — `otool -L` shows Apple libraries only, verified on a real
+  ad-hoc-signed dmg (codesign valid, hdiutil verified, 23 MiB).
+  `bundle.macOS.files` license files moved to `Contents/Resources/`
+  (codesign refuses extension-less files in `Contents/`). The keychain
+  round-trip recipe was fixed along the way (libtest `--exact` needs the
+  full module path — the old recipe silently matched nothing), trimmed to
+  the unlocked path (the locked path pops a SecurityAgent dialog on any
+  window-server machine and cannot be preempted by tokio's timeout —
+  filed as PL-113), and CI bounds it with a watchdog. `scripts/notices.py`
+  now covers both released platforms (union of the Linux and macOS crate
+  sets, `cargo fetch` for the license files of platform-specific crates);
+  THIRD_PARTY_NOTICES.md regenerated (545 KB). PL-110, PL-111 closed in
+  planned; PL-113 filed.

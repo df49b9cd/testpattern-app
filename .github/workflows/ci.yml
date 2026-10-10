@@ -1,10 +1,19 @@
-# CI (WORKLOG T-037). Every push to main and every pull request runs
-# scripts/check.sh — Rust unit tests + clippy, TypeScript typecheck + vitest,
-# third-party notices — on Ubuntu 24.04 with the packages the release
-# container uses (packaging/ubuntu/packages.txt). Version tags (v*), pushes to
-# main and manual runs also build the portable release bundles (T-049); tag
-# builds additionally publish them on a GitHub release. The end-to-end smoke
-# test stays local: it needs the IPTV account, which allows one stream at a time.
+# CI (WORKLOG T-037/T-057). Every push to main and every pull request runs
+# scripts/check.sh on Ubuntu 24.04 (Rust unit tests + clippy, TypeScript
+# typecheck + vitest, third-party notices) and on macOS 26 (the same checks
+# plus the keychain round-trip test, PL-111). Version tags (v*), pushes to
+# main and manual runs also build the portable release bundles — Linux
+# (.deb/AppImage/.rpm, T-049) and macOS (.dmg, T-028) — as run artifacts;
+# tag builds publish them on a GitHub release: version-gated, checksummed,
+# draft, with release notes and Sigstore build-provenance attestations.
+# The end-to-end smoke test stays local: it needs the IPTV account, which
+# allows one stream at a time.
+#
+# macOS signing (optional): set repository secrets APPLE_CERTIFICATE +
+# APPLE_CERTIFICATE_PASSWORD (base64 .p12; tauri-bundler imports it) and, for
+# notarization, APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID (all three or
+# none — a partial set fails the build). Without them the .dmg is ad-hoc
+# signed ("-"), which runs on Apple Silicon after a right-click → Open.
 name: CI
 
 on:
@@ -31,7 +40,8 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $(sed -e 's/#.*//' packaging/ubuntu/packages.txt)
+          mapfile -t pkgs < <(sed -e 's/#.*//' packaging/ubuntu/packages.txt)
+          sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
 
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
@@ -48,7 +58,7 @@ jobs:
           path: |
             third_party/src
             third_party/prefix
-          key: media-ubuntu24.04-${{ hashFiles('scripts/build-media.sh', 'packaging/ubuntu/packages.txt') }}
+          key: media-ubuntu24.04-${{ hashFiles('.github/workflows/ci.yml.bump', 'scripts/build-media.sh', 'packaging/ubuntu/packages.txt') }}
 
       - name: Media engine
         run: scripts/build-media.sh
@@ -65,20 +75,19 @@ jobs:
       - name: Checks
         run: scripts/check.sh
 
-  bundle:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    needs: check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: write
+  # The macOS port (T-028) must not regress: same checks on macOS 26
+  # (arm64), against the static-tail media engine (PL-110), plus the
+  # keychain round-trip against a throwaway keychain (PL-111).
+  check-macos:
+    runs-on: macos-26
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
-      - name: System packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $(sed -e 's/#.*//' packaging/ubuntu/packages.txt)
+      # build-media.sh needs bash 4+ (assoc arrays); macOS ships 3.2 as
+      # /bin/bash. meson, nasm and pkg-config are not on the runner image.
+      - name: Build tools (Homebrew bash 5, meson, nasm, pkg-config)
+        run: brew install bash meson nasm pkg-config
 
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
@@ -93,10 +102,85 @@ jobs:
           path: |
             third_party/src
             third_party/prefix
-          key: media-ubuntu24.04-${{ hashFiles('scripts/build-media.sh', 'packaging/ubuntu/packages.txt') }}
+          key: media-macos-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml.bump', 'scripts/build-media.sh') }}
+
+      - name: Media engine (incl. the macOS static tail)
+        run: '"$(brew --prefix)/bin/bash" scripts/build-media.sh'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Frontend
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Checks
+        run: '"$(brew --prefix)/bin/bash" scripts/check.sh'
+
+      - name: Keychain round-trip (secrets.rs backend)
+        working-directory: src-tauri
+        run: |
+          # fresh path per run: a stale securityd UI request for one keychain
+          # db serializes every later operation on that same path
+          kc="/tmp/tp-test-keychain.$$.keychain-db"
+          security create-keychain -p ci "$kc"
+          security unlock-keychain -p ci "$kc"
+          cleanup() { security delete-keychain "$kc" 2>/dev/null || true; }
+          trap cleanup EXIT
+          # bounded: a `security` call that securityd wedges behind a UI
+          # request blocks in the kernel and cannot be preempted in-process
+          # (tokio's timeout cannot reach it) — fail after 2 min instead of
+          # eating the job timeout
+          TP_KEYCHAIN="$kc" cargo test --lib -- --ignored secrets::tests::macos_keychain_roundtrip --exact --nocapture &
+          testpid=$!
+          for _ in $(seq 1 120); do
+            kill -0 "$testpid" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$testpid" 2>/dev/null; then
+            echo "::error::keychain round-trip did not finish in 120 s — a security(1) call is blocked on securityd" >&2
+            kill "$testpid" 2>/dev/null || true
+            exit 1
+          fi
+          wait "$testpid"
+
+  bundle:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          mapfile -t pkgs < <(sed -e 's/#.*//' packaging/ubuntu/packages.txt)
+          sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
+
+      - name: Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Media engine cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            third_party/src
+            third_party/prefix
+          key: media-ubuntu24.04-${{ hashFiles('.github/workflows/ci.yml.bump', 'scripts/build-media.sh', 'packaging/ubuntu/packages.txt') }}
 
       - name: Media engine
         run: scripts/build-media.sh
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
 
       # one binary (glibc 2.39) as .deb, AppImage and .rpm — like
       # scripts/ubuntu-build.sh; the AppImage tools run without FUSE
@@ -120,12 +204,181 @@ jobs:
             src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
-      # version tags publish the bundles on a GitHub release
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+  bundle-macos:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: check-macos
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # build-media.sh needs bash 4+ (assoc arrays); macOS ships 3.2 as
+      # /bin/bash. meson, nasm and pkg-config are not on the runner image.
+      - name: Build tools (Homebrew bash 5, meson, nasm, pkg-config)
+        run: brew install bash meson nasm pkg-config
+
+      - name: Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Media engine cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            third_party/src
+            third_party/prefix
+          key: media-macos-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml.bump', 'scripts/build-media.sh') }}
+
+      - name: Media engine (incl. the macOS static tail)
+        run: '"$(brew --prefix)/bin/bash" scripts/build-media.sh'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Apple signing: import the certificate when the secrets are set;
+      # otherwise fall back to ad-hoc signing so the app runs at all on
+      # Apple Silicon. Notarization runs when APPLE_ID/APPLE_PASSWORD/
+      # APPLE_TEAM_ID are all set (tauri-bundler fails on a partial set).
+      - name: Apple signing environment
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -n "${!v}" ]]; then printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"; fi
+          done
+          if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
+            echo "no signing certificate configured — ad-hoc signing (-)"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
+      - name: .dmg bundle
+        run: |
+          bun install --frozen-lockfile
+          bun run tauri build --bundles dmg
+
+      # The dmg is the shipped artifact (the bundler removes the .app
+      # after packing it), so verify what users download: mount it and
+      # check the executable inside links nothing outside Apple's system
+      # (that is the point of the static tail, PL-110), plus signature
+      # and dmg integrity.
+      - name: Verify the bundle
+        run: |
+          dmg=$(ls src-tauri/target/release/bundle/dmg/*.dmg)
+          hdiutil verify "$dmg"
+          mnt=$(mktemp -d)
+          hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg" >/dev/null
+          trap 'hdiutil detach "$mnt" -force >/dev/null 2>&1' EXIT
+          app="$mnt/testpattern.app"
+          bin="$app/Contents/MacOS/testpattern"
+          echo "== dynamic dependencies of the executable:"
+          otool -L "$bin"
+          if otool -L "$bin" | tail -n +2 | grep -Ev '@executable_path|/usr/lib/|/System/Library/'; then
+            echo "::error::non-system dynamic dependency found — the static tail is incomplete" >&2
+            exit 1
+          fi
+          echo "== code signature:"
+          codesign -dv "$app" 2>&1 | sed 's/^/    /'
+          codesign --verify --deep --strict "$app"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: testpattern-macos-arm64
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  # Tag builds only: gates the tag against the declared versions, collects
+  # both platforms' bundles, checksums them, attests their build provenance
+  # (Sigstore, verifiable via `gh attestation verify`) and publishes them
+  # on a DRAFT release with generated + manual notes — a human publishes.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [bundle, bundle-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version gate (tag ↔ package.json ↔ tauri.conf.json ↔ Cargo.toml)
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+          conf=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
+          for v in "$pkg" "$conf" "$crate"; do
+            if [[ "$v" != "$tag" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match version $v — bump package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml together" >&2
+              exit 1
+            fi
+          done
+          echo "versions all match $tag"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: testpattern-*
+          merge-multiple: true
+          path: release
+
+      - name: Checksums
+        run: |
+          cd release
+          sha256sum -- *.dmg *.deb *.AppImage *.rpm > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Prerelease?
+        id: pre
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then echo "pre=true" >> "$GITHUB_OUTPUT"
+          else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Release notes body
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > release-body.md <<EOF
+          ## Install
+
+          **Linux** (Ubuntu 24.04+, Debian 13, Fedora 40+ — glibc ≥ 2.39): the \`.deb\`, the \`.rpm\` or the AppImage. Wayland and X11 both work; VA-API hardware decoding where the GPU offers it.
+
+          **macOS 13+ (Apple Silicon)**: the \`.dmg\`. If Gatekeeper warns on first launch, right-click the app and choose Open (releases are signed and notarized when Apple credentials are configured; otherwise ad-hoc signed).
+
+          Checksums are in **SHA256SUMS** — verify with \`sha256sum -c SHA256SUMS\` (Linux) or \`shasum -a 256 -c SHA256SUMS\` (macOS). Each asset carries a build-provenance attestation, verifiable with \`gh attestation verify <asset>\`.
+
+          ## Source code
+
+          Under GPL-3.0 §6, this repository at tag **$TAG** is the complete corresponding source of these binaries. The embedded FFmpeg, mpv and the other statically linked libraries are built, unmodified, from the upstream release tags recorded in \`scripts/build-media.sh\`.
+
+          See [WORKLOG.md](https://github.com/${{ github.repository }}/blob/$TAG/WORKLOG.md) for what changed and how everything fits together.
+          EOF
+
+      - name: Attest build provenance (Sigstore)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: release/SHA256SUMS
+
+      - name: Draft release
         uses: softprops/action-gh-release@v3
         with:
+          draft: true
+          prerelease: ${{ steps.pre.outputs.pre == 'true' }}
+          generate_release_notes: true
+          body_path: release-body.md
           files: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/rpm/*.rpm
+            release/*.dmg
+            release/*.deb
+            release/*.AppImage
+            release/*.rpm
+            release/SHA256SUMS
+          fail_on_unmatched_files: true
