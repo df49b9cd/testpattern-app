@@ -129,3 +129,33 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/rpm/*.rpm
+
+  # the same triggers as the bundles, built from packaging/flatpak/ (T-057)
+  # in Flathub's GNOME image; the action uploads testpattern.flatpak
+  flatpak:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pins
+        run: scripts/flatpak.sh pins
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/dev.testpattern.app.yml
+          bundle: testpattern.flatpak
+          cache-key: flatpak-${{ hashFiles('packaging/flatpak/dev.testpattern.app.yml', 'scripts/build-media.sh') }}
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: testpattern.flatpak

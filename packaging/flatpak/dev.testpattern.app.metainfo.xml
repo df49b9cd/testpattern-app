@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.testpattern.app</id>
+  <name>testpattern</name>
+  <summary>IPTV player with a TV guide, movies and series</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="dev.testpattern">
+    <name>the testpattern authors</name>
+  </developer>
+  <description>
+    <p>
+      A desktop IPTV player for Xtream Codes accounts and M3U playlists with
+      XMLTV: Live TV with a real TV guide, Movies and Series with rich
+      artwork, favorites, continue watching and search.
+    </p>
+    <ul>
+      <li>Plays H.264, HEVC and AV1, AAC, AC3, EAC3 and DTS in MPEG-TS, HLS and MKV through an embedded mpv and FFmpeg</li>
+      <li>Hardware decoding through VA-API</li>
+      <li>One entry per title: the copies a provider lists of a film or show become versions</li>
+      <li>Optional TMDB metadata with your own API key</li>
+      <li>Source passwords are kept in the desktop keyring</li>
+    </ul>
+    <p>testpattern ships no content; use sources you are entitled to.</p>
+  </description>
+  <launchable type="desktop-id">dev.testpattern.app.desktop</launchable>
+  <url type="homepage">https://github.com/df49b9cd/testpattern-app</url>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">960</display_length>
+  </requires>
+  <releases>
+    <release version="0.1.0" date="2026-11-02"/>
+  </releases>
+</component>
