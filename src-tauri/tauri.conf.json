@@ -136,8 +136,8 @@
       "hardenedRuntime": true,
       "entitlements": "../packaging/macos/entitlements.plist",
       "files": {
-        "LICENSE": "../LICENSE",
-        "THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md"
+        "Resources/LICENSE": "../LICENSE",
+        "Resources/THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md"
       }
     }
   }

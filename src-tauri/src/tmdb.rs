@@ -71,11 +71,16 @@ pub struct Info {
 }
 
 fn s(v: &Value) -> Option<String> {
-    v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+    v.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 fn names(v: &Value) -> Vec<String> {
-    v.as_array().map(|a| a.iter().filter_map(|x| s(&x["name"])).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|a| a.iter().filter_map(|x| s(&x["name"])).collect())
+        .unwrap_or_default()
 }
 
 fn year_of(v: &Value) -> Option<i64> {
@@ -88,8 +93,10 @@ impl Info {
         let tv = kind == "tv";
         // both kinds have `origin_country` (ISO 3166-1 codes); older movie
         // records only `production_countries`
-        let mut countries: Vec<String> =
-            v["origin_country"].as_array().map(|a| a.iter().filter_map(s).collect()).unwrap_or_default();
+        let mut countries: Vec<String> = v["origin_country"]
+            .as_array()
+            .map(|a| a.iter().filter_map(s).collect())
+            .unwrap_or_default();
         if countries.is_empty() {
             countries = v["production_countries"]
                 .as_array()
@@ -98,7 +105,11 @@ impl Info {
         }
         Info {
             title: s(&v[if tv { "name" } else { "title" }]).unwrap_or_default(),
-            original_title: s(&v[if tv { "original_name" } else { "original_title" }]),
+            original_title: s(&v[if tv {
+                "original_name"
+            } else {
+                "original_title"
+            }]),
             language: s(&v["original_language"]),
             genres: names(&v["genres"]),
             year: year_of(&v[if tv { "first_air_date" } else { "release_date" }]),
@@ -160,7 +171,10 @@ struct Client {
 
 impl Client {
     fn new(key: &str) -> Self {
-        Client { http: http_client(None), auth: auth(key) }
+        Client {
+            http: http_client(None),
+            auth: auth(key),
+        }
     }
 
     async fn get(&self, path: &str) -> Result<reqwest::Response> {
@@ -175,7 +189,8 @@ impl Client {
         if let Auth::ApiKey(k) = &self.auth {
             query.push(("api_key", k.as_str()));
         }
-        let url = reqwest::Url::parse_with_params(&format!("{API}{path}"), &query).map_err(|e| Error::msg(e.to_string()))?;
+        let url = reqwest::Url::parse_with_params(&format!("{API}{path}"), &query)
+            .map_err(|e| Error::msg(e.to_string()))?;
         let mut req = self.http.get(url).timeout(Duration::from_secs(20));
         if let Auth::Bearer(t) = &self.auth {
             req = req.bearer_auth(t);
@@ -208,30 +223,15 @@ impl Client {
         Err(Error::Network("TMDB kept rate-limiting".into()))
     }
 
-    /// Details of one title; waits out rate limiting (429).
+    /// Details of one title; 404 comes back as Fetched::Missing, and the
+    /// shared 429/401/403 handling lives in json().
     async fn details(&self, kind: Kind, id: &str) -> Result<Fetched> {
-        for attempt in 0..4 {
-            let resp = self.get(&format!("/{}/{id}", kind.as_str())).await?;
-            match resp.status().as_u16() {
-                200 => {
-                    let v: Value = resp.json().await.map_err(|e| Error::from(e.without_url()))?;
-                    return Ok(Fetched::Found(Box::new(Info::from_details(kind.as_str(), &v))));
-                }
-                404 => return Ok(Fetched::Missing),
-                401 | 403 => return Err(Error::msg(REJECTED)),
-                429 => {
-                    let wait = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(2 << attempt);
-                    tokio::time::sleep(Duration::from_secs(wait.min(30))).await;
-                }
-                code => return Err(Error::Network(format!("TMDB answered {code}"))),
-            }
-        }
-        Err(Error::Network("TMDB kept rate-limiting".into()))
+        let v = self.json(&format!("/{}/{id}", kind.as_str()), &[]).await?;
+        Ok(if v.is_null() {
+            Fetched::Missing
+        } else {
+            Fetched::Found(Box::new(Info::from_details(kind.as_str(), &v)))
+        })
     }
 }
 
@@ -303,6 +303,7 @@ pub fn status(conn: &Connection) -> Result<Status> {
     let unmapped: i64 = conn.query_row(
         "SELECT COUNT(*) FROM work w
           WHERE (w.key LIKE 'title:%' OR w.key LIKE 'item:%')
+            AND w.kind IN ('movie', 'series')
             AND trim(w.title) != ''
             AND COALESCE(NULLIF((SELECT tmdb_id FROM tmdb_map m
                                   WHERE m.kind = CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END
@@ -321,7 +322,10 @@ pub fn status(conn: &Connection) -> Result<Status> {
         known,
         titles,
         unmapped,
-        error: p.error.clone().or_else(|| locked.then(|| KEY_LOCKED.to_owned())),
+        error: p
+            .error
+            .clone()
+            .or_else(|| locked.then(|| KEY_LOCKED.to_owned())),
         last_run: p.last_run,
     })
 }
@@ -349,7 +353,9 @@ fn todo(conn: &Connection) -> Result<Vec<(Kind, String)>> {
     Ok(rows
         .into_iter()
         // ids are numbers; anything else is provider noise
-        .filter(|(_, id)| !id.is_empty() && id.len() < 12 && id.bytes().all(|b| b.is_ascii_digit()) && id != "0")
+        .filter(|(_, id)| {
+            !id.is_empty() && id.len() < 12 && id.bytes().all(|b| b.is_ascii_digit()) && id != "0"
+        })
         .map(|(k, id)| (if k == "movie" { Kind::Movie } else { Kind::Tv }, id))
         .collect())
 }
@@ -364,7 +370,8 @@ const CHANGES_MAX_DAYS: i64 = 14;
 /// Ids TMDB reported changed: fetch their details again (fetched_at = 0);
 /// only rows present are touched.
 pub fn mark_changed(conn: &Connection, kind: Kind, ids: &[String]) -> Result<usize> {
-    let mut stmt = conn.prepare_cached("UPDATE tmdb SET fetched_at = 0 WHERE kind = ?1 AND id = ?2")?;
+    let mut stmt =
+        conn.prepare_cached("UPDATE tmdb SET fetched_at = 0 WHERE kind = ?1 AND id = ?2")?;
     let mut n = 0;
     for id in ids {
         if !id.is_empty() && id.len() < 12 && id.bytes().all(|b| b.is_ascii_digit()) {
@@ -375,9 +382,17 @@ pub fn mark_changed(conn: &Connection, kind: Kind, ids: &[String]) -> Result<usi
 }
 
 fn changes_since(conn: &Connection) -> Option<chrono::NaiveDate> {
-    conn.query_row("SELECT value FROM setting WHERE key = ?1", [CHANGES_SETTING], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|v| chrono::NaiveDate::parse_from_str(&v, "%Y-%m-%d").ok().filter(|v| !v.to_string().is_empty()))
+    conn.query_row(
+        "SELECT value FROM setting WHERE key = ?1",
+        [CHANGES_SETTING],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|v| {
+        chrono::NaiveDate::parse_from_str(&v, "%Y-%m-%d")
+            .ok()
+            .filter(|v| !v.to_string().is_empty())
+    })
 }
 
 fn store_changes_since(conn: &Connection, d: chrono::NaiveDate) -> Result<()> {
@@ -404,11 +419,24 @@ async fn changes(
     loop {
         pace.lock().await.tick().await;
         let v = client
-            .json(&format!("/{}/changes", kind.as_str()), &[("start_date", start.as_str()), ("page", &page.to_string())])
+            .json(
+                &format!("/{}/changes", kind.as_str()),
+                &[("start_date", start.as_str()), ("page", &page.to_string())],
+            )
             .await?;
-        let Some(results) = v["results"].as_array() else { break };
-        ids.extend(results.iter().filter_map(|r| r["id"].as_i64().map(|i| i.to_string())));
-        if page >= v["total_pages"].as_i64().unwrap_or(1) {
+        let Some(results) = v["results"].as_array() else {
+            break;
+        };
+        if results.is_empty() {
+            break; // an empty page with a big total_pages would pace out 500 requests
+        }
+        ids.extend(
+            results
+                .iter()
+                .filter_map(|r| r["id"].as_i64().map(|i| i.to_string())),
+        );
+        // total_pages is trusted only up to TMDB's 500-page cap
+        if page >= v["total_pages"].as_i64().unwrap_or(1).min(500) {
             break;
         }
         page += 1;
@@ -441,14 +469,23 @@ fn search_todo(conn: &Connection) -> Result<Vec<Candidate>> {
                 AND (m.searched_at IS NULL OR m.searched_at < ?1)",
         )?
         .query_map([now() - MAX_AGE], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows
         .into_iter()
         .filter(|(_, _, title, _)| !title.trim().is_empty())
         .map(|(kind, source_key, title, year)| Candidate {
-            kind: if kind == "movie" { Kind::Movie } else { Kind::Tv },
+            kind: if kind == "movie" {
+                Kind::Movie
+            } else {
+                Kind::Tv
+            },
             source_key,
             title,
             year,
@@ -458,14 +495,28 @@ fn search_todo(conn: &Connection) -> Result<Vec<Candidate>> {
 
 /// GET /3/search/{movie|tv}: an exact normalized-title match with a fitting
 /// year identifies the entry; several such candidates settle none.
-async fn search_id(client: &Client, kind: Kind, title: &str, year: Option<i64>) -> Result<Option<String>> {
+async fn search_id(
+    client: &Client,
+    kind: Kind,
+    title: &str,
+    year: Option<i64>,
+) -> Result<Option<String>> {
     let year_param;
     let mut extra: Vec<(&str, &str)> = vec![("query", title)];
     if let Some(y) = year {
         year_param = y.to_string();
-        extra.push((if kind == Kind::Movie { "primary_release_year" } else { "first_air_date_year" }, &year_param));
+        extra.push((
+            if kind == Kind::Movie {
+                "primary_release_year"
+            } else {
+                "first_air_date_year"
+            },
+            &year_param,
+        ));
     }
-    let v = client.json(&format!("/search/{}", kind.as_str()), &extra).await?;
+    let v = client
+        .json(&format!("/search/{}", kind.as_str()), &extra)
+        .await?;
     if v.is_null() {
         return Ok(None);
     }
@@ -473,11 +524,17 @@ async fn search_id(client: &Client, kind: Kind, title: &str, year: Option<i64>) 
     let asked = crate::works::norm_title(title);
     let mut found: Option<String> = None;
     for r in v["results"].as_array().into_iter().flatten() {
-        let names: Vec<String> =
-            [s(&r[if tv { "name" } else { "title" }]), s(&r[if tv { "original_name" } else { "original_title" }])]
-                .into_iter()
-                .flatten()
-                .collect();
+        let names: Vec<String> = [
+            s(&r[if tv { "name" } else { "title" }]),
+            s(&r[if tv {
+                "original_name"
+            } else {
+                "original_title"
+            }]),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         if !names.iter().any(|n| crate::works::norm_title(n) == asked) {
             continue;
         }
@@ -514,9 +571,13 @@ async fn identify(
     if candidates.is_empty() {
         return Ok(0);
     }
-    log::info!("tmdb: searching for {} unidentified titles", candidates.len());
+    log::info!(
+        "tmdb: searching for {} unidentified titles",
+        candidates.len()
+    );
     PROGRESS.lock().total += candidates.len() as i64;
     let mut found = 0;
+    let mut failures = 0;
     let mut batch: Vec<(&str, String, String)> = Vec::new();
     for (i, c) in candidates.iter().enumerate() {
         pace.lock().await.tick().await;
@@ -526,10 +587,22 @@ async fn identify(
         PROGRESS.lock().done = (progress + i + 1) as i64;
         let id = match search_id(client, c.kind, &c.title, c.year).await {
             Ok(id) => id,
-            Err(e) if e.to_string() == REJECTED => return Err(e),
+            Err(e) if e.to_string() == REJECTED => {
+                // keep the matches already found: they are real work
+                store_map(&mut st.db.write(), &batch)?;
+                return Err(e);
+            }
             Err(e) => {
+                failures += 1;
                 log::debug!("tmdb search {:?}: {e}", c.title);
-                continue; // offline / TMDB down: the next run retries
+                // offline or TMDB down: stop, the next run continues; search
+                // is sequential so an outage would otherwise pace through the
+                // whole catalog at one slow request per title
+                if failures >= 25 && failures * 2 > found + batch.len() {
+                    store_map(&mut st.db.write(), &batch)?;
+                    return Err(Error::msg(format!("TMDB search is not reachable ({e})")));
+                }
+                continue;
             }
         };
         let got = id.unwrap_or_default();
@@ -539,30 +612,35 @@ async fn identify(
         }
         batch.push((c.kind.as_str(), c.source_key.clone(), got));
         if batch.len() >= 200 {
-            store_map(&st.db.write(), &batch)?;
+            store_map(&mut st.db.write(), &batch)?;
             let done = (progress + i + 1) as i64;
             PROGRESS.lock().done = done;
             batch.clear();
         }
     }
-    store_map(&st.db.write(), &batch)?;
+    store_map(&mut st.db.write(), &batch)?;
     Ok(found)
 }
 
-fn store_map(conn: &Connection, rows: &[(&str, String, String)]) -> Result<()> {
-    let mut stmt =
-        conn.prepare_cached("INSERT OR REPLACE INTO tmdb_map (kind, source_key, tmdb_id, searched_at) VALUES (?1, ?2, ?3, ?4)")?;
-    let t = now();
-    for (kind, key, id) in rows {
-        stmt.execute(params![kind, key, id, t])?;
+fn store_map(conn: &mut Connection, rows: &[(&str, String, String)]) -> Result<()> {
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare_cached("INSERT OR REPLACE INTO tmdb_map (kind, source_key, tmdb_id, searched_at) VALUES (?1, ?2, ?3, ?4)")?;
+        let t = now();
+        for (kind, key, id) in rows {
+            stmt.execute(params![kind, key, id, t])?;
+        }
     }
+    tx.commit()?;
     Ok(())
 }
 
 fn store(conn: &mut Connection, rows: &[(Kind, String, Option<Info>)]) -> Result<()> {
     let tx = conn.transaction()?;
     {
-        let mut stmt = tx.prepare_cached("INSERT OR REPLACE INTO tmdb (kind, id, json, fetched_at) VALUES (?1, ?2, ?3, ?4)")?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO tmdb (kind, id, json, fetched_at) VALUES (?1, ?2, ?3, ?4)",
+        )?;
         let t = now();
         for (kind, id, info) in rows {
             let json = info.as_ref().map(serde_json::to_string).transpose()?;
@@ -589,7 +667,11 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, st: AppState) {
     }
     {
         let mut p = PROGRESS.lock();
-        *p = Progress { running: true, last_run: p.last_run, ..Default::default() };
+        *p = Progress {
+            running: true,
+            last_run: p.last_run,
+            ..Default::default()
+        };
     }
     tauri::async_runtime::spawn(async move {
         let result = run(&app, &st).await;
@@ -628,20 +710,28 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
     // make work. The first run ever has no last date: nothing to mark.
     {
         let since = changes_since(&st.db.read());
+        let mut covered = since.is_none(); // no prior date: nothing to cover
         if let Some(since) = since {
             let mut marked = 0;
+            let mut fetched = true;
             for kind in [Kind::Movie, Kind::Tv] {
                 match changes(&client, &pace, kind, since).await {
                     Ok(ids) => marked += mark_changed(&st.db.write(), kind, &ids)?,
                     // TMDB down: keep going, the MAX_AGE fallback still works
-                    Err(e) => log::debug!("tmdb {}/changes: {e}", kind.as_str()),
+                    Err(e) => {
+                        fetched = false;
+                        log::debug!("tmdb {}/changes: {e}", kind.as_str());
+                    }
                 }
             }
             log::info!("tmdb: {marked} changed titles marked for refetch");
+            covered = fetched;
         }
-        // the run now covers up to today; a failed changes phase keeps the
-        // detail fetch small next time only when nothing was marked.
-        store_changes_since(&st.db.write(), chrono::Utc::now().date_naive())?;
+        // Only advance the window when the changes phase actually covered
+        // it — otherwise the failed span would never be marked for refetch.
+        if covered {
+            store_changes_since(&st.db.write(), chrono::Utc::now().date_naive())?;
+        }
     }
 
     let todo = {
@@ -729,7 +819,11 @@ pub async fn tmdb_status(state: State<'_, AppState>) -> Result<Status> {
 /// Saves (after checking it with TMDB) or, with an empty key, removes the
 /// API key; a saved key starts fetching.
 #[tauri::command]
-pub async fn tmdb_set_key<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>, key: String) -> Result<Status> {
+pub async fn tmdb_set_key<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<Status> {
     let key = key.trim().to_owned();
     if !key.is_empty() {
         check_key(&key).await?;
@@ -739,7 +833,13 @@ pub async fn tmdb_set_key<R: Runtime>(app: AppHandle<R>, state: State<'_, AppSta
     if key.is_empty() {
         crate::secrets::forget_named(state.inner(), KEY_SETTING)?;
     } else {
-        crate::secrets::store_named(state.inner(), KEY_SETTING, &key, crate::secrets::Unlock::Prompt).await?;
+        crate::secrets::store_named(
+            state.inner(),
+            KEY_SETTING,
+            &key,
+            crate::secrets::Unlock::Prompt,
+        )
+        .await?;
     }
     PROGRESS.lock().error = None;
     spawn(app, state.inner().clone());
@@ -747,7 +847,10 @@ pub async fn tmdb_set_key<R: Runtime>(app: AppHandle<R>, state: State<'_, AppSta
 }
 
 #[tauri::command]
-pub async fn tmdb_refresh<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>) -> Result<Status> {
+pub async fn tmdb_refresh<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<Status> {
     // the user asked: a keyring locked so far may prompt now
     crate::secrets::ensure_loaded(state.inner(), None, crate::secrets::Unlock::Prompt).await;
     spawn(app, state.inner().clone());
@@ -769,21 +872,43 @@ pub struct Facts {
 }
 
 /// TMDB facts of a work, when its details are stored and fit its title.
-pub fn facts_for(conn: &Connection, kind: &str, key: &str, title: &str, year: Option<i64>) -> Result<Option<Facts>> {
-    Ok(info_for(conn, kind, key)?.filter(|i| crate::works::tmdb_fits(i, &[title], year)).map(|i| Facts {
-        original_language: i.language.as_deref().and_then(crate::works::lang::name).map(str::to_owned),
-        collection: i.collection,
-        networks: i.networks,
-        countries: i.countries.iter().map(|c| crate::works::genre::country_name(c)).collect(),
-    }))
+pub fn facts_for(
+    conn: &Connection,
+    kind: &str,
+    key: &str,
+    title: &str,
+    year: Option<i64>,
+) -> Result<Option<Facts>> {
+    Ok(info_for(conn, kind, key)?
+        .filter(|i| crate::works::tmdb_fits(i, &[title], year))
+        .map(|i| Facts {
+            original_language: i
+                .language
+                .as_deref()
+                .and_then(crate::works::lang::name)
+                .map(str::to_owned),
+            collection: i.collection,
+            networks: i.networks,
+            countries: i
+                .countries
+                .iter()
+                .map(|c| crate::works::genre::country_name(c))
+                .collect(),
+        }))
 }
 
 /// TMDB details stored for a work key ("tmdb:603"), if any.
 pub fn info_for(conn: &Connection, kind: &str, key: &str) -> Result<Option<Info>> {
-    let Some(id) = key.strip_prefix("tmdb:") else { return Ok(None) };
+    let Some(id) = key.strip_prefix("tmdb:") else {
+        return Ok(None);
+    };
     let kind = crate::works::tmdb_kind(kind);
     Ok(conn
-        .query_row("SELECT json FROM tmdb WHERE kind = ?1 AND id = ?2", params![kind, id], |r| r.get::<_, Option<String>>(0))
+        .query_row(
+            "SELECT json FROM tmdb WHERE kind = ?1 AND id = ?2",
+            params![kind, id],
+            |r| r.get::<_, Option<String>>(0),
+        )
         .optional()?
         .flatten()
         .and_then(|j| serde_json::from_str(&j).ok()))
@@ -803,7 +928,10 @@ mod tests {
             "poster_path": "/p.jpg", "backdrop_path": "/b.jpg"
         });
         let m = Info::from_details("movie", &movie);
-        assert_eq!((m.year, m.collection.as_deref(), m.genres.len()), (Some(2022), Some("Top Gun Collection"), 2));
+        assert_eq!(
+            (m.year, m.collection.as_deref(), m.genres.len()),
+            (Some(2022), Some("Top Gun Collection"), 2)
+        );
         assert_eq!(m.countries, vec!["US"]);
         let tv = serde_json::json!({
             "name": "Kastanjemanden", "original_name": "Kastanjemanden", "original_language": "da",
@@ -811,7 +939,10 @@ mod tests {
             "networks": [{"name": "Netflix"}], "origin_country": ["DK"], "vote_average": 0
         });
         let t = Info::from_details("tv", &tv);
-        assert_eq!((t.title.as_str(), t.language.as_deref(), t.rating), ("Kastanjemanden", Some("da"), None));
+        assert_eq!(
+            (t.title.as_str(), t.language.as_deref(), t.rating),
+            ("Kastanjemanden", Some("da"), None)
+        );
         assert_eq!(t.networks, vec!["Netflix"]);
         // stored form round-trips; older rows without new fields still load
         let back: Info = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
@@ -824,7 +955,11 @@ mod tests {
     fn a_key_in_a_locked_keyring_is_reported() {
         let c = crate::db::test_conn();
         assert!(!status(&c).unwrap().configured);
-        c.execute("INSERT INTO setting (key, value) VALUES ('tmdb.key.inKeyring', 'true')", []).unwrap();
+        c.execute(
+            "INSERT INTO setting (key, value) VALUES ('tmdb.key.inKeyring', 'true')",
+            [],
+        )
+        .unwrap();
         let s = status(&c).unwrap();
         assert!(s.configured);
         assert_eq!(s.error.as_deref(), Some(KEY_LOCKED));
@@ -833,8 +968,14 @@ mod tests {
 
     #[test]
     fn tokens_and_keys() {
-        assert!(matches!(auth("eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJ4In0.sig"), Auth::Bearer(_)));
-        assert!(matches!(auth(" 0123456789abcdef0123456789abcdef "), Auth::ApiKey(_)));
+        assert!(matches!(
+            auth("eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJ4In0.sig"),
+            Auth::Bearer(_)
+        ));
+        assert!(matches!(
+            auth(" 0123456789abcdef0123456789abcdef "),
+            Auth::ApiKey(_)
+        ));
     }
 
     #[test]
@@ -848,8 +989,18 @@ mod tests {
             .unwrap();
         }
         crate::works::rebuild(&c).unwrap();
-        assert_eq!(todo(&c).unwrap(), vec![(Kind::Movie, "22".to_owned()), (Kind::Movie, "11".to_owned())]);
-        c.execute("INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', '22', NULL, ?1)", [now()]).unwrap();
+        assert_eq!(
+            todo(&c).unwrap(),
+            vec![
+                (Kind::Movie, "22".to_owned()),
+                (Kind::Movie, "11".to_owned())
+            ]
+        );
+        c.execute(
+            "INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', '22', NULL, ?1)",
+            [now()],
+        )
+        .unwrap();
         assert_eq!(todo(&c).unwrap(), vec![(Kind::Movie, "11".to_owned())]);
     }
 
@@ -860,7 +1011,12 @@ mod tests {
             "results": [{"id": 603, "adult": false}, {"id": 604, "adult": true}],
             "page": 1, "total_pages": 3, "total_results": 250
         });
-        let ids: Vec<String> = v["results"].as_array().unwrap().iter().filter_map(|r| r["id"].as_i64().map(|i| i.to_string())).collect();
+        let ids: Vec<String> = v["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_i64().map(|i| i.to_string()))
+            .collect();
         assert_eq!(ids, ["603", "604"]);
         assert_eq!(v["total_pages"].as_i64(), Some(3));
     }
@@ -876,7 +1032,11 @@ mod tests {
         )
         .unwrap();
         crate::works::rebuild(&c).unwrap();
-        c.execute("INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', '11', NULL, ?1)", [now()]).unwrap();
+        c.execute(
+            "INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', '11', NULL, ?1)",
+            [now()],
+        )
+        .unwrap();
         assert!(todo(&c).unwrap().is_empty());
         let n = mark_changed(&c, Kind::Movie, &["11".into(), "999".into(), "tt13".into()]).unwrap();
         assert_eq!(n, 1);
@@ -893,13 +1053,19 @@ mod tests {
         };
         put("title:jungle cruise|2021", "522931");
         put("item:1:xyz", "");
-        assert_eq!(crate::works::tmdb_id_of(&c, "title:jungle cruise|2021").unwrap().as_deref(), Some("522931"));
+        assert_eq!(
+            crate::works::tmdb_id_of(&c, "title:jungle cruise|2021")
+                .unwrap()
+                .as_deref(),
+            Some("522931")
+        );
         assert_eq!(crate::works::tmdb_id_of(&c, "item:1:xyz").unwrap(), None);
         assert_eq!(crate::works::tmdb_id_of(&c, "item:1:never").unwrap(), None);
         assert_eq!(crate::works::load_tmdb_map(&c).unwrap().len(), 1);
         // searched_at newer than MAX_AGE keeps the item out of search_todo:
         // m1 has a year so its natural key is 'title:jungle cruise|2021',
-        // which the map re-keys to tmdb:522931 at rebuild.
+        // which the map re-keys to tmdb:522931 at rebuild — but only once
+        // TMDB's own (fitting) metadata for 522931 is stored.
         c.execute(
             "INSERT INTO movie (source_id, id, name, title, year, position) VALUES (1, 'm1', 'x', 'Jungle Cruise', 2021, 0)",
             [],
@@ -907,7 +1073,22 @@ mod tests {
         .unwrap();
         crate::works::rebuild(&c).unwrap();
         assert_eq!(
-            c.query_row("SELECT key FROM work WHERE kind = 'movie'", [], |r| r.get::<_, String>(0)).unwrap(),
+            c.query_row("SELECT key FROM work WHERE kind = 'movie'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "title:jungle cruise|2021"
+        );
+        c.execute(
+            "INSERT INTO tmdb (kind, id, json, fetched_at) VALUES ('movie', '522931',
+                 '{\"title\":\"Jungle Cruise\",\"poster\":\"/p.jpg\"}', 0)",
+            [],
+        )
+        .unwrap();
+        crate::works::rebuild(&c).unwrap();
+        assert_eq!(
+            c.query_row("SELECT key FROM work WHERE kind = 'movie'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
             "tmdb:522931"
         );
         assert!(search_todo(&c).unwrap().is_empty());
@@ -918,21 +1099,39 @@ mod tests {
     #[test]
     fn search_todo_covers_titles_and_items() {
         let c = crate::db::test_conn();
-        for (id, title, year) in [("with-year", "A Film", Some(2001i64)), ("no-year", "Another Film", None), ("empty", " ", Some(2020))] {
+        for (id, title, year) in [
+            ("with-year", "A Film", Some(2001i64)),
+            ("no-year", "Another Film", None),
+            ("empty", " ", Some(2020)),
+        ] {
             c.execute("INSERT INTO movie (source_id, id, name, title, year, position) VALUES (1, ?1, ?1, ?2, ?3, 0)", params![id, title, year])
                 .unwrap();
         }
         crate::works::rebuild(&c).unwrap();
-        let mut keys: Vec<String> = search_todo(&c).unwrap().into_iter().map(|c| c.source_key).collect();
+        let mut keys: Vec<String> = search_todo(&c)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.source_key)
+            .collect();
         keys.sort();
-        assert_eq!(keys, ["item:1:no-year".to_string(), "title:a film|2001".to_string()]);
+        assert_eq!(
+            keys,
+            [
+                "item:1:no-year".to_string(),
+                "title:a film|2001".to_string()
+            ]
+        );
         // a fresh miss keeps the title out
         c.execute(
             "INSERT INTO tmdb_map (kind, source_key, tmdb_id, searched_at) VALUES ('movie', 'title:a film|2001', '', ?1)",
             [now()],
         )
         .unwrap();
-        let keys: Vec<String> = search_todo(&c).unwrap().into_iter().map(|c| c.source_key).collect();
+        let keys: Vec<String> = search_todo(&c)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.source_key)
+            .collect();
         assert_eq!(keys, ["item:1:no-year".to_string()]);
         // unmapped count matches: both still without an accepted match
         assert_eq!(status(&c).unwrap().unmapped, 2);
@@ -943,7 +1142,11 @@ mod tests {
     #[test]
     fn status_counts_unmapped() {
         let c = crate::db::test_conn();
-        for (id, title, year) in [("a", "Film A", Some(2001i64)), ("b", "Film B", Some(2002)), ("c", "Film C", None)] {
+        for (id, title, year) in [
+            ("a", "Film A", Some(2001i64)),
+            ("b", "Film B", Some(2002)),
+            ("c", "Film C", None),
+        ] {
             c.execute("INSERT INTO movie (source_id, id, name, title, year, position) VALUES (1, ?1, ?1, ?2, ?3, 0)", params![id, title, year])
                 .unwrap();
         }

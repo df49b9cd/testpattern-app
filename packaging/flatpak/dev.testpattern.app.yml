@@ -1,4 +1,4 @@
-# Flatpak build of testpattern (WORKLOG T-057) on the GNOME runtime, which
+# Flatpak build of testpattern (WORKLOG T-059) on the GNOME runtime, which
 # brings GTK 3 + WebKitGTK 4.1, libva/libdrm/EGL, PipeWire/Pulse/ALSA, lcms2,
 # OpenSSL and fontconfig. Built and installed with scripts/flatpak.sh.
 #

@@ -27,21 +27,56 @@ fn link_media_engine_macos() {
         )
     });
     println!("cargo:rerun-if-env-changed=TP_MEDIA_PREFIX");
-    println!("cargo:rustc-link-search=native={}", prefix.join("lib").display());
-    println!("cargo:rerun-if-changed={}", prefix.join("lib/libmpv.a").display());
-    // the dynamic tail below (libass, lcms2, uchardet) comes from Homebrew
-    // at /opt/homebrew (Apple Silicon) or /usr/local (Intel): add both, a
-    // nonexistent one is a no-op
-    for dir in ["/opt/homebrew/lib", "/usr/local/lib"] {
-        println!("cargo:rustc-link-search=native={dir}");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        prefix.join("lib").display()
+    );
+    // PL-110: the macOS static tail — OpenSSL, libass, lcms2, uchardet and
+    // everything libass pulls in — is built into the prefix by
+    // scripts/build-media.sh. With it the executable links nothing outside
+    // Apple's system libraries, which is what makes the .dmg distributable;
+    // before, it took these as Homebrew dylibs and only ran where they were
+    // installed. Fail loudly when the tail is missing instead of linking a
+    // broken app.
+    for marker in ["libmpv.a", "libass.a", "libssl.a", "libuchardet.a"] {
+        let m = prefix.join("lib").join(marker);
+        if !m.exists() {
+            panic!(
+                "static library {} is missing — run scripts/build-media.sh first (on macOS it \
+                 also builds the static tail: OpenSSL, FreeType, FriBidi, HarfBuzz, \
+                 libunibreak, libass, lcms2, uchardet)",
+                m.display()
+            );
+        }
+        println!("cargo:rerun-if-changed={}", m.display());
     }
     link_swift_surface(&manifest);
 
     // Same order rule as Linux: dependents before dependencies. No
-    // display-info on macOS (libdisplay-info is a DRM/EDID thing).
+    // display-info on macOS (libdisplay-info is a DRM/EDID thing). The tail
+    // after the FFmpeg libraries is the PL-110 set (see the marker check
+    // above): lcms2/uchardet that mpv references, ssl/crypto that avformat's
+    // TLS needs.
     const STATIC: &[&str] = &[
-        "mpv", "placebo", "avfilter", "avformat", "avcodec", "swscale",
-        "swresample", "avutil", "xml2", "dav1d",
+        "mpv",
+        "ass",
+        "freetype",
+        "fribidi",
+        "harfbuzz",
+        "unibreak",
+        "placebo",
+        "avfilter",
+        "avformat",
+        "avcodec",
+        "swscale",
+        "swresample",
+        "avutil",
+        "lcms2",
+        "uchardet",
+        "ssl",
+        "crypto",
+        "xml2",
+        "dav1d",
     ];
     for lib in STATIC {
         println!("cargo:rustc-link-lib=static={lib}");
@@ -50,28 +85,58 @@ fn link_media_engine_macos() {
     // graph names but mpv/FFmpeg reach through internal dispatch tables
     // (render.h exports). Keep only the ones real code calls; the FFmpeg
     // "register all" entry points were removed in FFmpeg 5.
-    for sym in ["mpv_create", "mpv_render_context_create", "mpv_wait_event",
-                "mpv_set_property", "mpv_set_property_string", "mpv_command",
-                "mpv_command_async", "mpv_get_property", "mpv_observe_property",
-                "mpv_terminate_destroy", "avformat_network_init"] {
+    for sym in [
+        "mpv_create",
+        "mpv_render_context_create",
+        "mpv_wait_event",
+        "mpv_set_property",
+        "mpv_set_property_string",
+        "mpv_command",
+        "mpv_command_async",
+        "mpv_get_property",
+        "mpv_observe_property",
+        "mpv_terminate_destroy",
+        "avformat_network_init",
+    ] {
         println!("cargo:rustc-link-arg=-Wl,-u,_{sym}");
     }
 
     // mpv/FFmpeg's dynamic tail on macOS is Apple frameworks + system libs.
     const FRAMEWORKS: &[&str] = &[
         // video
-        "Cocoa", "QuartzCore", "IOSurface", "CoreVideo", "CoreMedia",
-        "CoreFoundation", "VideoToolbox", "OpenGL", "Metal", "MetalKit",
-        "AVFoundation", "AudioToolbox", "AudioUnit", "CoreAudio",
+        "Cocoa",
+        "QuartzCore",
+        "IOSurface",
+        "CoreVideo",
+        "CoreMedia",
+        "CoreFoundation",
+        "VideoToolbox",
+        "OpenGL",
+        "Metal",
+        "MetalKit",
+        "AVFoundation",
+        "AudioToolbox",
+        "AudioUnit",
+        "CoreAudio",
         // misc mpv/ffmpeg deps
-        "IOKit", "Security", "SystemConfiguration", "Carbon", "AppKit",
+        "IOKit",
+        "Security",
+        "SystemConfiguration",
+        "Carbon",
+        "AppKit",
         "UniformTypeIdentifiers",
+        // libass's CoreText system-font provider (no fontconfig on macOS)
+        "CoreText",
+        "CoreGraphics",
     ];
     for f in FRAMEWORKS {
         println!("cargo:rustc-link-lib=framework={f}");
     }
-    // non-framework dynamic libs mpv still uses on macOS
-    for lib in ["z", "bz2", "iconv", "c++", "ass", "lcms2", "uchardet", "ssl", "crypto"] {
+    // non-framework dynamic libs still used on macOS: zlib (FFmpeg), the
+    // C++ runtime (libplacebo, harfbuzz, uchardet) and libiconv — all Apple
+    // system libraries present on every Mac. Everything else that used to be
+    // here (libass, lcms2, uchardet, OpenSSL) is static now (PL-110).
+    for lib in ["z", "iconv", "c++"] {
         println!("cargo:rustc-link-lib=dylib={lib}");
     }
 }
@@ -82,19 +147,51 @@ fn link_media_engine_macos() {
 /// it cannot be expressed through plain objc2 FFI.
 fn link_swift_surface(manifest: &std::path::Path) {
     let pkg = manifest.join("media_macos");
-    println!("cargo:rerun-if-changed={}", pkg.join("Sources/TestpatternSurface/MpvOpenGLView.swift").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        pkg.join("Sources/TestpatternSurface/MpvOpenGLView.swift")
+            .display()
+    );
     let target_dir = pkg.join(".build");
-    let status = Command::new("swift")
-        .args(["build", "-c", "release", "--package-path", pkg.to_str().unwrap()])
-        .status()
-        .expect("swift toolchain not found");
-    assert!(status.success(), "swift build -c release failed in {}", pkg.display());
-    println!("cargo:rustc-link-search=native={}", target_dir.join("release").display());
+    // Match CARGO_BUILD_TARGET's arch so cross builds (e.g. the other half of
+    // universal-apple-darwin) get a Swift archive for the requested arch, not
+    // the host's; unset means a host build and Swift defaults to the host arch.
+    let triple = std::env::var("CARGO_BUILD_TARGET").ok().and_then(|t| {
+        let arch = t.split('-').next()?;
+        (arch.starts_with("aarch64") || arch.starts_with("x86_64"))
+            .then(|| format!("{arch}-apple-macosx13.0.0"))
+    });
+    let mut cmd = Command::new("swift");
+    cmd.args(["build", "-c", "release", "--package-path"]);
+    // to_str() instead of to_str().unwrap(): a non-UTF8 package path would
+    // panic with a useless message; fail with a readable one instead.
+    cmd.arg(
+        pkg.to_str()
+            .unwrap_or_else(|| panic!("non-UTF8 path: {}", pkg.display())),
+    );
+    if let Some(t) = &triple {
+        cmd.args(["--triple", t]);
+    }
+    let status = cmd.status().expect("swift toolchain not found");
+    assert!(
+        status.success(),
+        "swift build -c release failed in {}",
+        pkg.display()
+    );
+    // --triple moves the output under .build/<triple>/release.
+    let release_dir = match &triple {
+        Some(t) => target_dir.join(t).join("release"),
+        None => target_dir.join("release"),
+    };
+    println!("cargo:rustc-link-search=native={}", release_dir.display());
     println!("cargo:rustc-link-lib=static=TestpatternSurface");
     // ObjC-class-only archives get their classes from the segment, not from
     // referenced symbols; nothing else links them in on its own.
     println!("cargo:rustc-link-arg=-force_load");
-    println!("cargo:rustc-link-arg={}/libTestpatternSurface.a", target_dir.join("release").display());
+    println!(
+        "cargo:rustc-link-arg={}/libTestpatternSurface.a",
+        release_dir.display()
+    );
 }
 
 /// Links the embedded media engine built by `scripts/build-media.sh`:
@@ -117,7 +214,10 @@ fn link_media_engine() {
     println!("cargo:rerun-if-env-changed=TP_MEDIA_PREFIX");
     println!("cargo:rerun-if-env-changed=TP_SYSROOT");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
-    println!("cargo:rerun-if-changed={}", prefix.join("lib/libmpv.a").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        prefix.join("lib/libmpv.a").display()
+    );
 
     // Rootless dev setups (scripts/fedora-sysroot.sh) keep -devel symlinks here.
     if let Ok(sysroot) = std::env::var("TP_SYSROOT") {

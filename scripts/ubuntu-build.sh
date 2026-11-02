@@ -17,6 +17,7 @@ IMAGE=localhost/testpattern-build:ubuntu24.04
 OUT="$ROOT/.deps/ubuntu24"
 TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$ROOT/rust-toolchain.toml")"
 RUST="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/$TOOLCHAIN-x86_64-unknown-linux-gnu"
+command -v bun >/dev/null || { echo "bun missing: install bun first" >&2; exit 1; }
 BUN="$(readlink -f "$(command -v bun)" 2>/dev/null || realpath "$(command -v bun)")"
 [[ -d "$RUST" ]] || { echo "Rust $TOOLCHAIN missing: rustup toolchain install $TOOLCHAIN" >&2; exit 1; }
 
@@ -30,6 +31,8 @@ if ! command -v "$CONTAINER_ENGINE" >/dev/null 2>&1 \
         && [[ "$(uname -s)" == Darwin ]] && command -v docker >/dev/null 2>&1; }; then
   command -v docker >/dev/null 2>&1 && CONTAINER_ENGINE=docker
 fi
+command -v "$CONTAINER_ENGINE" >/dev/null \
+  || { echo "no container engine: install podman (or docker and CONTAINER_ENGINE=docker)" >&2; exit 1; }
 
 # bind mounts require a supported filesystem on both sides; --userns=keep-id is a
 # podman-only flag mapping the caller's uid; docker runs as its VM's root unless
@@ -62,9 +65,9 @@ stamp="$(cat "$ROOT/packaging/ubuntu/Containerfile" "$ROOT/packaging/ubuntu/pack
 LABEL_F='{{index .Labels "tp.stamp"}}'
 [[ "$CONTAINER_ENGINE" == docker ]] && LABEL_F='{{index .Config.Labels "tp.stamp"}}'
 PLATFORM=()
-# an arm64 docker host (Apple Silicon) would otherwise build/pull arm64 images,
-# but the mounted Rust toolchain is x86_64
-[[ "$CONTAINER_ENGINE" == docker && "$(uname -m)" == arm64 ]] && PLATFORM=(--platform linux/amd64)
+# an arm64 host (Apple Silicon, podman or docker) would otherwise build/pull
+# arm64 images, but the mounted Rust toolchain is x86_64
+[[ "$(uname -m)" == arm64 ]] && PLATFORM=(--platform linux/amd64)
 if [[ "$("$CONTAINER_ENGINE" image inspect -f "$LABEL_F" "$IMAGE" 2>/dev/null)" != "$stamp" ]]; then
   "$CONTAINER_ENGINE" build "${PLATFORM[@]}" --label "tp.stamp=$stamp" -t "$IMAGE" "$ROOT/packaging/ubuntu" >&2
 fi

@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { CalendarRange, Clapperboard, Film, House, RefreshCw, Search, Settings, Tv } from "lucide-react";
+import { CalendarRange, Clapperboard, Film, House, RefreshCw, Search, Settings, Tv, VolumeX } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet, useLocation, useMatches, useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -21,6 +21,20 @@ const NAV = [
   { to: "/series", label: "Series", icon: Clapperboard },
   { to: "/search", label: "Search", icon: Search },
 ];
+
+/**
+ * Should an off-page keydown go to the (hidden) player? Space/K/M only, no
+ * modifiers, not while a control has focus (spatial nav activates on Space),
+ * and not on the player page (its own handler owns the keys there).
+ */
+export function offPageKey(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }, opts: { pathname: string; onBody: boolean }): "play" | "mute" | null {
+  if (usePlayer.getState().now === null) return null;
+  if (opts.pathname === "/player") return null;
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (e.key === " " || e.key === "k" || e.key === "K") return opts.onBody ? "play" : null;
+  if (e.key === "m" || e.key === "M") return "mute";
+  return null;
+}
 
 export function Layout() {
   useSpatialNav(true);
@@ -46,14 +60,12 @@ export function Layout() {
       // /live, autoplay-next, a script/bridge start); off-page Space/K/M go
       // straight to that player instead of doing nothing. Space with a
       // focused control belongs to it (spatial nav activates on Space).
-      const { now } = usePlayer.getState();
-      if (!now || location.pathname === "/player" || e.ctrlKey || e.metaKey || e.altKey) return;
       const onBody = !(document.activeElement instanceof HTMLElement) || document.activeElement === document.body;
-      if (e.key === " " || e.key === "k" || e.key === "K") {
-        if (!onBody) return;
+      const action = offPageKey(e, { pathname: location.pathname, onBody });
+      if (action === "play") {
         e.preventDefault();
         navigate("/player");
-      } else if (e.key === "m" || e.key === "M") {
+      } else if (action === "mute") {
         e.preventDefault();
         void api.set("mute", !usePlayer.getState().props.mute);
       }
@@ -135,6 +147,7 @@ function Sidebar() {
 
 function NowPlayingCard() {
   const now = usePlayer((s) => s.now);
+  const mute = usePlayer((s) => s.props.mute);
   const navigate = useNavigate();
   if (!now) return null;
   return (
@@ -142,13 +155,20 @@ function NowPlayingCard() {
       onClick={() => navigate("/player")}
       className="mx-3 mb-3 flex items-center gap-3 rounded-xl bg-white/[0.05] p-2 text-left ring-1 ring-white/[0.06] transition-colors hover:bg-white/[0.09]"
     >
-      <Artwork
-        src={now.image}
-        width={48}
-        alt={now.title}
-        fit={now.kind === "live" ? "contain" : "cover"}
-        className="size-10 shrink-0 rounded-lg bg-black/40"
-      />
+      <div className="relative shrink-0">
+        <Artwork
+          src={now.image}
+          width={48}
+          alt={now.title}
+          fit={now.kind === "live" ? "contain" : "cover"}
+          className="size-10 rounded-lg bg-black/40"
+        />
+        {mute && (
+          <span className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-panel ring-1 ring-white/10" title="Muted (M)">
+            <VolumeX className="size-2.5 text-dim" />
+          </span>
+        )}
+      </div>
       <span className="min-w-0">
         <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-dim">
           {now.kind === "live" && <LiveDot />}

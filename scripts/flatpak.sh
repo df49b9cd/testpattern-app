@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Flatpak build (WORKLOG T-057) from packaging/flatpak/dev.testpattern.app.yml:
+# Flatpak build (WORKLOG T-059) from packaging/flatpak/dev.testpattern.app.yml:
 # GNOME runtime, the media engine built inside the SDK, the working tree as the
 # app's source. Uses flatpak-builder when installed, else Flathub's
 # org.flatpak.Builder app; the runtimes come from Flathub (per user).

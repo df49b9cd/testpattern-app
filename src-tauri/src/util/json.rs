@@ -20,7 +20,9 @@ pub fn i64_of(v: &Value) -> Option<i64> {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Value::String(s) => {
             let s = s.trim();
-            s.parse::<i64>().ok().or_else(|| s.parse::<f64>().ok().map(|f| f as i64))
+            s.parse::<i64>()
+                .ok()
+                .or_else(|| s.parse::<f64>().ok().map(|f| f as i64))
         }
         Value::Bool(b) => Some(*b as i64),
         _ => None,

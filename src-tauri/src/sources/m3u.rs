@@ -31,8 +31,20 @@ impl Entry {
     /// Days of catch-up this entry really offers: a scheme we can build URLs
     /// for, and a window.
     pub fn catchup_window(&self) -> i64 {
-        let Some(mode) = self.catchup.as_deref() else { return 0 };
-        if catchup_url(mode, self.catchup_source.as_deref(), &self.url, 0, 3600, 0, 0).is_none() {
+        let Some(mode) = self.catchup.as_deref() else {
+            return 0;
+        };
+        if catchup_url(
+            mode,
+            self.catchup_source.as_deref(),
+            &self.url,
+            0,
+            3600,
+            0,
+            0,
+        )
+        .is_none()
+        {
             return 0;
         }
         self.catchup_days.unwrap_or(DEFAULT_CATCHUP_DAYS).max(0)
@@ -59,7 +71,9 @@ impl Entry {
         }
         let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         match ext.as_str() {
-            "mp4" | "mkv" | "avi" | "mov" | "m4v" | "wmv" | "webm" | "mpg" | "mpeg" => EntryKind::Movie,
+            "mp4" | "mkv" | "avi" | "mov" | "m4v" | "wmv" | "webm" | "mpg" | "mpeg" => {
+                EntryKind::Movie
+            }
             _ => EntryKind::Live,
         }
     }
@@ -86,19 +100,36 @@ impl Entry {
         static SXXEYY: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r"(?i)^(.*?)[\s._-]*\bS(\d{1,3})[\s._-]*E(\d{1,4})\b(.*)$").unwrap()
         });
-        static NXNN: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?i)^(.*?)[\s._-]*\b(\d{1,2})x(\d{2,3})\b(.*)$").unwrap());
+        static NXNN: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(?i)^(.*?)[\s._-]*\b(\d{1,2})x(\d{2,3})\b(.*)$").unwrap()
+        });
         let name = self.name.trim();
         let c = SXXEYY.captures(name).or_else(|| NXNN.captures(name))?;
-        let series = c[1].trim().trim_end_matches(['-', ':', '|', '.']).trim().to_owned();
+        let series = c[1]
+            .trim()
+            .trim_end_matches(['-', ':', '|', '.'])
+            .trim()
+            .to_owned();
         if series.is_empty() {
             return None;
         }
-        let mut title = c[4].trim().trim_start_matches(['-', ':', '|', '.']).trim().to_owned();
-        if matches!(title.to_ascii_lowercase().as_str(), "mkv" | "mp4" | "avi" | "ts" | "m4v" | "mov" | "webm") {
+        let mut title = c[4]
+            .trim()
+            .trim_start_matches(['-', ':', '|', '.'])
+            .trim()
+            .to_owned();
+        if matches!(
+            title.to_ascii_lowercase().as_str(),
+            "mkv" | "mp4" | "avi" | "ts" | "m4v" | "mov" | "webm"
+        ) {
             title.clear(); // a file name's extension, not a title
         }
-        Some(EpisodeInfo { series, season: c[2].parse().ok()?, episode: c[3].parse().ok()?, title })
+        Some(EpisodeInfo {
+            series,
+            season: c[2].parse().ok()?,
+            episode: c[3].parse().ok()?,
+            title,
+        })
     }
 }
 
@@ -126,22 +157,23 @@ fn split_attributes(s: &str) -> (Vec<(String, String)>, &str) {
                 let key = s[key_start..i].to_ascii_lowercase();
                 if i < bytes.len() && bytes[i] == b'=' {
                     i += 1;
-                    let (value, next) = if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
-                        let q = bytes[i];
-                        let vs = i + 1;
-                        let mut j = vs;
-                        while j < bytes.len() && bytes[j] != q {
-                            j += 1;
-                        }
-                        (&s[vs..j.min(bytes.len())], (j + 1).min(bytes.len()))
-                    } else {
-                        let vs = i;
-                        let mut j = vs;
-                        while j < bytes.len() && !matches!(bytes[j], b' ' | b',') {
-                            j += 1;
-                        }
-                        (&s[vs..j], j)
-                    };
+                    let (value, next) =
+                        if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                            let q = bytes[i];
+                            let vs = i + 1;
+                            let mut j = vs;
+                            while j < bytes.len() && bytes[j] != q {
+                                j += 1;
+                            }
+                            (&s[vs..j.min(bytes.len())], (j + 1).min(bytes.len()))
+                        } else {
+                            let vs = i;
+                            let mut j = vs;
+                            while j < bytes.len() && !matches!(bytes[j], b' ' | b',') {
+                                j += 1;
+                            }
+                            (&s[vs..j], j)
+                        };
                     attrs.push((key, value.trim().to_owned()));
                     i = next;
                 } else if !key.is_empty() {
@@ -176,18 +208,25 @@ pub fn parse(text: &str) -> Playlist {
             let (attrs, _) = split_attributes(rest);
             for (k, v) in attrs {
                 match k.as_str() {
-                    "url-tvg" | "x-tvg-url" | "tvg-url" => {
-                        out.epg_urls.extend(v.split(',').map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()))
-                    }
+                    "url-tvg" | "x-tvg-url" | "tvg-url" => out.epg_urls.extend(
+                        v.split(',')
+                            .map(|u| u.trim().to_owned())
+                            .filter(|u| !u.is_empty()),
+                    ),
                     "catchup" | "catchup-type" => defaults.catchup = non_empty(v),
                     "catchup-source" => defaults.catchup_source = non_empty(v),
-                    "catchup-days" | "tvg-rec" | "timeshift" => defaults.catchup_days = v.parse().ok(),
+                    "catchup-days" | "tvg-rec" | "timeshift" => {
+                        defaults.catchup_days = v.parse().ok()
+                    }
                     _ => {}
                 }
             }
         } else if let Some(rest) = line.strip_prefix("#EXTINF:") {
             let (attrs, name) = split_attributes(rest);
-            let mut e = Entry { name: name.trim().to_owned(), ..Default::default() };
+            let mut e = Entry {
+                name: name.trim().to_owned(),
+                ..Default::default()
+            };
             for (k, v) in attrs {
                 match k.as_str() {
                     "tvg-id" => e.tvg_id = non_empty(v),
@@ -199,7 +238,9 @@ pub fn parse(text: &str) -> Playlist {
                     "catchup" | "catchup-type" => e.catchup = non_empty(v),
                     "catchup-source" => e.catchup_source = non_empty(v),
                     "user-agent" | "http-user-agent" => e.user_agent = non_empty(v),
-                    "referrer" | "referer" | "http-referrer" | "http-referer" => e.referrer = non_empty(v),
+                    "referrer" | "referer" | "http-referrer" | "http-referer" => {
+                        e.referrer = non_empty(v)
+                    }
                     _ => {}
                 }
             }
@@ -215,7 +256,10 @@ pub fn parse(text: &str) -> Playlist {
         } else if let Some(opt) = line.strip_prefix("#EXTVLCOPT:") {
             if let Some(ua) = opt.strip_prefix("http-user-agent=") {
                 ua_hint = non_empty(ua.trim().to_owned());
-            } else if let Some(r) = opt.strip_prefix("http-referrer=").or_else(|| opt.strip_prefix("http-referer=")) {
+            } else if let Some(r) = opt
+                .strip_prefix("http-referrer=")
+                .or_else(|| opt.strip_prefix("http-referer="))
+            {
                 referrer_hint = non_empty(r.trim().to_owned());
             }
         } else if line.starts_with('#') {
@@ -280,12 +324,16 @@ pub fn catchup_url(
     let fill = |template: &str| fill_placeholders(template, start, duration, now, shift);
     match mode.to_ascii_lowercase().as_str() {
         "default" => source.filter(|s| s.contains("://")).map(fill),
-        "append" => source.filter(|s| !s.is_empty()).map(|s| format!("{stream_url}{}", fill(s))),
+        "append" => source
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{stream_url}{}", fill(s))),
         "shift" | "timeshift" => {
             let sep = if stream_url.contains('?') { '&' } else { '?' };
             Some(format!("{stream_url}{sep}utc={start}&lutc={now}"))
         }
-        "flussonic" | "flussonic-hls" | "flussonic-ts" | "fs" => flussonic_url(stream_url, start, duration),
+        "flussonic" | "flussonic-hls" | "flussonic-ts" | "fs" => {
+            flussonic_url(stream_url, start, duration)
+        }
         "xc" => xtream_url(stream_url, start + shift, duration),
         _ => None,
     }
@@ -297,8 +345,13 @@ fn fill_placeholders(template: &str, start: i64, duration: i64, now: i64, shift:
     PLACEHOLDER
         .replace_all(template, |c: &Captures| {
             let arg = c.get(2).map(|m| m.as_str());
-            let divided = |v: i64| arg.and_then(|a| a.parse::<i64>().ok()).filter(|d| *d > 0).map_or(v, |d| v / d);
-            let stamp = |ts: i64| arg.map_or_else(|| ts.to_string(), |fmt| format_time(ts, fmt, false));
+            let divided = |v: i64| {
+                arg.and_then(|a| a.parse::<i64>().ok())
+                    .filter(|d| *d > 0)
+                    .map_or(v, |d| v / d)
+            };
+            let stamp =
+                |ts: i64| arg.map_or_else(|| ts.to_string(), |fmt| format_time(ts, fmt, false));
             match &c[1] {
                 "utc" | "start" => stamp(start),
                 "utcend" | "end" => stamp(start + duration),
@@ -315,7 +368,11 @@ fn fill_placeholders(template: &str, start: i64, duration: i64, now: i64, shift:
 /// `fmt` letters Y m d H M S → zero-padded date parts; anything else is literal.
 fn format_time(ts: i64, fmt: &str, local: bool) -> String {
     let utc = chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default();
-    let t = if local { utc.with_timezone(&chrono::Local).naive_local() } else { utc.naive_utc() };
+    let t = if local {
+        utc.with_timezone(&chrono::Local).naive_local()
+    } else {
+        utc.naive_utc()
+    };
     fmt.chars()
         .map(|c| match c {
             'Y' => t.format("%Y").to_string(),
@@ -330,20 +387,32 @@ fn format_time(ts: i64, fmt: &str, local: bool) -> String {
 }
 
 fn flussonic_url(url: &str, start: i64, duration: i64) -> Option<String> {
-    let (path, query) = url.split_once('?').map_or((url, None), |(p, q)| (p, Some(q)));
+    let (path, query) = url
+        .split_once('?')
+        .map_or((url, None), |(p, q)| (p, Some(q)));
     let query = query.map(|q| format!("?{q}")).unwrap_or_default();
     if let Some(base) = path.strip_suffix(".m3u8") {
         return Some(format!("{base}-{start}-{duration}.m3u8{query}"));
     }
-    path.strip_suffix("/mpegts").map(|base| format!("{base}/timeshift_abs-{start}.ts{query}"))
+    path.strip_suffix("/mpegts")
+        .map(|base| format!("{base}/timeshift_abs-{start}.ts{query}"))
 }
 
 fn xtream_url(url: &str, start: i64, duration: i64) -> Option<String> {
-    static LIVE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^(https?://[^/?#]+)/(?:live/)?([^/?#]+)/([^/?#]+)/(\d+)(?:\.[A-Za-z0-9]+)?$").unwrap());
+    static LIVE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(https?://[^/?#]+)/(?:live/)?([^/?#]+)/([^/?#]+)/(\d+)(?:\.[A-Za-z0-9]+)?$")
+            .unwrap()
+    });
     let c = LIVE.captures(url)?;
     let minutes = ((duration + 59) / 60).max(1);
-    Some(format!("{}/timeshift/{}/{}/{minutes}/{}/{}.ts", &c[1], &c[2], &c[3], format_time(start, "Y-m-d:H-M", true), &c[4]))
+    Some(format!(
+        "{}/timeshift/{}/{}/{minutes}/{}/{}.ts",
+        &c[1],
+        &c[2],
+        &c[3],
+        format_time(start, "Y-m-d:H-M", true),
+        &c[4]
+    ))
 }
 
 #[cfg(test)]
@@ -352,14 +421,41 @@ mod tests {
 
     #[test]
     fn recognizes_episodes() {
-        let e = |name: &str, url: &str| Entry { name: name.into(), url: url.into(), ..Default::default() }.episode_info();
-        let info = |series: &str, season, episode, title: &str| {
-            Some(EpisodeInfo { series: series.into(), season, episode, title: title.into() })
+        let e = |name: &str, url: &str| {
+            Entry {
+                name: name.into(),
+                url: url.into(),
+                ..Default::default()
+            }
+            .episode_info()
         };
-        assert_eq!(e("Slow Horses S02E03 - Hard Lessons", "http://h/series/u/p/1.mkv"), info("Slow Horses", 2, 3, "Hard Lessons"));
-        assert_eq!(e("EN - Silo (2023) S01 E10", "http://h/series/u/p/2.mp4"), info("EN - Silo (2023)", 1, 10, ""));
-        assert_eq!(e("The.Office.US.s09e23.mkv", "http://h/vod/office.mkv"), info("The.Office.US", 9, 23, ""));
-        assert_eq!(e("Friends 1x02 The One with the Sonogram", "http://h/f.mp4"), info("Friends", 1, 2, "The One with the Sonogram"));
+        let info = |series: &str, season, episode, title: &str| {
+            Some(EpisodeInfo {
+                series: series.into(),
+                season,
+                episode,
+                title: title.into(),
+            })
+        };
+        assert_eq!(
+            e(
+                "Slow Horses S02E03 - Hard Lessons",
+                "http://h/series/u/p/1.mkv"
+            ),
+            info("Slow Horses", 2, 3, "Hard Lessons")
+        );
+        assert_eq!(
+            e("EN - Silo (2023) S01 E10", "http://h/series/u/p/2.mp4"),
+            info("EN - Silo (2023)", 1, 10, "")
+        );
+        assert_eq!(
+            e("The.Office.US.s09e23.mkv", "http://h/vod/office.mkv"),
+            info("The.Office.US", 9, 23, "")
+        );
+        assert_eq!(
+            e("Friends 1x02 The One with the Sonogram", "http://h/f.mp4"),
+            info("Friends", 1, 2, "The One with the Sonogram")
+        );
         // not episodes: live channels, plain movies, numbers that aren't SxxEyy
         assert_eq!(e("Sports S01E01 Live", "http://h/live/sports.ts"), None);
         assert_eq!(e("Se7en (1995)", "http://h/movie/u/p/3.mkv"), None);
@@ -382,10 +478,30 @@ mod tests {
             "#EXTINF:-1,Plain\n",
             "http://h/d.ts\n",
         ));
-        let h = |i: usize| (pl.entries[i].url.as_str(), pl.entries[i].user_agent.as_deref(), pl.entries[i].referrer.as_deref());
-        assert_eq!(h(0), ("http://h/a.m3u8", Some("VLC/3.0"), Some("https://site.example/")));
+        let h = |i: usize| {
+            (
+                pl.entries[i].url.as_str(),
+                pl.entries[i].user_agent.as_deref(),
+                pl.entries[i].referrer.as_deref(),
+            )
+        };
+        assert_eq!(
+            h(0),
+            (
+                "http://h/a.m3u8",
+                Some("VLC/3.0"),
+                Some("https://site.example/")
+            )
+        );
         assert_eq!(h(1), ("http://h/b.ts", None, Some("https://ref.example/")));
-        assert_eq!(h(2), ("http://h/c.m3u8?token=1", Some("Mozilla/5.0 (X11)"), Some("https://k.example/")));
+        assert_eq!(
+            h(2),
+            (
+                "http://h/c.m3u8?token=1",
+                Some("Mozilla/5.0 (X11)"),
+                Some("https://k.example/")
+            )
+        );
         assert_eq!(h(3), ("http://h/d.ts", None, None));
     }
 
@@ -399,30 +515,64 @@ mod tests {
             "http://h/a2.m3u8\n",
         ));
         let (a, b) = (&pl.entries[0], &pl.entries[1]);
-        assert_eq!((a.catchup.as_deref(), a.catchup_days, a.catchup_window()), (Some("shift"), Some(3), 3));
-        assert_eq!((b.catchup.as_deref(), b.catchup_window()), (Some("default"), 7));
+        assert_eq!(
+            (a.catchup.as_deref(), a.catchup_days, a.catchup_window()),
+            (Some("shift"), Some(3), 3)
+        );
+        assert_eq!(
+            (b.catchup.as_deref(), b.catchup_window()),
+            (Some("default"), 7)
+        );
         // a scheme without a usable template offers nothing; a scheme without days gets the default window
-        let none = Entry { catchup: Some("default".into()), url: "http://h/x.ts".into(), ..Default::default() };
+        let none = Entry {
+            catchup: Some("default".into()),
+            url: "http://h/x.ts".into(),
+            ..Default::default()
+        };
         assert_eq!(none.catchup_window(), 0);
-        let open = Entry { catchup: Some("shift".into()), url: "http://h/x.ts".into(), ..Default::default() };
+        let open = Entry {
+            catchup: Some("shift".into()),
+            url: "http://h/x.ts".into(),
+            ..Default::default()
+        };
         assert_eq!(open.catchup_window(), DEFAULT_CATCHUP_DAYS);
     }
 
     #[test]
     fn builds_catchup_urls() {
         let (start, dur, now) = (1_790_413_200, 5400, 1_790_420_000); // 2026-09-26 09:00:00 UTC, 90 min
-        let url = |mode: &str, src: Option<&str>, stream: &str| catchup_url(mode, src, stream, start, dur, now, 0);
+        let url = |mode: &str, src: Option<&str>, stream: &str| {
+            catchup_url(mode, src, stream, start, dur, now, 0)
+        };
         assert_eq!(
             url("default", Some("http://h/arch/7?start=${start}&end={utcend}&min={duration:60}&t={utc:Y-m-d H:M}"), "http://h/7.ts").unwrap(),
             "http://h/arch/7?start=1790413200&end=1790418600&min=90&t=2026-09-26 09:00"
         );
-        assert_eq!(url("append", Some("?utc={utc}&lutc={lutc}"), "http://h/7.m3u8").unwrap(), "http://h/7.m3u8?utc=1790413200&lutc=1790420000");
-        assert_eq!(url("shift", None, "http://h/7.ts?token=x").unwrap(), "http://h/7.ts?token=x&utc=1790413200&lutc=1790420000");
-        assert_eq!(url("flussonic", None, "http://f/ch/index.m3u8?t=1").unwrap(), "http://f/ch/index-1790413200-5400.m3u8?t=1");
-        assert_eq!(url("fs", None, "http://f/ch/mpegts").unwrap(), "http://f/ch/timeshift_abs-1790413200.ts");
+        assert_eq!(
+            url("append", Some("?utc={utc}&lutc={lutc}"), "http://h/7.m3u8").unwrap(),
+            "http://h/7.m3u8?utc=1790413200&lutc=1790420000"
+        );
+        assert_eq!(
+            url("shift", None, "http://h/7.ts?token=x").unwrap(),
+            "http://h/7.ts?token=x&utc=1790413200&lutc=1790420000"
+        );
+        assert_eq!(
+            url("flussonic", None, "http://f/ch/index.m3u8?t=1").unwrap(),
+            "http://f/ch/index-1790413200-5400.m3u8?t=1"
+        );
+        assert_eq!(
+            url("fs", None, "http://f/ch/mpegts").unwrap(),
+            "http://f/ch/timeshift_abs-1790413200.ts"
+        );
         let local = format_time(start, "Y-m-d:H-M", true);
-        assert_eq!(url("xc", None, "http://x.tv:80/live/u/p/42.ts").unwrap(), format!("http://x.tv:80/timeshift/u/p/90/{local}/42.ts"));
-        assert_eq!(url("xc", None, "http://x.tv/u/p/42").unwrap(), format!("http://x.tv/timeshift/u/p/90/{local}/42.ts"));
+        assert_eq!(
+            url("xc", None, "http://x.tv:80/live/u/p/42.ts").unwrap(),
+            format!("http://x.tv:80/timeshift/u/p/90/{local}/42.ts")
+        );
+        assert_eq!(
+            url("xc", None, "http://x.tv/u/p/42").unwrap(),
+            format!("http://x.tv/timeshift/u/p/90/{local}/42.ts")
+        );
         // not buildable
         assert!(url("default", Some("?relative"), "http://h/7.ts").is_none());
         assert!(url("flussonic", None, "http://f/ch/stream.ts").is_none());
@@ -430,10 +580,37 @@ mod tests {
         assert!(url("vod", None, "http://h/7.ts").is_none());
 
         // a -1 h correction moves local-time values, never the absolute ones
-        let shifted = catchup_url("default", Some("http://h/{H}-{M}?s={utc}"), "http://h/7.ts", start, dur, now, -3600).unwrap();
-        assert_eq!(shifted, format!("http://h/{}?s=1790413200", format_time(start - 3600, "H-M", true)));
-        let xc = catchup_url("xc", None, "http://x.tv/live/u/p/42.ts", start, dur, now, -3600).unwrap();
-        assert!(xc.ends_with(&format!("/{}/42.ts", format_time(start - 3600, "Y-m-d:H-M", true))));
+        let shifted = catchup_url(
+            "default",
+            Some("http://h/{H}-{M}?s={utc}"),
+            "http://h/7.ts",
+            start,
+            dur,
+            now,
+            -3600,
+        )
+        .unwrap();
+        assert_eq!(
+            shifted,
+            format!(
+                "http://h/{}?s=1790413200",
+                format_time(start - 3600, "H-M", true)
+            )
+        );
+        let xc = catchup_url(
+            "xc",
+            None,
+            "http://x.tv/live/u/p/42.ts",
+            start,
+            dur,
+            now,
+            -3600,
+        )
+        .unwrap();
+        assert!(xc.ends_with(&format!(
+            "/{}/42.ts",
+            format_time(start - 3600, "Y-m-d:H-M", true)
+        )));
     }
 
     #[test]
@@ -457,7 +634,10 @@ mod tests {
         assert_eq!(a.tvg_id.as_deref(), Some("bbc1.uk"));
         assert_eq!(a.kind(), EntryKind::Live);
         let b = &pl.entries[1];
-        assert_eq!((b.group.as_deref(), b.user_agent.as_deref()), (Some("Misc"), Some("VLC/3.0")));
+        assert_eq!(
+            (b.group.as_deref(), b.user_agent.as_deref()),
+            (Some("Misc"), Some("VLC/3.0"))
+        );
         assert_eq!(pl.entries[2].kind(), EntryKind::Movie);
     }
 }

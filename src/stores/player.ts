@@ -266,17 +266,47 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
 /**
  * Subtitles on/off from the player chrome (PL-99): persists the setting and
  * settings.rs applies mpv `sub-visibility` right away. The settings cache is
- * patched so both toggles (player + Settings page) stay in sync.
+ * patched so both toggles (player + Settings page) stay in sync; a failed
+ * write rolls the patch back instead of diverging from the backend.
  */
-export function setSubsEnabled(v: boolean): void {
+export function setSubsEnabled(v: boolean): Promise<void> {
   const cur = queryClient.getQueryData<Record<string, unknown>>(["settings"]);
   queryClient.setQueryData(["settings"], { ...cur, "player.subsEnabled": v });
-  void api.setSetting("player.subsEnabled", v).catch(() => {});
+  return api.setSetting("player.subsEnabled", v).catch((e) => {
+    queryClient.setQueryData(["settings"], (c: Record<string, unknown> | undefined) => ({ ...c, "player.subsEnabled": cur?.["player.subsEnabled"] }));
+    throw e;
+  });
 }
 
 /** Toggle-the-subtitles helper shared by Player.tsx ("S" key) and its menu. */
 export function toggleSubs(): void {
-  setSubsEnabled(!usePlayer.getState().props.subVisible);
+  void setSubsEnabled(!usePlayer.getState().props.subVisible).catch(() => {});
+}
+
+/**
+ * What the S key does with subtitles (PL-100): with several subtitle tracks
+ * it cycles through them (off → 1 → 2 → … → off), like mpv's `cycle sid`;
+ * with exactly one it toggles visibility (the persisted setting).
+ * Returns null when there is nothing to switch (no tracks at all).
+ */
+export function subKeyAction(props: PlaybackProps): { cycle: number | false } | { toggle: boolean } | null {
+  const tracks = props.tracks.filter((t) => t.type === "sub");
+  if (tracks.length > 1) {
+    const cur = typeof props.sid === "number" ? tracks.findIndex((t) => t.id === props.sid) : -1;
+    // off / unknown selects the first track; past the last wraps to "no"
+    if (cur < 0) return { cycle: tracks[0].id };
+    return { cycle: cur < tracks.length - 1 ? tracks[cur + 1].id : false };
+  }
+  if (tracks.length === 1) return { toggle: !props.subVisible };
+  return null;
+}
+
+/** What the S key may do next — for the PL-100 one-shot hint text. */
+export function subKeyHint(props: PlaybackProps): "cycle" | "on" | "off" | null {
+  const a = subKeyAction(props);
+  if (!a) return null;
+  if ("cycle" in a) return "cycle";
+  return a.toggle ? "on" : "off";
 }
 
 let volumeTimer = 0;

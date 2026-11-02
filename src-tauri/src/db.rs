@@ -34,7 +34,10 @@ impl Db {
                 Ok(Mutex::new(c))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Db { writer: Mutex::new(writer), readers })
+        Ok(Db {
+            writer: Mutex::new(writer),
+            readers,
+        })
     }
 
     /// Exclusive access to the writer connection.
@@ -411,4 +414,47 @@ pub fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::OptionalExtension;
+
+    /// v8 → v9 upgrade: applying migrations 1..8 must leave no tmdb_map, and
+    /// the upgrade must add it keyed by (kind, source_key).
+    #[test]
+    fn v9_upgrade_adds_tmdb_map() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        for sql in &MIGRATIONS[..8] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute_batch("PRAGMA user_version = 8").unwrap();
+        let exists = |c: &Connection| -> bool {
+            c.query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tmdb_map'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap()
+            .is_some()
+        };
+        assert!(!exists(&c));
+        migrate(&c).unwrap();
+        let version: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version as usize, MIGRATIONS.len());
+        assert!(exists(&c));
+        let pk: Vec<String> = c
+            .prepare("SELECT name FROM pragma_table_info('tmdb_map') WHERE pk > 0 ORDER BY pk")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(pk, ["kind", "source_key"]);
+    }
 }

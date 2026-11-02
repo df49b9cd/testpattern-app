@@ -95,7 +95,12 @@ fn install(webview: &webkit2gtk::WebView, mpv: Arc<Mpv>) -> Result<(), String> {
     area.connect_resize(|area, _, _| area.queue_render());
 
     SURFACE.with(|s| {
-        *s.borrow_mut() = Some(Surface { area: area.clone(), mpv, ctx: ptr::null_mut(), render_node: None });
+        *s.borrow_mut() = Some(Surface {
+            area: area.clone(),
+            mpv,
+            ctx: ptr::null_mut(),
+            render_node: None,
+        });
     });
 
     overlay.show_all();
@@ -123,7 +128,11 @@ fn on_realize(area: &gtk::GLArea) {
         // (hwdec "vaapi", zero-copy). That import needs EGL — GLX sessions,
         // and systems without a node, get "vaapi-copy" (frames copied back
         // through memory) or software decoding instead.
-        let render_node = if using_egl() { open_render_node() } else { None };
+        let render_node = if using_egl() {
+            open_render_node()
+        } else {
+            None
+        };
         let mut drm = mpv_opengl_drm_params_v2 {
             fd: -1,
             crtc_id: 0,
@@ -147,11 +156,13 @@ fn on_realize(area: &gtk::GLArea) {
                 data: &mut drm as *mut _ as *mut c_void,
             });
         }
-        params.push(mpv_render_param { type_: MPV_RENDER_PARAM_INVALID, data: ptr::null_mut() });
+        params.push(mpv_render_param {
+            type_: MPV_RENDER_PARAM_INVALID,
+            data: ptr::null_mut(),
+        });
         let mut ctx = ptr::null_mut();
-        let rc = unsafe {
-            mpv_render_context_create(&mut ctx, surface.mpv.raw(), params.as_mut_ptr())
-        };
+        let rc =
+            unsafe { mpv_render_context_create(&mut ctx, surface.mpv.raw(), params.as_mut_ptr()) };
         if rc < 0 {
             let msg = unsafe { CStr::from_ptr(mpv_error_string(rc)) };
             log::error!("mpv_render_context_create failed: {msg:?}");
@@ -163,7 +174,9 @@ fn on_realize(area: &gtk::GLArea) {
     // Registering fires the callback right away, so do it with no borrow held.
     let ctx = SURFACE.with(|s| s.borrow().as_ref().map_or(ptr::null_mut(), |s| s.ctx));
     if !ctx.is_null() {
-        unsafe { mpv_render_context_set_update_callback(ctx, Some(on_mpv_update), ptr::null_mut()) };
+        unsafe {
+            mpv_render_context_set_update_callback(ctx, Some(on_mpv_update), ptr::null_mut())
+        };
         log::info!("mpv render context ready ({} GL)", gl_flavor());
     }
 }
@@ -172,11 +185,12 @@ fn on_unrealize(area: &gtk::GLArea) {
     area.make_current();
     SURFACE.with(|s| {
         if let Some(surface) = s.borrow_mut().as_mut()
-            && !surface.ctx.is_null() {
-                unsafe { mpv_render_context_free(surface.ctx) };
-                surface.ctx = ptr::null_mut();
-                surface.render_node = None; // mpv's VA display is gone with the context
-            }
+            && !surface.ctx.is_null()
+        {
+            unsafe { mpv_render_context_free(surface.ctx) };
+            surface.ctx = ptr::null_mut();
+            surface.render_node = None; // mpv's VA display is gone with the context
+        }
     });
 }
 
@@ -188,18 +202,32 @@ fn on_render(area: &gtk::GLArea, _ctx: &gdk::GLContext) -> glib::Propagation {
             return;
         }
         let scale = area.scale_factor();
-        let (w, h) = (area.allocated_width() * scale, area.allocated_height() * scale);
+        let (w, h) = (
+            area.allocated_width() * scale,
+            area.allocated_height() * scale,
+        );
         let mut fbo: c_int = 0;
         unsafe { gl_get_integerv(GL_FRAMEBUFFER_BINDING, &mut fbo) };
-        let mut target = mpv_opengl_fbo { fbo, w, h, internal_format: 0 };
+        let mut target = mpv_opengl_fbo {
+            fbo,
+            w,
+            h,
+            internal_format: 0,
+        };
         let mut flip_y: c_int = 1;
         let mut params = [
             mpv_render_param {
                 type_: MPV_RENDER_PARAM_OPENGL_FBO,
                 data: &mut target as *mut _ as *mut c_void,
             },
-            mpv_render_param { type_: MPV_RENDER_PARAM_FLIP_Y, data: &mut flip_y as *mut _ as *mut c_void },
-            mpv_render_param { type_: MPV_RENDER_PARAM_INVALID, data: ptr::null_mut() },
+            mpv_render_param {
+                type_: MPV_RENDER_PARAM_FLIP_Y,
+                data: &mut flip_y as *mut _ as *mut c_void,
+            },
+            mpv_render_param {
+                type_: MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
         ];
         unsafe {
             mpv_render_context_render(surface.ctx, params.as_mut_ptr());
@@ -261,13 +289,25 @@ fn loader() -> &'static GlLoader {
             _libs: vec![],
         };
         if let Ok(egl) = libloading::Library::new("libEGL.so.1") {
-            l.egl_get_proc = egl.get(b"eglGetProcAddress\0").ok().map(|s: libloading::Symbol<_>| *s);
-            l.egl_current_ctx = egl.get(b"eglGetCurrentContext\0").ok().map(|s: libloading::Symbol<_>| *s);
-            l.egl_current_display = egl.get(b"eglGetCurrentDisplay\0").ok().map(|s: libloading::Symbol<_>| *s);
+            l.egl_get_proc = egl
+                .get(b"eglGetProcAddress\0")
+                .ok()
+                .map(|s: libloading::Symbol<_>| *s);
+            l.egl_current_ctx = egl
+                .get(b"eglGetCurrentContext\0")
+                .ok()
+                .map(|s: libloading::Symbol<_>| *s);
+            l.egl_current_display = egl
+                .get(b"eglGetCurrentDisplay\0")
+                .ok()
+                .map(|s: libloading::Symbol<_>| *s);
             libs.push(egl);
         }
         if let Ok(glx) = libloading::Library::new("libGL.so.1") {
-            l.glx_get_proc = glx.get(b"glXGetProcAddressARB\0").ok().map(|s: libloading::Symbol<_>| *s);
+            l.glx_get_proc = glx
+                .get(b"glXGetProcAddressARB\0")
+                .ok()
+                .map(|s: libloading::Symbol<_>| *s);
             libs.push(glx);
         }
         l._libs = libs;
@@ -291,9 +331,10 @@ unsafe extern "C" fn get_proc_address(_ctx: *mut c_void, name: *const c_char) ->
     let l = loader();
     unsafe {
         if using_egl()
-            && let Some(f) = l.egl_get_proc {
-                return f(name);
-            }
+            && let Some(f) = l.egl_get_proc
+        {
+            return f(name);
+        }
         if let Some(f) = l.glx_get_proc {
             return f(name as *const u8);
         }
@@ -309,12 +350,20 @@ fn open_render_node() -> Option<File> {
             .ok()?
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("renderD")))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("renderD"))
+            })
             .collect();
         nodes.sort();
         nodes.into_iter().next().map(|p| (p, "first render node"))
     })?;
-    match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
         Ok(f) => {
             log::info!("VA-API zero-copy via {} ({how})", path.display());
             Some(f)

@@ -46,7 +46,13 @@ pub fn normalize_base(input: &str) -> String {
     match Url::parse(&s) {
         Ok(mut u) => {
             let mut path = u.path().trim_end_matches('/').to_owned();
-            for endpoint in ["/player_api.php", "/get.php", "/xmltv.php", "/panel_api.php", "/c"] {
+            for endpoint in [
+                "/player_api.php",
+                "/get.php",
+                "/xmltv.php",
+                "/panel_api.php",
+                "/c",
+            ] {
                 if let Some(p) = path.strip_suffix(endpoint) {
                     path = p.to_owned();
                 }
@@ -79,7 +85,13 @@ pub fn parse_playlist_url(input: &str) -> Option<(String, String, String)> {
 }
 
 impl Xtream {
-    pub fn new(base: &str, alt: &[String], username: &str, password: &str, client: reqwest::Client) -> Self {
+    pub fn new(
+        base: &str,
+        alt: &[String],
+        username: &str,
+        password: &str,
+        client: reqwest::Client,
+    ) -> Self {
         let mut bases = vec![normalize_base(base)];
         for a in alt {
             let a = normalize_base(a);
@@ -104,7 +116,12 @@ impl Xtream {
     pub fn alternates_for(&self, url: &str) -> Vec<String> {
         let current = self.base();
         match url.strip_prefix(current) {
-            Some(path) => self.bases.iter().filter(|b| *b != current).map(|b| format!("{b}{path}")).collect(),
+            Some(path) => self
+                .bases
+                .iter()
+                .filter(|b| *b != current)
+                .map(|b| format!("{b}{path}"))
+                .collect(),
             None => Vec::new(),
         }
     }
@@ -133,7 +150,12 @@ impl Xtream {
     }
 
     /// GETs an API endpoint, failing over to mirrors on network/5xx errors.
-    async fn get(&self, action: Option<&str>, extra: &[(&str, String)], timeout: Duration) -> Result<Value> {
+    async fn get(
+        &self,
+        action: Option<&str>,
+        extra: &[(&str, String)],
+        timeout: Duration,
+    ) -> Result<Value> {
         let start = self.current.load(Ordering::Relaxed);
         let mut last_err = None;
         for i in 0..self.bases.len() {
@@ -144,7 +166,8 @@ impl Xtream {
                 Ok(r) if r.status().is_success() => {
                     let bytes = r.bytes().await?;
                     let v: Value = serde_json::from_slice(&bytes).map_err(|e| {
-                        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(120)]).into_owned();
+                        let head =
+                            String::from_utf8_lossy(&bytes[..bytes.len().min(120)]).into_owned();
                         Error::msg(format!("unexpected response from server ({e}): {head}"))
                     })?;
                     if idx != start {
@@ -157,7 +180,10 @@ impl Xtream {
                     last_err = Some(Error::msg(format!("server error {}", r.status())));
                 }
                 Ok(r) => {
-                    return Err(Error::msg(format!("server refused request ({})", r.status())));
+                    return Err(Error::msg(format!(
+                        "server refused request ({})",
+                        r.status()
+                    )));
                 }
                 Err(e) => last_err = Some(e.into()),
             }
@@ -202,7 +228,9 @@ impl Xtream {
     }
 
     pub async fn list(&self, action: &str) -> Result<Vec<Value>> {
-        let v = self.get(Some(action), &[], Duration::from_secs(180)).await?;
+        let v = self
+            .get(Some(action), &[], Duration::from_secs(180))
+            .await?;
         Ok(match v {
             Value::Array(a) => a,
             // some panels return {} for empty lists
@@ -211,17 +239,30 @@ impl Xtream {
     }
 
     pub async fn vod_info(&self, id: &str) -> Result<Value> {
-        self.get(Some("get_vod_info"), &[("vod_id", id.to_owned())], Duration::from_secs(30)).await
+        self.get(
+            Some("get_vod_info"),
+            &[("vod_id", id.to_owned())],
+            Duration::from_secs(30),
+        )
+        .await
     }
 
     pub async fn series_info(&self, id: &str) -> Result<Value> {
-        self.get(Some("get_series_info"), &[("series_id", id.to_owned())], Duration::from_secs(30)).await
+        self.get(
+            Some("get_series_info"),
+            &[("series_id", id.to_owned())],
+            Duration::from_secs(30),
+        )
+        .await
     }
 
     pub async fn short_epg(&self, stream_id: &str, limit: u32) -> Result<Value> {
         self.get(
             Some("get_short_epg"),
-            &[("stream_id", stream_id.to_owned()), ("limit", limit.to_string())],
+            &[
+                ("stream_id", stream_id.to_owned()),
+                ("limit", limit.to_string()),
+            ],
             Duration::from_secs(20),
         )
         .await
@@ -237,7 +278,11 @@ impl Xtream {
     }
 
     fn path_creds(&self) -> String {
-        format!("{}/{}", Self::enc(&self.username), Self::enc(&self.password))
+        format!(
+            "{}/{}",
+            Self::enc(&self.username),
+            Self::enc(&self.password)
+        )
     }
 
     pub fn live_url(&self, id: &str, ext: &str) -> String {
@@ -254,7 +299,12 @@ impl Xtream {
 
     /// Catch-up URL. `start_local` is the programme start in *server* local
     /// time; `minutes` its duration.
-    pub fn timeshift_url(&self, id: &str, start_local: chrono::NaiveDateTime, minutes: i64) -> String {
+    pub fn timeshift_url(
+        &self,
+        id: &str,
+        start_local: chrono::NaiveDateTime,
+        minutes: i64,
+    ) -> String {
         format!(
             "{}/timeshift/{}/{minutes}/{}/{id}.ts",
             self.base(),
@@ -275,16 +325,31 @@ mod tests {
 
     #[test]
     fn normalizes_bases() {
-        assert_eq!(normalize_base("cf.example.com:8080"), "http://cf.example.com:8080");
-        assert_eq!(normalize_base("http://h.tv/player_api.php?username=a&password=b"), "http://h.tv");
+        assert_eq!(
+            normalize_base("cf.example.com:8080"),
+            "http://cf.example.com:8080"
+        );
+        assert_eq!(
+            normalize_base("http://h.tv/player_api.php?username=a&password=b"),
+            "http://h.tv"
+        );
         assert_eq!(normalize_base("https://h.tv/"), "https://h.tv");
-        assert_eq!(normalize_base("http://h.tv/get.php?username=a&password=b&type=m3u_plus"), "http://h.tv");
+        assert_eq!(
+            normalize_base("http://h.tv/get.php?username=a&password=b&type=m3u_plus"),
+            "http://h.tv"
+        );
     }
 
     #[test]
     fn detects_playlist_links() {
-        let (base, u, p) = parse_playlist_url("http://h.tv/get.php?username=ab&password=cd&type=m3u_plus&output=ts").unwrap();
-        assert_eq!((base.as_str(), u.as_str(), p.as_str()), ("http://h.tv", "ab", "cd"));
+        let (base, u, p) = parse_playlist_url(
+            "http://h.tv/get.php?username=ab&password=cd&type=m3u_plus&output=ts",
+        )
+        .unwrap();
+        assert_eq!(
+            (base.as_str(), u.as_str(), p.as_str()),
+            ("http://h.tv", "ab", "cd")
+        );
         assert!(parse_playlist_url("http://h.tv/list.m3u").is_none());
     }
 }

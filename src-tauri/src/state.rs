@@ -21,7 +21,11 @@ pub type AppState = Arc<App>;
 
 pub fn http_client(user_agent: Option<&str>) -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent(user_agent.filter(|u| !u.trim().is_empty()).unwrap_or(DEFAULT_USER_AGENT))
+        .user_agent(
+            user_agent
+                .filter(|u| !u.trim().is_empty())
+                .unwrap_or(DEFAULT_USER_AGENT),
+        )
         .connect_timeout(Duration::from_secs(12))
         .pool_idle_timeout(Duration::from_secs(60))
         .build()

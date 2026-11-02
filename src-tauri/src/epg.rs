@@ -44,9 +44,16 @@ pub fn parse_time(s: &str) -> Option<i64> {
         return None;
     }
     let (dt, rest) = if s.len() >= 14 && s.as_bytes()[..14].iter().all(u8::is_ascii_digit) {
-        (chrono::NaiveDateTime::parse_from_str(&s[..14], "%Y%m%d%H%M%S").ok()?, &s[14..])
+        (
+            chrono::NaiveDateTime::parse_from_str(&s[..14], "%Y%m%d%H%M%S").ok()?,
+            &s[14..],
+        )
     } else {
-        (chrono::NaiveDateTime::parse_from_str(&format!("{}00", &s[..12]), "%Y%m%d%H%M%S").ok()?, &s[12..])
+        (
+            chrono::NaiveDateTime::parse_from_str(&format!("{}00", &s[..12]), "%Y%m%d%H%M%S")
+                .ok()?,
+            &s[12..],
+        )
     };
     let mut ts = dt.and_utc().timestamp();
     let off = rest.trim();
@@ -106,9 +113,12 @@ pub fn parse_xmltv<R: BufRead>(
     let mut count = 0usize;
 
     loop {
-        let ev = xml
-            .read_event_into(&mut buf)
-            .map_err(|e| Error::msg(format!("EPG XML error at byte {}: {e}", xml.buffer_position())))?;
+        let ev = xml.read_event_into(&mut buf).map_err(|e| {
+            Error::msg(format!(
+                "EPG XML error at byte {}: {e}",
+                xml.buffer_position()
+            ))
+        })?;
         match ev {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 // <title/> etc. carry no text and never see an End event
@@ -118,7 +128,9 @@ pub fn parse_xmltv<R: BufRead>(
                         let mut p = Programme::default();
                         let mut ok = true;
                         for a in e.attributes().flatten() {
-                            let v = a.normalized_value(XmlVersion::Implicit1_0).unwrap_or_default();
+                            let v = a
+                                .normalized_value(XmlVersion::Implicit1_0)
+                                .unwrap_or_default();
                             match a.key.as_ref() {
                                 "channel" => p.epg_id = v.trim().to_owned(),
                                 "start" => p.start = parse_time(&v).unwrap_or(0),
@@ -154,18 +166,27 @@ pub fn parse_xmltv<R: BufRead>(
                         text.clear();
                     }
                     "episode-num" if cur.is_some() && !childless => {
-                        let onscreen = e.attributes().flatten().any(|a| {
-                            a.key.as_ref() == "system" && a.value == "onscreen"
-                        });
+                        let onscreen = e
+                            .attributes()
+                            .flatten()
+                            .any(|a| a.key.as_ref() == "system" && a.value == "onscreen");
                         let has = cur.as_ref().is_some_and(|p| p.episode.is_some());
-                        field = if onscreen || !has { Field::Episode } else { Field::None };
+                        field = if onscreen || !has {
+                            Field::Episode
+                        } else {
+                            Field::None
+                        };
                         text.clear();
                     }
                     "icon" => {
                         if let Some(p) = cur.as_mut() {
                             for a in e.attributes().flatten() {
                                 if a.key.as_ref() == "src" {
-                                    p.icon = Some(a.normalized_value(XmlVersion::Implicit1_0).unwrap_or_default().into_owned());
+                                    p.icon = Some(
+                                        a.normalized_value(XmlVersion::Implicit1_0)
+                                            .unwrap_or_default()
+                                            .into_owned(),
+                                    );
                                 }
                             }
                         }
@@ -189,10 +210,11 @@ pub fn parse_xmltv<R: BufRead>(
             Event::End(e) => match e.name().as_ref() {
                 "programme" => {
                     if let Some(p) = cur.take()
-                        && !p.title.is_empty() {
-                            sink(p);
-                            count += 1;
-                        }
+                        && !p.title.is_empty()
+                    {
+                        sink(p);
+                        count += 1;
+                    }
                     field = Field::None;
                 }
                 "title" | "sub-title" | "desc" | "category" | "episode-num" => {
@@ -226,7 +248,11 @@ pub fn parse_xmltv<R: BufRead>(
 fn format_episode(v: &str) -> String {
     let parts: Vec<&str> = v.split('.').collect();
     if parts.len() >= 2 {
-        let num = |s: &str| s.split('/').next().and_then(|n| n.trim().parse::<i64>().ok());
+        let num = |s: &str| {
+            s.split('/')
+                .next()
+                .and_then(|n| n.trim().parse::<i64>().ok())
+        };
         match (num(parts[0]), num(parts[1])) {
             (Some(s), Some(e)) => return format!("S{:02}E{:02}", s + 1, e + 1),
             (None, Some(e)) => return format!("E{:02}", e + 1),
@@ -242,7 +268,9 @@ pub fn open_guide(path: &std::path::Path) -> Result<Box<dyn BufRead + Send>> {
     let mut reader = std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(path)?);
     let gzip = reader.fill_buf()?.starts_with(&[0x1f, 0x8b]);
     Ok(if gzip {
-        Box::new(std::io::BufReader::new(flate2::read::MultiGzDecoder::new(reader)))
+        Box::new(std::io::BufReader::new(flate2::read::MultiGzDecoder::new(
+            reader,
+        )))
     } else {
         Box::new(reader)
     })
@@ -322,7 +350,16 @@ pub fn import(
                     replaced.insert(p.epg_id.clone());
                 }
                 match insert.execute(params![
-                    source_id, p.epg_id, p.start, p.stop, p.title, p.subtitle, p.description, p.category, p.episode, p.icon
+                    source_id,
+                    p.epg_id,
+                    p.start,
+                    p.stop,
+                    p.title,
+                    p.subtitle,
+                    p.description,
+                    p.category,
+                    p.episode,
+                    p.icon
                 ]) {
                     Ok(_) => count += 1,
                     Err(e) => db_err = Some(e),
@@ -338,12 +375,20 @@ pub fn import(
         Ok(_) => {
             // complete document: channels it no longer lists lose their guide
             let stale: Vec<String> = {
-                let mut stmt = tx.prepare("SELECT DISTINCT epg_id FROM programme WHERE source_id = ?1")?;
-                let ids = stmt.query_map([source_id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-                ids.into_iter().filter(|id| !replaced.contains(id)).collect()
+                let mut stmt =
+                    tx.prepare("SELECT DISTINCT epg_id FROM programme WHERE source_id = ?1")?;
+                let ids = stmt
+                    .query_map([source_id], |r| r.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                ids.into_iter()
+                    .filter(|id| !replaced.contains(id))
+                    .collect()
             };
             for id in stale {
-                tx.execute("DELETE FROM programme WHERE source_id = ?1 AND epg_id = ?2", params![source_id, id])?;
+                tx.execute(
+                    "DELETE FROM programme WHERE source_id = ?1 AND epg_id = ?2",
+                    params![source_id, id],
+                )?;
             }
             None
         }
@@ -351,7 +396,10 @@ pub fn import(
         Err(e) => return Err(e),
     };
     tx.commit()?;
-    Ok(Imported { programmes: count, incomplete })
+    Ok(Imported {
+        programmes: count,
+        incomplete,
+    })
 }
 
 pub fn programmes(
@@ -394,8 +442,14 @@ mod tests {
     #[test]
     fn parses_times() {
         assert_eq!(parse_time("20260926110000 +0200"), Some(1790413200));
-        assert_eq!(parse_time("20260926090000 +0000"), parse_time("20260926110000 +0200"));
-        assert_eq!(parse_time("20260926090000"), parse_time("20260926090000 +0000"));
+        assert_eq!(
+            parse_time("20260926090000 +0000"),
+            parse_time("20260926110000 +0200")
+        );
+        assert_eq!(
+            parse_time("20260926090000"),
+            parse_time("20260926090000 +0000")
+        );
     }
 
     #[test]
@@ -409,7 +463,14 @@ mod tests {
           <programme start="20260926100000 +0000" stop="20260926110000 +0000" channel="b.uk"><title>skip</title></programme>
         </tv>"#;
         let mut out = Vec::new();
-        let n = parse_xmltv(xml.as_bytes(), 0, i64::MAX, |id| id == "a.uk", |p| out.push(p)).unwrap();
+        let n = parse_xmltv(
+            xml.as_bytes(),
+            0,
+            i64::MAX,
+            |id| id == "a.uk",
+            |p| out.push(p),
+        )
+        .unwrap();
         assert_eq!(n, 1);
         assert_eq!(out[0].title, "Tom & Jerry");
         assert_eq!(out[0].description.as_deref(), Some("Cat & mouse"));
@@ -422,28 +483,59 @@ mod tests {
         let mut c = crate::db::test_conn();
         let now = crate::db::now();
         let at = |offset: i64| {
-            chrono::DateTime::from_timestamp(now + offset, 0).unwrap().format("%Y%m%d%H%M%S +0000").to_string()
+            chrono::DateTime::from_timestamp(now + offset, 0)
+                .unwrap()
+                .format("%Y%m%d%H%M%S +0000")
+                .to_string()
         };
         let prog = |ch: &str, title: &str, offset: i64| {
-            format!(r#"<programme start="{}" stop="{}" channel="{ch}"><title>{title}</title></programme>"#, at(offset), at(offset + 1800))
+            format!(
+                r#"<programme start="{}" stop="{}" channel="{ch}"><title>{title}</title></programme>"#,
+                at(offset),
+                at(offset + 1800)
+            )
         };
         let titles = |c: &Connection| -> Vec<String> {
-            let mut s = c.prepare("SELECT epg_id || ':' || title FROM programme ORDER BY epg_id, start").unwrap();
-            s.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+            let mut s = c
+                .prepare("SELECT epg_id || ':' || title FROM programme ORDER BY epg_id, start")
+                .unwrap();
+            s.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
         };
         let all = HashSet::new();
-        let doc = format!("<tv>{}{}{}</tv>", prog("a", "old a", 0), prog("b", "old b", 0), prog("c", "old c", 0));
-        assert!(import(&mut c, 1, doc.as_bytes(), &all, 2).unwrap().incomplete.is_none());
+        let doc = format!(
+            "<tv>{}{}{}</tv>",
+            prog("a", "old a", 0),
+            prog("b", "old b", 0),
+            prog("c", "old c", 0)
+        );
+        assert!(
+            import(&mut c, 1, doc.as_bytes(), &all, 2)
+                .unwrap()
+                .incomplete
+                .is_none()
+        );
         assert_eq!(titles(&c), ["a:old a", "b:old b", "c:old c"]);
 
         // breaks off after channel a (a truncated desc, like the provider's)
-        let broken = format!("<tv>{}<programme start=\"{}\" stop=\"{}\" channel=\"b\"><title>x</title><desc>cut</tv>", prog("a", "new a", 60), at(0), at(60));
+        let broken = format!(
+            "<tv>{}<programme start=\"{}\" stop=\"{}\" channel=\"b\"><title>x</title><desc>cut</tv>",
+            prog("a", "new a", 60),
+            at(0),
+            at(60)
+        );
         let r = import(&mut c, 1, broken.as_bytes(), &all, 2).unwrap();
         assert!(r.incomplete.is_some() && r.programmes == 1);
         assert_eq!(titles(&c), ["a:new a", "b:old b", "c:old c"]);
 
         // a complete document drops channels it no longer lists
-        let doc = format!("<tv>{}{}</tv>", prog("a", "a again", 0), prog("b", "new b", 0));
+        let doc = format!(
+            "<tv>{}{}</tv>",
+            prog("a", "a again", 0),
+            prog("b", "new b", 0)
+        );
         import(&mut c, 1, doc.as_bytes(), &all, 2).unwrap();
         assert_eq!(titles(&c), ["a:a again", "b:new b"]);
 
@@ -457,7 +549,10 @@ mod tests {
         let mut c = crate::db::test_conn();
         let now = crate::db::now();
         let at = |days_ago: i64| {
-            chrono::DateTime::from_timestamp(now - days_ago * 86400, 0).unwrap().format("%Y%m%d%H%M%S +0000").to_string()
+            chrono::DateTime::from_timestamp(now - days_ago * 86400, 0)
+                .unwrap()
+                .format("%Y%m%d%H%M%S +0000")
+                .to_string()
         };
         let doc: String = (1..=8)
             .map(|d| format!(r#"<programme start="{}" stop="{}" channel="a"><title>{d} days ago</title></programme>"#, at(d), at(d)))
@@ -472,9 +567,19 @@ mod tests {
         let days = history_days(&c, 1).unwrap();
         assert_eq!(days, 5);
         // 1..=5 days ago still end inside the window (stop = start + 30 min); 6..=8 don't
-        assert_eq!(import(&mut c, 1, doc.as_bytes(), &HashSet::new(), days).unwrap().programmes, 5);
+        assert_eq!(
+            import(&mut c, 1, doc.as_bytes(), &HashSet::new(), days)
+                .unwrap()
+                .programmes,
+            5
+        );
         // the old fixed 2-day window kept only 1..=2
-        assert_eq!(import(&mut c, 1, doc.as_bytes(), &HashSet::new(), 2).unwrap().programmes, 2);
+        assert_eq!(
+            import(&mut c, 1, doc.as_bytes(), &HashSet::new(), 2)
+                .unwrap()
+                .programmes,
+            2
+        );
     }
 
     /// Diagnostic for a real guide: `TP_XMLTV=/path/guide.xml cargo test --lib -- --ignored xmltv_file`

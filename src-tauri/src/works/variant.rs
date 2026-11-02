@@ -159,8 +159,19 @@ pub fn parse(tag: Option<&str>, category: Option<&str>) -> Variant {
         .find(|(t, _)| *t == base)
         .map(|(_, s)| *s)
         // "D+" is both Disney+ and Discovery+: the category decides
-        .map(|s| if s == "Disney+" && cat.contains("DISCOVERY") { "Discovery+" } else { s })
-        .or_else(|| SERVICE_WORDS.iter().find(|(w, _)| cat.contains(w)).map(|(_, s)| *s));
+        .map(|s| {
+            if s == "Disney+" && cat.contains("DISCOVERY") {
+                "Discovery+"
+            } else {
+                s
+            }
+        })
+        .or_else(|| {
+            SERVICE_WORDS
+                .iter()
+                .find(|(w, _)| cat.contains(w))
+                .map(|(_, s)| *s)
+        });
 
     if cat.contains("BLURAY") {
         bluray = true;
@@ -170,7 +181,11 @@ pub fn parse(tag: Option<&str>, category: Option<&str>) -> Variant {
     } else if bluray {
         origin = Origin::Bluray;
     } else if let Some(s) = service {
-        origin = if TV_SERVICES.contains(&s) { Origin::Tv } else { Origin::Web };
+        origin = if TV_SERVICES.contains(&s) {
+            Origin::Tv
+        } else {
+            Origin::Web
+        };
     }
 
     if uhd || cat.contains("4K") || cat.contains("3840P") || cat.contains("2160P") {
@@ -223,7 +238,14 @@ pub fn parse(tag: Option<&str>, category: Option<&str>) -> Variant {
         label.push_str(&quality.join(" "));
     }
 
-    Variant { service, origin, language, subtitles, quality, label }
+    Variant {
+        service,
+        origin,
+        language,
+        subtitles,
+        quality,
+        label,
+    }
 }
 
 /// Picture/release quality as a tie-breaker (language fit comes first, see
@@ -283,8 +305,11 @@ pub fn language_prefs(sub_langs: &str, audio_langs: &str) -> Vec<&'static str> {
 /// releases.
 pub fn affinity(v: &Variant, prefs: &[&str]) -> i32 {
     // service releases and multi-subtitle Blu-rays are the international copies
-    let international = v.service.is_some() || v.origin == Origin::Bluray || v.subtitles == Some("Multi-subtitles");
-    let lang = v.language.or(if international { Some("English") } else { None });
+    let international =
+        v.service.is_some() || v.origin == Origin::Bluray || v.subtitles == Some("Multi-subtitles");
+    let lang = v
+        .language
+        .or(if international { Some("English") } else { None });
     match lang.and_then(|l| prefs.iter().position(|p| *p == l)) {
         Some(i) => 20 * (4 - i.min(3) as i32),
         None => 0,
@@ -303,40 +328,79 @@ mod tests {
     fn labels_the_for_all_mankind_copies() {
         assert_eq!(label("NF", "NETFLIX  SERIES"), "Netflix");
         assert_eq!(label("A+", "APPLE+ SERIES"), "Apple TV+");
-        assert_eq!(label("4K-A+", "APPLE+ SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ"), "Apple TV+ · 4K Dolby Vision");
+        assert_eq!(
+            label("4K-A+", "APPLE+ SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ"),
+            "Apple TV+ · 4K Dolby Vision"
+        );
         assert_eq!(label("EN", "ENGLISH SERIES"), "English");
         assert_eq!(label("SC", "NORDIC SERIES"), "Nordic");
-        assert_eq!(label("4K-SC", "NORDIC SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᴼᴸᴮʸ ᴬᵁᴰᴵᴼ"), "Nordic · 4K Dolby Audio");
+        assert_eq!(
+            label("4K-SC", "NORDIC SERIES ⁴ᴷ ³⁸⁴⁰ᴾ ᴰᴼᴸᴮʸ ᴬᵁᴰᴵᴼ"),
+            "Nordic · 4K Dolby Audio"
+        );
     }
 
     #[test]
     fn services_from_nordic_collections() {
         let v = parse(Some("SC"), Some("NORDIC HBO MAX"));
-        assert_eq!((v.service, v.language, v.origin), (Some("HBO Max"), Some("Nordic"), Origin::Web));
+        assert_eq!(
+            (v.service, v.language, v.origin),
+            (Some("HBO Max"), Some("Nordic"), Origin::Web)
+        );
         assert_eq!(v.label, "HBO Max · Nordic");
-        assert_eq!(parse(Some("SC"), Some("NORDIC SKY SHOWTIME")).service, Some("SkyShowtime"));
-        assert_eq!(parse(Some("SE"), Some("SVENSK SVT PLAY")).origin, Origin::Tv);
+        assert_eq!(
+            parse(Some("SC"), Some("NORDIC SKY SHOWTIME")).service,
+            Some("SkyShowtime")
+        );
+        assert_eq!(
+            parse(Some("SE"), Some("SVENSK SVT PLAY")).origin,
+            Origin::Tv
+        );
     }
 
     #[test]
     fn origins_and_quality() {
         let v = parse(Some("TOP"), Some("TOP MOVIES BLURAY (MULTI-SUBS)"));
-        assert_eq!((v.origin, v.label.as_str()), (Origin::Bluray, "Blu-ray · Multi-subtitles"));
+        assert_eq!(
+            (v.origin, v.label.as_str()),
+            (Origin::Bluray, "Blu-ray · Multi-subtitles")
+        );
         let cam = parse(Some("EN-CAM"), Some("EN - NEW RELEASE"));
-        assert_eq!((cam.origin, cam.label.as_str()), (Origin::Cam, "CAM · English"));
+        assert_eq!(
+            (cam.origin, cam.label.as_str()),
+            (Origin::Cam, "CAM · English")
+        );
         assert!(score(&cam) < score(&parse(Some("EN"), Some("EN - NEW RELEASE"))));
-        assert_eq!(label("SC-DO", "NORDIC FILM ᴰᴼᴸᴮʸ ᴬᵁᴰᴵᴼ"), "Nordic · Dolby Audio");
+        assert_eq!(
+            label("SC-DO", "NORDIC FILM ᴰᴼᴸᴮʸ ᴬᵁᴰᴵᴼ"),
+            "Nordic · Dolby Audio"
+        );
         assert_eq!(label("NF", "NETFLIX HEVC"), "Netflix · HEVC");
-        assert_eq!(label("EN", "TURKSIH SERIES (SUB EN)"), "English · English subtitles");
-        assert_eq!(label("", "TURKSIH SERIES (SUB EN)"), "Turkish · English subtitles");
+        assert_eq!(
+            label("EN", "TURKSIH SERIES (SUB EN)"),
+            "English · English subtitles"
+        );
+        assert_eq!(
+            label("", "TURKSIH SERIES (SUB EN)"),
+            "Turkish · English subtitles"
+        );
         // the IMDb top-250 list is not a Blu-ray release
-        assert_eq!(parse(Some("EN-TOP"), Some("EN - IMDB TOP 250")).origin, Origin::Unknown);
+        assert_eq!(
+            parse(Some("EN-TOP"), Some("EN - IMDB TOP 250")).origin,
+            Origin::Unknown
+        );
     }
 
     #[test]
     fn disney_or_discovery() {
-        assert_eq!(parse(Some("D+"), Some("DISCOVERY+ MOVIES")).service, Some("Discovery+"));
-        assert_eq!(parse(Some("4K-D+"), Some("DISNEY+ MOVIES ⁴ᴷ ³⁸⁴⁰ᴾ")).service, Some("Disney+"));
+        assert_eq!(
+            parse(Some("D+"), Some("DISCOVERY+ MOVIES")).service,
+            Some("Discovery+")
+        );
+        assert_eq!(
+            parse(Some("4K-D+"), Some("DISNEY+ MOVIES ⁴ᴷ ³⁸⁴⁰ᴾ")).service,
+            Some("Disney+")
+        );
     }
 
     #[test]

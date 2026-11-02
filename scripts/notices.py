@@ -6,11 +6,13 @@ binary distributions (MIT/BSD/Apache/OFL notices).
   scripts/notices.py           # (re)write THIRD_PARTY_NOTICES.md
   scripts/notices.py --check   # exit 1 when the file is out of date
 
-Inputs: `cargo metadata` (crates linked into the Linux x86_64 build; their
-license files come from the cargo registry), node_modules (packages bundled
-into the UI), the FFmpeg/mpv tags in scripts/build-media.sh and the curated
-tables below. Needs the crate sources (any cargo build/fetch) and
-`bun install`. Standard library only.
+Inputs: `cargo metadata` (crates linked into the Linux x86_64 and macOS
+arm64 builds; their license files come from the cargo registry),
+node_modules (packages bundled into the UI), and the upstream tags pinned in
+scripts/build-media.sh (the media engine is static on both platforms; on
+macOS the former Homebrew tail — OpenSSL, libass, lcms2, uchardet and
+libass's own dependencies — is static too, PL-110). Needs the crate sources
+(any cargo build/fetch) and `bun install`. Standard library only.
 """
 import hashlib
 import json
@@ -21,7 +23,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "THIRD_PARTY_NOTICES.md")
-TARGET = "x86_64-unknown-linux-gnu"
+# Both released platforms: the union of the crates each links (the Rust
+# crates are resolved per platform without building anything).
+TARGETS = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
 
 # For "A OR B" licenses we comply with the first offered alternative here
 # (fewest obligations first).
@@ -86,28 +90,28 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.""",
 # Linked from the operating system at runtime, not shipped in our packages
 # (licenses as stated upstream). Keep in sync with src-tauri/build.rs,
 # scripts/build-media.sh and `ldd src-tauri/target/release/testpattern`.
+# The four libraries that used to be here — libass, OpenSSL, Little CMS 2,
+# uchardet — moved to section 1: on macOS they are statically linked now
+# (PL-110), and the Linux dynamic linkage is noted in their section-1 rows.
 SYSTEM_LIBS = [
-    ("glibc (libc, libm)", "C runtime", "LGPL-2.1-or-later"),
-    ("libgcc_s", "compiler runtime", "GPL-3.0-or-later WITH GCC-exception-3.1"),
-    ("libstdc++", "C++ runtime (libplacebo)", "GPL-3.0-or-later WITH GCC-exception-3.1"),
-    ("GTK 3, GDK", "window and widgets", "LGPL-2.0-or-later"),
-    ("gdk-pixbuf", "image loading", "LGPL-2.1-or-later"),
-    ("GLib, GObject, GIO", "platform library", "LGPL-2.1-or-later"),
-    ("cairo", "2D drawing", "LGPL-2.1-only OR MPL-1.1"),
-    ("WebKitGTK, JavaScriptCore (API 4.1)", "web view hosting the UI", "LGPL-2.1-only AND BSD-2-Clause (and others)"),
-    ("libsoup 3", "networking for the web view", "LGPL-2.0-or-later"),
-    ("D-Bus", "desktop IPC", "AFL-2.1 OR GPL-2.0-or-later"),
-    ("libX11, libXfixes", "X11 support", "MIT"),
-    ("libEGL (libglvnd)", "OpenGL context for video", "MIT-style"),
-    ("libdrm, libva, libva-drm", "GPU access, VA-API decoding", "MIT"),
-    ("libass (with FreeType, FriBidi, HarfBuzz, libunibreak)", "subtitle rendering (mpv)", "ISC"),
-    ("OpenSSL 3 (libssl, libcrypto)", "HTTPS/TLS (FFmpeg)", "Apache-2.0"),
-    ("zlib (zlib-ng compat)", "compression", "Zlib"),
-    ("Little CMS 2", "color management (mpv)", "MIT"),
-    ("uchardet", "subtitle charset detection (mpv)", "MPL-1.1 OR GPL-2.0-or-later OR LGPL-2.0-or-later"),
-    ("PipeWire client library", "audio output (mpv)", "MIT"),
-    ("PulseAudio client library", "audio output (mpv)", "LGPL-2.1-or-later"),
-    ("ALSA library", "audio output (mpv)", "LGPL-2.1-or-later"),
+    ("glibc (libc, libm)", "C runtime (Linux)", "LGPL-2.1-or-later"),
+    ("libgcc_s, libstdc++", "compiler and C++ runtimes (Linux; libplacebo)", "GPL-3.0-or-later WITH GCC-exception-3.1"),
+    ("GTK 3, GDK", "window and widgets (Linux)", "LGPL-2.0-or-later"),
+    ("gdk-pixbuf", "image loading (Linux)", "LGPL-2.1-or-later"),
+    ("GLib, GObject, GIO", "platform library (Linux)", "LGPL-2.1-or-later"),
+    ("cairo", "2D drawing (Linux)", "LGPL-2.1-only OR MPL-1.1"),
+    ("WebKitGTK, JavaScriptCore (API 4.1)", "web view hosting the UI (Linux)", "LGPL-2.1-only AND BSD-2-Clause (and others)"),
+    ("Apple WebKit (WKWebView), JavaScriptCore", "web view hosting the UI (macOS system framework, not redistributed)", "LGPL-2.0-or-later AND BSD (as WebKitGTK)"),
+    ("Apple AppKit, CoreText, CoreGraphics, CoreAnimation, OpenGL, VideoToolbox, CoreAudio, AVFoundation, Security (Keychain)", "windowing, fonts, drawing, video decode, audio, keychain (macOS system frameworks)", "Apple system frameworks, not redistributed"),
+    ("libsoup 3", "networking for the web view (Linux)", "LGPL-2.0-or-later"),
+    ("D-Bus", "desktop IPC (Linux)", "AFL-2.1 OR GPL-2.0-or-later"),
+    ("libX11, libXfixes", "X11 support (Linux)", "MIT"),
+    ("libEGL (libglvnd)", "OpenGL context for video (Linux)", "MIT-style"),
+    ("libdrm, libva, libva-drm", "GPU access, VA-API decoding (Linux)", "MIT"),
+    ("libSystem, libz, libiconv, libc++ (macOS)", "C runtime, compression, charset conversion, C++ runtime (libplacebo, HarfBuzz, uchardet)", "Apple PSF (libSystem); Zlib; Apache-2.0 WITH LLVM-exception (libc++)"),
+    ("PipeWire client library", "audio output (mpv, Linux)", "MIT"),
+    ("PulseAudio client library", "audio output (mpv, Linux)", "LGPL-2.1-or-later"),
+    ("ALSA library", "audio output (mpv, Linux)", "LGPL-2.1-or-later"),
 ]
 
 
@@ -200,38 +204,45 @@ def read_text(path):
 # ------------------------------------------------------------ collectors
 
 def crates():
-    meta = json.loads(subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET],
-        cwd=os.path.join(ROOT, "src-tauri"), check=True, capture_output=True, text=True,
-    ).stdout)
-    packages = {p["id"]: p for p in meta["packages"]}
-    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
-    root = meta["resolve"]["root"]
-    # normal (linked) dependencies only: no build/dev dependencies
-    seen, stack = set(), [root]
-    while stack:
-        node = stack.pop()
-        if node in seen:
-            continue
-        seen.add(node)
-        for dep in nodes[node]["deps"]:
-            if any(kind["kind"] is None for kind in dep["dep_kinds"]):
-                stack.append(dep["pkg"])
-    seen.discard(root)
-    out = []
-    for pid in seen:
-        p = packages[pid]
-        kinds = {k for t in p["targets"] for k in t["kind"]}
-        if kinds & {"lib", "rlib", "cdylib", "staticlib"} == set() and "proc-macro" in kinds:
-            continue  # runs in the compiler only, never linked
-        out.append({
-            "name": p["name"],
-            "version": p["version"],
-            "license": p["license"] or "SEE LICENSE FILE",
-            "authors": [re.sub(r"\s*<[^>]*>", "", a) for a in p.get("authors") or []],
-            "dir": os.path.dirname(p["manifest_path"]),
-        })
-    return sorted(out, key=lambda c: (c["name"], c["version"]))
+    """The union, over TARGETS, of the crates each platform's build links."""
+    # All platforms' crate sources must be present for their license files:
+    # a Linux checkout never downloads macOS-only crates during a build, so
+    # fetch the whole lockfile first (cached; a no-op after the first run).
+    subprocess.run(["cargo", "fetch", "--locked"], cwd=os.path.join(ROOT, "src-tauri"),
+                   check=True, capture_output=True)
+    linked = {}
+    for target in TARGETS:
+        meta = json.loads(subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", target],
+            cwd=os.path.join(ROOT, "src-tauri"), check=True, capture_output=True, text=True,
+        ).stdout)
+        packages = {p["id"]: p for p in meta["packages"]}
+        nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+        root = meta["resolve"]["root"]
+        # normal (linked) dependencies only: no build/dev dependencies
+        seen, stack = set(), [root]
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            for dep in nodes[node]["deps"]:
+                if any(kind["kind"] is None for kind in dep["dep_kinds"]):
+                    stack.append(dep["pkg"])
+        seen.discard(root)
+        for pid in seen:
+            p = packages[pid]
+            kinds = {k for t in p["targets"] for k in t["kind"]}
+            if kinds & {"lib", "rlib", "cdylib", "staticlib"} == set() and "proc-macro" in kinds:
+                continue  # runs in the compiler only, never linked
+            linked.setdefault((p["name"], p["version"]), {
+                "name": p["name"],
+                "version": p["version"],
+                "license": p["license"] or "SEE LICENSE FILE",
+                "authors": [re.sub(r"\s*<[^>]*>", "", a) for a in p.get("authors") or []],
+                "dir": os.path.dirname(p["manifest_path"]),
+            })
+    return sorted(linked.values(), key=lambda c: (c["name"], c["version"]))
 
 
 def npm_packages():
@@ -276,8 +287,27 @@ NATIVE = [
      "https://code.videolan.org/videolan/dav1d/-/tree/{tag}", "dav1d.txt"),
     ("libxml2", "LIBXML2_TAG", "MIT", "DASH manifests (FFmpeg)",
      "https://gitlab.gnome.org/GNOME/libxml2/-/tree/{tag}", "libxml2.txt"),
-    ("libdisplay-info", "LIBDISPLAYINFO_TAG", "MIT", "display EDID parsing (mpv)",
+    ("libdisplay-info", "LIBDISPLAYINFO_TAG", "MIT", "display EDID parsing (mpv; Linux only)",
      "https://gitlab.freedesktop.org/emersion/libdisplay-info/-/tree/{tag}", "libdisplay-info.txt"),
+    # The macOS static tail (PL-110). On Linux these four stay the distro's
+    # shared libraries (not shipped); on macOS they — and libass's own
+    # dependencies below — are built statically into the app.
+    ("OpenSSL", "OPENSSL_TAG", "Apache-2.0", "TLS for HTTPS streams (FFmpeg; macOS static, Linux system)",
+     "https://github.com/openssl/openssl/tree/{tag}", "openssl.txt"),
+    ("libass", "LIBASS_TAG", "ISC", "subtitle rendering (mpv; macOS static, Linux system)",
+     "https://github.com/libass/libass/tree/{tag}", "libass.txt"),
+    ("Little CMS 2", "LCMS2_TAG", "MIT", "color management (mpv; macOS static, Linux system)",
+     "https://github.com/mm2/Little-CMS/tree/{tag}", "lcms2.txt"),
+    ("uchardet", "UCHARDET_TAG", "MPL-1.1 OR GPL-2.0-or-later OR LGPL-2.0-or-later", "subtitle charset detection (mpv; macOS static, Linux system)",
+     "https://gitlab.freedesktop.org/uchardet/uchardet/-/tree/{tag}", "uchardet.txt"),
+    ("FreeType", "FREETYPE_TAG", "FTL OR GPL-2.0-or-later (used under the FTL)", "glyph rendering (libass; macOS only)",
+     "https://github.com/freetype/freetype/tree/{tag}", "freetype.txt"),
+    ("FriBidi", "FRIBIDI_TAG", "LGPL-2.1-or-later", "bidirectional text (libass; macOS only)",
+     "https://github.com/fribidi/fribidi/tree/{tag}", "fribidi.txt"),
+    ("HarfBuzz", "HARFBUZZ_TAG", "Old MIT", "text shaping (libass; macOS only)",
+     "https://github.com/harfbuzz/harfbuzz/tree/{tag}", "harfbuzz.txt"),
+    ("libunibreak", "LIBUNIBREAK_TAG", "Zlib", "Unicode line breaking (libass; macOS only)",
+     "https://github.com/adah1972/libunibreak/releases/tag/{tag}", "libunibreak.txt"),
 ]
 
 
@@ -349,7 +379,8 @@ def document():
 testpattern is free software, licensed under the GNU General Public License,
 version 3 or (at your option) any later version — see `LICENSE`. This file
 lists the third-party software that the testpattern executable (Linux x86_64
-build) contains or links, with the license texts that must accompany it.
+and macOS arm64 builds) contains or links, with the license texts that must
+accompany it.
 
 _Generated by `scripts/notices.py` from `src-tauri/Cargo.lock`,
 `node_modules` and `scripts/build-media.sh`; do not edit by hand.
@@ -369,7 +400,10 @@ sources plus that script are their complete corresponding source. As a
 combined work, the testpattern executable is distributed under
 GPL-3.0-or-later (full text in `LICENSE`). libplacebo is linked statically
 under the LGPL: the complete source of testpattern is available under the
-GPL, so it can be rebuilt against a modified libplacebo.
+GPL, so it can be rebuilt against a modified libplacebo. Libraries marked
+"macOS only" are built on macOS (on Linux their role is served by the
+system libraries of section 2); a "macOS static, Linux system" library is
+static on macOS and loaded from the system on Linux.
 
 ## 2. System libraries (dynamically linked, not included)
 
@@ -380,9 +414,10 @@ testpattern packages and keep their own licenses:
 
 ## 3. Rust crates (statically linked)
 
-{len(rust)} crates compiled into the executable (build-time-only crates such as
-procedural macros are not included). Where a crate offers a choice of
-licenses, "Used under" names the one this distribution relies on.
+{len(rust)} crates compiled into the executable (the union of the Linux and
+macOS builds; build-time-only crates such as procedural macros are not
+included). Where a crate offers a choice of licenses, "Used under" names the
+one this distribution relies on.
 
 {table([(c["name"], c["version"], c["license"], chosen(c)) for c in rust],
        ["Crate", "Version", "Declared license", "Used under"])}
