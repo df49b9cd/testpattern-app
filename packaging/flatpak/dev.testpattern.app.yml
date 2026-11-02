@@ -30,6 +30,11 @@ finish-args:
   # source passwords and the TMDB key (secrets.rs: Secret Service — KWallet,
   # GNOME Keyring)
   - --talk-name=org.freedesktop.secrets
+  # The runtime's WebKitGTK DMA-BUF renderer runs away in the web process
+  # (~100% CPU, several GB within seconds of the UI loading, until the OOM
+  # killer ends it; seen on Intel UHD 620 / Mesa). The shared-memory renderer
+  # stays flat at ~230 MB. Video is unaffected: mpv draws to its own GLArea.
+  - --env=WEBKIT_DISABLE_DMABUF_RENDERER=1
 
 modules:
   - name: libunibreak

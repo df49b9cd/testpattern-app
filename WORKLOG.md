@@ -993,6 +993,11 @@ UHF/Infuse feature, **P2** = later.
   `gnome-51` image) for main, tags and manual runs and attaches
   `testpattern.flatpak` to releases. Not a Flathub submission: the app
   module downloads crates and npm packages during the build.
+  Fixed after first use: the runtime's WebKitGTK DMA-BUF renderer made the
+  web process run away (~5.9 GB within a minute of launch, idle, OOM-killed
+  at 7.5–9.7 GB; Intel UHD 620 / Mesa) → `WEBKIT_DISABLE_DMABUF_RENDERER=1`
+  in `finish-args`; the rebuilt Flatpak stays at ~239 MB. The native build
+  (system WebKitGTK 2.54.2) never showed it.
 
 ### 🟨 In progress
 
