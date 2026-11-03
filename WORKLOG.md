@@ -93,6 +93,7 @@ bun run dev               # Vite on :1420 (keep running)
 scripts/dev-run.sh        # launches target/debug/testpattern
 bun run tauri build       # release for this machine: single binary + rpm/deb
 scripts/ubuntu-build.sh   # portable release (Ubuntu 24.04 container): deb + AppImage + rpm
+scripts/flatpak.sh        # Flatpak: build + install for this user (`bundle` → .flatpak file)
 scripts/check.sh          # unit tests + clippy + tsc + vitest + notices
 scripts/headless.sh start && scripts/headless.sh seed && scripts/smoke.sh
 scripts/outdated.sh       # dependency audit (see "Dependency policy")
@@ -126,6 +127,24 @@ the repo secrets are set (`APPLE_CERTIFICATE` +
 `APPLE_CERTIFICATE_PASSWORD`; notarization needs all of `APPLE_ID` +
 `APPLE_PASSWORD` + `APPLE_TEAM_ID`); without them the .dmg is ad-hoc
 signed (runs after right-click → Open).
+
+**Flatpak** (T-059): `packaging/flatpak/dev.testpattern.app.yml` builds on
+the GNOME 51 runtime (GTK 3, WebKitGTK 4.1, libva, PipeWire, … from the
+runtime) plus libass/libunibreak/uchardet as shared modules. The media
+engine is `scripts/build-media.sh` again, inside the SDK, on git sources
+pinned to the script's tags (the module writes them as fetch stamps, so the
+script never re-fetches); `scripts/flatpak.sh pins` (also a CI step) fails
+when those, the Rust version (rust-toolchain.toml — Flathub's rust-stable
+extension trails it, so the manifest installs the pinned rustc/cargo
+itself) or the bun pin drift. The app module builds the working tree with
+network access (`bun install --frozen-lockfile`, `cargo --locked`), so it is
+a local/CI build, not a Flathub submission (that would need offline
+`flatpak-cargo-generator`/`flatpak-node-generator` sources). Permissions:
+Wayland (X11 fallback), DRI, PulseAudio/PipeWire, network, and
+`org.freedesktop.secrets` for the keyring. `scripts/flatpak.sh` builds into
+`.deps/flatpak/` with flatpak-builder or Flathub's `org.flatpak.Builder`.
+When bumping a media tag in build-media.sh, update the manifest's `tag` and
+`commit` too.
 
 **This machine** (Ryzen 9 5950X): at 32 parallel jobs compilers crash
 sporadically (GCC "internal compiler error: Segmentation fault" on random
@@ -258,10 +277,11 @@ Every dependency must be on its **latest stable** release. Audited
 | `scripts/git-hooks/pre-commit` | Refuses commits containing `.env.local` values (enable: `git config core.hooksPath scripts/git-hooks`) |
 | `scripts/csp-check.sh` | Fails on Content-Security-Policy violations in a bundled-assets build (T-040) |
 | `scripts/ubuntu-build.sh` | Portable release in an Ubuntu 24.04 container: one glibc-2.39 binary as .deb/AppImage/.rpm; `debug` + `run-app` to test it in the headless session (T-049) |
+| `scripts/flatpak.sh` · `packaging/flatpak/` | Flatpak build/install/bundle (GNOME runtime) + manifest, desktop entry, AppStream metainfo; `pins` checks the manifest against build-media.sh/rust/bun (T-059) |
 | `scripts/appimage-fix.sh` | Drops the bundled libwayland and the forced X11 backend from Tauri's AppImage, repacks it (T-049) |
 | `scripts/deb-depends.sh` | Checks `bundle.linux.deb.depends` against `dpkg-shlibdeps` (run on Ubuntu 24.04) |
 | `packaging/ubuntu/` | `Containerfile` + `packages.txt` (Ubuntu build packages, also installed by CI) |
-| `.github/workflows/ci.yml` | CI: `scripts/check.sh` on Ubuntu 24.04 + macOS 26 (keychain round-trip) for pushes/PRs; Linux and macOS bundles on main pushes/tags; tag builds publish checksummed, attested draft releases (T-037, T-057) |
+| `.github/workflows/ci.yml` | CI: `scripts/check.sh` on Ubuntu 24.04 + macOS 26 (keychain round-trip) for pushes/PRs; Linux, macOS and Flatpak bundles on main pushes/tags; tag builds publish checksummed, attested draft releases (T-037, T-057, T-059) |
 | `scripts/notices.py` | Generates `THIRD_PARTY_NOTICES.md` (run after any dependency change; `check.sh` enforces) |
 | `LICENSE` · `THIRD_PARTY_NOTICES.md` · `packaging/debian/copyright` | GPLv3 text · generated third-party licenses · DEP-5 copyright for the deb |
 | `.gitignore` · `.gitattributes` · `.env.example` | Ignore rules (rebuildable + secrets) · LF/binary attributes · test-account template |
@@ -1079,6 +1099,41 @@ UHF/Infuse feature, **P2** = later.
   `--add-service=mdns` and a TCP rule for the relay's (ephemeral) port.
   Open: a fixed, configurable relay port so that rule can be one port.
 
+- **T-059 Flatpak** — `packaging/flatpak/dev.testpattern.app.yml` +
+  `scripts/flatpak.sh` (see §3): GNOME 51 runtime, libass 0.17.5 /
+  libunibreak 8.0 / uchardet 0.0.8 as shared modules (not in the runtime),
+  the media engine via `build-media.sh` inside the SDK, Rust 1.99.0 and bun
+  1.4.2 as build-only modules. App ID `dev.testpattern.app` (the Tauri
+  identifier), desktop entry + AppStream metainfo (validated). Fixed on the
+  way: uchardet 0.0.8's `cmake_minimum_required(2.8)` is refused by the
+  SDK's CMake (→ `CMAKE_POLICY_VERSION_MINIMUM=3.5`); libass defaults to a
+  static library under meson; flatpak-builder's debuginfo/strip pass breaks
+  the official Rust tarball's `libLLVM.so` ("object file has no loadable
+  segments") → `no-debuginfo`/`strip: false` on the toolchain modules.
+  Verified: the installed app (58 MB) resolves every library in the
+  sandbox, starts in a nested KWin with a fresh profile (database
+  migrated, onboarding page rendered) and gets the mpv render context with
+  VA-API zero-copy on `/dev/dri/renderD128`. CI builds it (Flathub's
+  `gnome-51` image) for main, tags and manual runs; the T-057 `release`
+  job adds `testpattern.flatpak` to the checksummed, attested draft
+  release with the other bundles. Not a Flathub submission: the app
+  module downloads crates and npm packages during the build.
+  Fixed after first use: the web process ran away right after launch, idle
+  (~100% CPU, ~5.9 GB within a minute, OOM-killed at 7.5–9.7 GB; Intel UHD
+  620 / Mesa). A first fix, `WEBKIT_DISABLE_DMABUF_RENDERER=1`, kept memory
+  flat but left the transparent webview black (2.54 then repaints only
+  damaged areas: hovered elements flash up and fade) and was dropped.
+  Bisected in a bare WebKitGTK window inside the GNOME 51 runtime (no
+  Tauri, no mpv) serving the real UI + data, two triggers: (1)
+  `backdrop-filter` on the small chips over poster artwork — rating
+  (`media.tsx`) and 4K/DV quality badges (`LibraryBrowser.tsx`), now plain
+  dark backgrounds; (2) the `.skeleton` shimmer (an endless
+  `background-position` animation) on a poster grid still loading
+  (Movies: +1 GB/min), now an opacity pulse (`styles.css`). Every other
+  blur, animation and image is harmless. Runtime defaults, all six main
+  pages ~265–290 MB flat. The native build (system WebKitGTK 2.54.2)
+  never showed it.
+
 ### 🟨 In progress
 
 ### 🟦 To do
@@ -1108,6 +1163,13 @@ UHF/Infuse feature, **P2** = later.
   being able to modify router settings" → `cast/probe.rs` (sweep +
   remembered TVs + add by IP, 3 more Rust tests); first real-device casts
   all pass (see the card).
+
+- **2026-11-02** — T-059 Flatpak (user request: "installable as a
+  flatpak"). New `packaging/flatpak/` (manifest, desktop entry, metainfo),
+  `scripts/flatpak.sh` (install / bundle / pins), CI job `flatpak`,
+  README + §3/§4 notes; `scripts/outdated.sh` now also audits
+  `owner/repo/sub-action@vN` Actions. Built and launched locally (see the
+  card); not yet run in CI or with a provider account inside the sandbox.
 
 - **2026-10-03** — PL-101/PL-99/PL-100/PL-97 (planned tracker). PL-101:
   `src/app/Layout.tsx` gained a global-space listener — Space/K/M while

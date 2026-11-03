@@ -118,8 +118,11 @@ export const PosterCard = memo(function PosterCard({
         {favorite && (
           <Heart className="absolute right-2 top-2 size-4 fill-live text-live drop-shadow" aria-label="Favorite" />
         )}
+        {/* No backdrop blur on chips over artwork: dozens of small blurred
+            layers over images make WebKitGTK 2.54's compositor (GNOME 51
+            runtime, the Flatpak) loop at 100% CPU and grow by GBs. */}
         {rating != null && rating > 0 && (
-          <span className="absolute bottom-2 right-2 inline-flex items-center gap-0.5 rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] font-semibold text-white backdrop-blur">
+          <span className="absolute bottom-2 right-2 inline-flex items-center gap-0.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[11px] font-semibold text-white">
             <Star className="size-3 fill-gold text-gold" />
             {rating.toFixed(1)}
           </span>

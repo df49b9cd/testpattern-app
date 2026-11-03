@@ -1,0 +1,210 @@
+# Flatpak build of testpattern (WORKLOG T-059) on the GNOME runtime, which
+# brings GTK 3 + WebKitGTK 4.1, libva/libdrm/EGL, PipeWire/Pulse/ALSA, lcms2,
+# OpenSSL and fontconfig. Built and installed with scripts/flatpak.sh.
+#
+# Modules, in build order:
+#   libunibreak, libass, uchardet  shared, not in the runtime (mpv needs them)
+#   media-engine                   scripts/build-media.sh on git sources pinned
+#                                  to its tags (`scripts/flatpak.sh pins` checks
+#                                  they match); static, only linked into the app
+#   rust, bun                      build-only toolchains (removed by cleanup):
+#                                  Flathub's rust-stable extension trails the
+#                                  version pinned in rust-toolchain.toml; after
+#                                  the media engine so a bump keeps its cache
+#   testpattern                    the working tree; this module builds with
+#                                  network access for `bun install` and the
+#                                  crates, both pinned by bun.lock / Cargo.lock
+id: dev.testpattern.app
+runtime: org.gnome.Platform
+runtime-version: "51"
+sdk: org.gnome.Sdk
+command: testpattern
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # GL for the video surface + VA-API decoding (render node)
+  - --device=dri
+  # source passwords and the TMDB key (secrets.rs: Secret Service — KWallet,
+  # GNOME Keyring)
+  - --talk-name=org.freedesktop.secrets
+  # No WEBKIT_DISABLE_DMABUF_RENDERER: on the runtime's WebKitGTK 2.54 it
+  # leaves the transparent webview black (only repainted parts show). The
+  # runaway memory it was set for came from blurred chips over poster
+  # artwork, now unblurred in the UI (WORKLOG T-059).
+
+modules:
+  - name: libunibreak
+    config-opts: [--disable-static]
+    cleanup: [/include, /lib/pkgconfig, "*.la"]
+    license-files: [LICENCE]
+    sources:
+      - type: archive
+        url: https://github.com/adah1972/libunibreak/releases/download/libunibreak_8_0/libunibreak-8.0.tar.gz
+        sha256: 9c4fad6e517338a098373acc9f35579ae2c325e6446666fb9ac2666ba15ceba4
+
+  - name: libass
+    buildsystem: meson
+    config-opts:
+      - -Ddefault_library=shared
+      - -Dfontconfig=enabled
+      - -Dlibunibreak=enabled
+      - -Dtest=disabled
+      - -Dcompare=disabled
+      - -Dprofile=disabled
+      - -Dfuzz=disabled
+      - -Dcheckasm=disabled
+    cleanup: [/include, /lib/pkgconfig]
+    license-files: [COPYING]
+    sources:
+      - type: archive
+        url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
+        sha256: 2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc
+
+  - name: uchardet
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      # 0.0.8 asks for CMake 2.8, which current CMake no longer accepts
+      - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      - -DBUILD_BINARY=OFF
+      - -DBUILD_STATIC=OFF
+    cleanup: [/include, /lib/pkgconfig, /share/man]
+    license-files: [COPYING]
+    sources:
+      - type: archive
+        url: https://www.freedesktop.org/software/uchardet/releases/uchardet-0.0.8.tar.xz
+        sha256: e97a60cfc00a1c147a674b097bb1422abd9fa78a2d9ce3f3fdcc2e78a34ac5f0
+
+  - name: media-engine
+    buildsystem: simple
+    cleanup: ["*"]
+    build-commands:
+      # the fetch stamps build-media.sh expects: without them it would try to
+      # re-fetch (no network here); `scripts/flatpak.sh pins` keeps the git
+      # sources below on the same tags as the script
+      - >-
+        eval "$(grep -E '^[A-Z0-9]+_TAG=' scripts/build-media.sh)";
+        s=third_party/src;
+        echo $DAV1D_TAG >$s/dav1d.tag; echo $LIBXML2_TAG >$s/libxml2.tag;
+        echo $FFMPEG_TAG >$s/ffmpeg.tag; echo $LIBPLACEBO_TAG >$s/libplacebo.tag;
+        echo $LIBDISPLAYINFO_TAG >$s/libdisplay-info.tag; echo $MPV_TAG >$s/mpv.tag
+      - TP_MEDIA_PREFIX=/app/media TP_JOBS=$FLATPAK_BUILDER_N_JOBS scripts/build-media.sh
+    sources:
+      - type: file
+        path: ../../scripts/build-media.sh
+        dest: scripts
+      - type: git
+        url: https://code.videolan.org/videolan/dav1d.git
+        tag: 1.5.4
+        commit: 54706fc6bc0cdecab7e9593974a4039cc038fca7
+        dest: third_party/src/dav1d
+      - type: git
+        url: https://gitlab.gnome.org/GNOME/libxml2.git
+        tag: v2.15.4
+        commit: 96498992efa48d52b0e8b83058bd88dbdaf153c1
+        dest: third_party/src/libxml2
+      - type: git
+        url: https://github.com/FFmpeg/FFmpeg.git
+        tag: n9.0.2
+        commit: 946fcce07b6dcd0331c8cc609192aeff5e1924f8
+        dest: third_party/src/ffmpeg
+      - type: git
+        url: https://code.videolan.org/videolan/libplacebo.git
+        tag: v7.360.1
+        commit: cee9b076f2c63104ccfd497fa79c39a867293ec4
+        dest: third_party/src/libplacebo
+      - type: git
+        url: https://gitlab.freedesktop.org/emersion/libdisplay-info.git
+        tag: 0.4.0
+        commit: c67a3e9bedb05ab61c7443704a1a107e76254595
+        dest: third_party/src/libdisplay-info
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.41.0
+        commit: 41f6a645068483470267271e1d09966ca3b9f413
+        dest: third_party/src/mpv
+
+  # x86_64 only, like the other release bundles
+  - name: rust
+    buildsystem: simple
+    cleanup: ["*"]
+    # flatpak-builder's debuginfo pass corrupts libLLVM (rustc then fails with
+    # "object file has no loadable segments")
+    build-options:
+      no-debuginfo: true
+      strip: false
+    build-commands:
+      - for c in rustc cargo rust-std; do $c/install.sh --prefix=/app/rust --disable-ldconfig >/dev/null; done
+      - /app/rust/bin/rustc --version
+    sources:
+      - type: archive
+        url: https://static.rust-lang.org/dist/rustc-1.99.0-x86_64-unknown-linux-gnu.tar.xz
+        sha256: 77171ba2a0345fdf2abc4fedda55d6de078dae7a68527c28be8c77dcc9604bd5
+        dest: rustc
+      - type: archive
+        url: https://static.rust-lang.org/dist/cargo-1.99.0-x86_64-unknown-linux-gnu.tar.xz
+        sha256: d7674918d28093097614cd9728b6ca60db9ea3038f640f0bd1e9a4188c7568ce
+        dest: cargo
+      - type: archive
+        url: https://static.rust-lang.org/dist/rust-std-1.99.0-x86_64-unknown-linux-gnu.tar.xz
+        sha256: 3e58dff2d0b72196b5ea4e90536e174d400de88564a52694686b81e091169933
+        dest: rust-std
+
+  # the packageManager pin in package.json
+  - name: bun
+    buildsystem: simple
+    cleanup: ["*"]
+    build-options:
+      no-debuginfo: true
+      strip: false
+    build-commands:
+      - install -Dm755 bun /app/bun/bin/bun
+      - ln -s bun /app/bun/bin/bunx
+    sources:
+      - type: archive
+        url: https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip
+        sha256: 36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
+
+  - name: testpattern
+    buildsystem: simple
+    build-options:
+      append-path: /app/rust/bin:/app/bun/bin
+      env:
+        CARGO_HOME: /run/build/testpattern/.cargo-home
+        TP_MEDIA_PREFIX: /app/media
+      build-args: [--share=network]
+    build-commands:
+      - bun install --frozen-lockfile
+      # release build of the binary only (bundles are the other packages' job)
+      - bun run tauri build --no-bundle -- --locked
+      - install -Dm755 src-tauri/target/release/testpattern /app/bin/testpattern
+      - install -Dm644 packaging/flatpak/dev.testpattern.app.desktop -t /app/share/applications
+      - install -Dm644 packaging/flatpak/dev.testpattern.app.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 assets/icon.svg /app/share/icons/hicolor/scalable/apps/dev.testpattern.app.svg
+      - for s in 32 64 128; do install -Dm644 src-tauri/icons/${s}x${s}.png /app/share/icons/hicolor/${s}x${s}/apps/dev.testpattern.app.png; done
+      - install -Dm644 src-tauri/icons/128x128@2x.png /app/share/icons/hicolor/256x256/apps/dev.testpattern.app.png
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/dev.testpattern.app.png
+      - install -Dm644 LICENSE THIRD_PARTY_NOTICES.md -t /app/share/licenses/dev.testpattern.app
+    sources:
+      # the working tree minus what is rebuilt here, machine-local or secret
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - .deps
+          - .env
+          - .env.local
+          # flatpak-builder's own output when run from the repository root (CI)
+          - .flatpak-builder
+          - flatpak_app
+          - repo
+          - testpattern.flatpak
+          - node_modules
+          - dist
+          - third_party
+          - src-tauri/target
+          - src-tauri/gen
+          - src-tauri/media_macos/.build

@@ -9,7 +9,7 @@ search, for **Xtream Codes** accounts and **M3U** playlists (+ XMLTV).
 - **Playback:** libmpv + FFmpeg built from source and **statically linked**, rendered
   through OpenGL underneath the web UI — plays H.264/HEVC/AV1, AAC/AC3/EAC3/DTS,
   MPEG-TS/HLS/MKV regardless of the distro's codec packages
-- **Ships as one executable** (~62 MB) — .deb, .rpm and AppImage
+- **Ships as one executable** (~62 MB) — .deb, .rpm, AppImage and Flatpak
 - **Chromecast:** cast Live TV, movies and episodes to a Chromecast or
   Google TV on your network; the app remuxes the stream for the TV (no
   re-encoding of video) and stays the remote
@@ -38,6 +38,17 @@ scripts/ubuntu-build.sh         # portable release: deb + AppImage + rpm (glibc 
 
 The portable release is built in an Ubuntu 24.04 container (podman), so it
 runs on Ubuntu 24.04+, Debian 13, Fedora 40+ and similar — see WORKLOG.md §3.
+
+**Flatpak** (any distro with Flatpak; runtimes from Flathub):
+
+```bash
+scripts/flatpak.sh              # build + install for this user (≈15 min the first time)
+flatpak run dev.testpattern.app
+scripts/flatpak.sh bundle       # single file: .deps/flatpak/testpattern.flatpak
+```
+
+A bundle installs anywhere with `flatpak install --user testpattern.flatpak`;
+CI attaches one to every release.
 
 If you used the rootless sysroot, run `. .deps/env.sh` before building.
 
