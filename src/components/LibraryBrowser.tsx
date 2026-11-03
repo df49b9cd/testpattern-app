@@ -214,8 +214,9 @@ export function QualityBadges({ quality }: { quality: string[] }) {
   if (!shown.length) return null;
   return (
     <>
+      {/* no backdrop blur over artwork: see the rating chip in media.tsx */}
       {shown.map((b) => (
-        <Badge key={b} tone="gold" className="bg-black/70 backdrop-blur">
+        <Badge key={b} tone="gold" className="bg-black/75">
           {b}
         </Badge>
       ))}

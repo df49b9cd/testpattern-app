@@ -1066,11 +1066,21 @@ UHF/Infuse feature, **P2** = later.
   job adds `testpattern.flatpak` to the checksummed, attested draft
   release with the other bundles. Not a Flathub submission: the app
   module downloads crates and npm packages during the build.
-  Fixed after first use: the runtime's WebKitGTK DMA-BUF renderer made the
-  web process run away (~5.9 GB within a minute of launch, idle, OOM-killed
-  at 7.5–9.7 GB; Intel UHD 620 / Mesa) → `WEBKIT_DISABLE_DMABUF_RENDERER=1`
-  in `finish-args`; the rebuilt Flatpak stays at ~239 MB. The native build
-  (system WebKitGTK 2.54.2) never showed it.
+  Fixed after first use: the web process ran away right after launch, idle
+  (~100% CPU, ~5.9 GB within a minute, OOM-killed at 7.5–9.7 GB; Intel UHD
+  620 / Mesa). A first fix, `WEBKIT_DISABLE_DMABUF_RENDERER=1`, kept memory
+  flat but left the transparent webview black (2.54 then repaints only
+  damaged areas: hovered elements flash up and fade) and was dropped.
+  Bisected in a bare WebKitGTK window inside the GNOME 51 runtime (no
+  Tauri, no mpv) serving the real UI + data, two triggers: (1)
+  `backdrop-filter` on the small chips over poster artwork — rating
+  (`media.tsx`) and 4K/DV quality badges (`LibraryBrowser.tsx`), now plain
+  dark backgrounds; (2) the `.skeleton` shimmer (an endless
+  `background-position` animation) on a poster grid still loading
+  (Movies: +1 GB/min), now an opacity pulse (`styles.css`). Every other
+  blur, animation and image is harmless. Runtime defaults, all six main
+  pages ~265–290 MB flat. The native build (system WebKitGTK 2.54.2)
+  never showed it.
 
 ### 🟨 In progress
 
