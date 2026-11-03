@@ -10,6 +10,9 @@ search, for **Xtream Codes** accounts and **M3U** playlists (+ XMLTV).
   through OpenGL underneath the web UI — plays H.264/HEVC/AV1, AAC/AC3/EAC3/DTS,
   MPEG-TS/HLS/MKV regardless of the distro's codec packages
 - **Ships as one executable** (~62 MB) — .deb, .rpm and AppImage
+- **Chromecast:** cast Live TV, movies and episodes to a Chromecast or
+  Google TV on your network; the app remuxes the stream for the TV (no
+  re-encoding of video) and stays the remote
 - **Hardware decoding** through VA-API with zero-copy on Wayland; **source
   passwords** live in the desktop keyring (KWallet, GNOME Keyring)
 - **One entry per title:** the copies a provider lists of a film or show

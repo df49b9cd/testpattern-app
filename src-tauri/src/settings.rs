@@ -114,6 +114,16 @@ pub fn apply_player<R: Runtime>(app: &AppHandle<R>, st: &AppState, only: Option<
     }
 }
 
+/// Stores a setting the backend keeps for itself (e.g. remembered TVs).
+pub fn put(conn: &Connection, key: &str, value: &Value) -> Result<()> {
+    conn.execute(
+        "INSERT INTO setting (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, serde_json::to_string(value)?],
+    )?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn settings_get(state: State<'_, AppState>) -> Result<Map<String, Value>> {
     let conn = state.db.read();
@@ -127,14 +137,7 @@ pub async fn settings_set<R: Runtime>(
     key: String,
     value: Value,
 ) -> Result<()> {
-    {
-        let conn = state.db.write();
-        conn.execute(
-            "INSERT INTO setting (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, serde_json::to_string(&value)?],
-        )?;
-    }
+    put(&state.db.write(), &key, &value)?;
     if key.starts_with("player.") {
         apply_player(&app, state.inner(), Some(&key));
     }

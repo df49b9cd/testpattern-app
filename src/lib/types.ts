@@ -519,3 +519,40 @@ export interface UpNext {
   series: Series;
   episode: Episode;
 }
+
+/** A Chromecast on the LAN (src-tauri/src/cast/mod.rs). */
+export interface CastDevice {
+  id: string;
+  name: string;
+  model: string;
+}
+
+/** "ready": a TV is picked but nothing has been sent to it yet (frontend only). */
+/** The TV list and whether a search is still running (`cast://devices`). */
+export interface CastDevices {
+  devices: CastDevice[];
+  searching: boolean;
+}
+
+export type CastState = "ready" | "connecting" | "loading" | "buffering" | "playing" | "paused" | "ended" | "error" | "stopped";
+
+/** The cast session (`cast://status`). "error": this item failed, the session goes on; "stopped": it is over. */
+export interface CastStatus {
+  deviceId: string;
+  deviceName: string;
+  state: CastState;
+  position: number;
+  /** 0 when unknown (live) */
+  duration: number;
+  live: boolean;
+  /** 0…1 */
+  volume: number;
+  muted: boolean;
+  error: string | null;
+}
+
+export interface CastMeta {
+  title?: string | null;
+  subtitle?: string | null;
+  image?: string | null;
+}

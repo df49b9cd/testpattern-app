@@ -1,6 +1,10 @@
 import { invoke } from "./bridge";
 import type {
   CacheStats,
+  CastDevice,
+  CastDevices,
+  CastMeta,
+  CastStatus,
   Category,
   Channel,
   ChannelQuery,
@@ -91,6 +95,18 @@ export const api = {
   get: <T = unknown>(name: string) => invoke<T | null>("player_get", { name }),
   /** Starts/stops recording the live channel; the file being / last written. */
   record: (on: boolean) => invoke<string | null>("player_record", { on }),
+
+  // casting (src-tauri/src/cast)
+  /** Devices found so far; starts looking (updates: `cast://devices`). */
+  castDevices: () => invoke<CastDevices>("cast_devices"),
+  /** Adds a TV by IP address (networks where it can't be found). */
+  castAddDevice: (address: string) => invoke<CastDevice>("cast_add_device", { address }),
+  /** Plays on `deviceId` (new session), or on the TV being cast to when omitted. */
+  castPlay: (req: PlayRequest, meta: CastMeta, deviceId?: string) => invoke<void>("cast_play", { req, meta, deviceId }),
+  castControl: (action: "play" | "pause" | "seek" | "volume" | "mute", value?: number) =>
+    invoke<void>("cast_control", { action, value }),
+  castStop: () => invoke<void>("cast_stop"),
+  castStatus: () => invoke<CastStatus | null>("cast_status"),
 
   // settings
   settings: () => invoke<Settings>("settings_get"),

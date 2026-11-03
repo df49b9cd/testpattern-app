@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, Clock, Heart, History, Layers, LayoutList, Maximize2, Search, Tv } from "lucide-react";
+import { Cast, ChevronDown, Clock, Heart, History, Layers, LayoutList, Maximize2, Search, Tv } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
@@ -415,6 +415,8 @@ function ChannelPane({
       onSelect(c);
       window.clearTimeout(previewTimer.current);
       if (!preview) return;
+      // while casting, browsing the list must not zap the TV (Enter does)
+      if (usePlayer.getState().cast) return;
       previewTimer.current = window.setTimeout(() => {
         const now = usePlayer.getState().now;
         if (now?.kind === "live" && now.sourceId === c.sourceId && now.id === c.id) return;
@@ -644,8 +646,9 @@ function PreviewPane({ channel, onChannel }: { channel: Channel | null; onChanne
   const status = usePlayer((s) => s.status);
   const error = usePlayer((s) => s.error);
   const buffering = usePlayer((s) => s.props.buffering);
+  const cast = usePlayer((s) => s.cast);
   const previewing = now?.kind === "live";
-  useVideoViewport(holeRef, previewing && !browserPreview);
+  useVideoViewport(holeRef, previewing && !browserPreview && !cast);
 
   const shown = channel ?? (previewing ? (now?.channel ?? null) : null);
   const isPlaying = !!shown && previewing && now?.sourceId === shown.sourceId && now?.id === shown.id;
@@ -670,9 +673,14 @@ function PreviewPane({ channel, onChannel }: { channel: Channel | null; onChanne
           ref={holeRef}
           className="relative aspect-video w-full rounded-2xl shadow-[0_0_0_100vmax_var(--color-bg)] ring-1 ring-white/10"
         >
-          {(!isPlaying || status !== "playing" || browserPreview) && (
+          {(!isPlaying || status !== "playing" || browserPreview || cast) && (
             <div className="absolute inset-0 grid place-items-center rounded-2xl bg-black/70">
-              {browserPreview && isPlaying ? (
+              {cast && (isPlaying || !shown) ? (
+                <div className="flex flex-col items-center gap-2 px-6 text-center text-dim">
+                  <Cast className="size-8 text-accent-strong" />
+                  <span className="text-sm">{isPlaying ? `Playing on ${cast.deviceName}` : `Casting to ${cast.deviceName}`}</span>
+                </div>
+              ) : browserPreview && isPlaying ? (
                 <p className="px-6 text-center text-sm text-dim">Live video plays in the desktop app window.</p>
               ) : isPlaying && (status === "loading" || status === "reconnecting") ? (
                 <Spinner label={status === "reconnecting" ? "Reconnecting…" : "Tuning…"} />
@@ -716,7 +724,7 @@ function PreviewPane({ channel, onChannel }: { channel: Channel | null; onChanne
               icon={<Maximize2 className="size-4" />}
               onClick={() => (isPlaying ? navigate("/player") : void playChannel(shown, navigate))}
             >
-              Watch fullscreen
+              {cast && !isPlaying ? `Play on ${cast.deviceName}` : "Watch fullscreen"}
             </Button>
           </div>
           {shown.group && shown.group.variants > 1 && <Feeds channel={shown} playing={isPlaying} onChannel={onChannel} />}

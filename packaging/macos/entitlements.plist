@@ -7,7 +7,9 @@
   <key>com.apple.security.cs.allow-jit</key><true/>
   <!-- ad-hoc-signed dev builds load our own framework/dylib copies -->
   <key>com.apple.security.cs.disable-library-validation</key><true/>
-  <!-- outgoing connections: Xtream server, TMDB, M3U/XMLTV URLs -->
+  <!-- outgoing connections: Xtream server, TMDB, M3U/XMLTV URLs, Chromecasts -->
   <key>com.apple.security.network.client</key><true/>
+  <!-- incoming: a Chromecast fetches the stream from the cast relay -->
+  <key>com.apple.security.network.server</key><true/>
 </dict>
 </plist>

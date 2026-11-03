@@ -73,7 +73,7 @@ testpattern packages and keep their own licenses:
 
 ## 3. Rust crates (statically linked)
 
-409 crates compiled into the executable (the union of the Linux and
+414 crates compiled into the executable (the union of the Linux and
 macOS builds; build-time-only crates such as procedural macros are not
 included). Where a crate offers a choice of licenses, "Used under" names the
 one this distribution relies on.
@@ -194,6 +194,7 @@ one this distribution relies on.
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | MIT |
 | field-offset | 0.3.6 | MIT OR Apache-2.0 | MIT |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 | MIT |
+| flume | 0.12.0 | Apache-2.0/MIT | MIT |
 | fnv | 1.0.7 | Apache-2.0 / MIT | MIT |
 | foldhash | 0.2.0 | Zlib | Zlib |
 | foreign-types | 0.5.0 | MIT/Apache-2.0 | MIT |
@@ -257,6 +258,7 @@ one this distribution relies on.
 | ident_case | 1.0.1 | MIT/Apache-2.0 | MIT |
 | idna | 1.1.0 | MIT OR Apache-2.0 | MIT |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT | MIT |
+| if-addrs | 0.15.0 | MIT OR BSD-3-Clause | MIT |
 | image | 0.25.10 | MIT OR Apache-2.0 | MIT |
 | image-webp | 0.2.4 | MIT OR Apache-2.0 | MIT |
 | indexmap | 1.9.3 | Apache-2.0 OR MIT | MIT |
@@ -288,6 +290,7 @@ one this distribution relies on.
 | log | 0.4.34 | MIT OR Apache-2.0 | MIT |
 | lru-slab | 0.1.3 | MIT OR Apache-2.0 OR Zlib | MIT |
 | markup5ever | 0.39.0 | MIT OR Apache-2.0 | MIT |
+| mdns-sd | 0.21.7 | Apache-2.0 OR MIT | MIT |
 | memchr | 2.8.3 | Unlicense OR MIT | MIT |
 | memoffset | 0.9.1 | MIT | MIT |
 | mime | 0.3.17 | MIT OR Apache-2.0 | MIT |
@@ -404,9 +407,11 @@ one this distribution relies on.
 | siphasher | 1.0.4 | MIT OR Apache-2.0 | MIT |
 | slab | 0.4.12 | MIT | MIT |
 | smallvec | 1.16.2 | MIT OR Apache-2.0 | MIT |
+| socket-pktinfo | 0.4.1 | MIT | MIT |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 | MIT |
 | soup3 | 0.5.0 | MIT | MIT |
 | soup3-sys | 0.5.0 | MIT | MIT |
+| spin | 0.9.9 | MIT | MIT |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | MIT |
 | string_cache | 0.9.0 | MIT OR Apache-2.0 | MIT |
 | strsim | 0.11.1 | MIT | MIT |
@@ -4944,7 +4949,7 @@ SOFTWARE.
 
 ### 5.19 MIT
 
-Applies to: adler2 2.0.1, anyhow 1.0.104, async-channel 2.5.0, async-executor 1.14.0, async-io 2.6.0, async-lock 3.4.2, async-process 2.5.0, async-signal 0.2.14, async-task 4.7.1, atomic-waker 1.1.2, blocking 1.7.0, camino 1.2.6, cargo-platform 0.1.9, cargo_metadata 0.19.2, concurrent-queue 2.5.0, dtoa 1.0.11, dyn-clone 1.0.20, endi 1.1.1, erased-serde 0.4.10, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, futures-lite 2.6.1, itoa 1.0.18, linux-raw-sys 0.12.1, once_cell 1.21.4, ordered-stream 0.2.0, parking 2.2.1, pin-project-lite 0.2.17, piper 0.2.5, polling 3.11.0, proc-macro-crate 1.3.1, proc-macro-crate 2.0.2, proc-macro-crate 3.5.0, proc-macro2 1.0.107, quote 1.0.47, ref-cast 1.0.27, rustc-hash 2.1.3, rustix 1.1.5, semver 1.0.28, serde 1.0.229, serde-untagged 0.1.9, serde_core 1.0.229, serde_derive_internals 0.29.1, serde_json 1.0.151, servo_arc 0.4.3, syn 1.0.109, syn 2.0.119, syn 3.0.6, thiserror 1.0.69, thiserror 2.0.21, typeid 1.0.3, unicode-ident 1.0.26, x11 2.21.0, x11-dl 2.21.0, zmij 1.0.23, zvariant_utils 4.2.0.
+Applies to: adler2 2.0.1, anyhow 1.0.104, async-channel 2.5.0, async-executor 1.14.0, async-io 2.6.0, async-lock 3.4.2, async-process 2.5.0, async-signal 0.2.14, async-task 4.7.1, atomic-waker 1.1.2, blocking 1.7.0, camino 1.2.6, cargo-platform 0.1.9, cargo_metadata 0.19.2, concurrent-queue 2.5.0, dtoa 1.0.11, dyn-clone 1.0.20, endi 1.1.1, erased-serde 0.4.10, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, flume 0.12.0, futures-lite 2.6.1, itoa 1.0.18, linux-raw-sys 0.12.1, once_cell 1.21.4, ordered-stream 0.2.0, parking 2.2.1, pin-project-lite 0.2.17, piper 0.2.5, polling 3.11.0, proc-macro-crate 1.3.1, proc-macro-crate 2.0.2, proc-macro-crate 3.5.0, proc-macro2 1.0.107, quote 1.0.47, ref-cast 1.0.27, rustc-hash 2.1.3, rustix 1.1.5, semver 1.0.28, serde 1.0.229, serde-untagged 0.1.9, serde_core 1.0.229, serde_derive_internals 0.29.1, serde_json 1.0.151, servo_arc 0.4.3, syn 1.0.109, syn 2.0.119, syn 3.0.6, thiserror 1.0.69, thiserror 2.0.21, typeid 1.0.3, unicode-ident 1.0.26, x11 2.21.0, x11-dl 2.21.0, zmij 1.0.23, zvariant_utils 4.2.0.
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -8176,6 +8181,21 @@ DEALINGS IN THE SOFTWARE.
 
 ### 5.110 MIT
 
+Applies to: if-addrs 0.15.0.
+
+```text
+Copyright 2018 MaidSafe.net limited.
+Copyright 2020 messense
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### 5.111 MIT
+
 Applies to: indexmap 1.9.3, indexmap 2.14.2.
 
 ```text
@@ -8206,7 +8226,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.111 MIT
+### 5.112 MIT
 
 Applies to: infer 0.22.0.
 
@@ -8234,7 +8254,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.112 MIT
+### 5.113 MIT
 
 Applies to: inout 0.2.2.
 
@@ -8267,7 +8287,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.113 MIT
+### 5.114 MIT
 
 Applies to: ipnet 2.12.2.
 
@@ -8281,7 +8301,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.114 MIT
+### 5.115 MIT
 
 Applies to: is-docker 0.2.0, is-wsl 0.4.0.
 
@@ -8309,7 +8329,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.115 MIT
+### 5.116 MIT
 
 Applies to: javascriptcore-rs 1.1.2.
 
@@ -8338,7 +8358,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.116 MIT
+### 5.117 MIT
 
 Applies to: javascriptcore-rs-sys 1.1.1, soup3 0.5.0, soup3-sys 0.5.0.
 
@@ -8366,7 +8386,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.117 MIT
+### 5.118 MIT
 
 Applies to: json-patch 4.2.0.
 
@@ -8394,7 +8414,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.118 MIT
+### 5.119 MIT
 
 Applies to: jsonptr 0.7.1.
 
@@ -8422,7 +8442,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.119 MIT
+### 5.120 MIT
 
 Applies to: keyboard-types 0.8.3.
 
@@ -8448,7 +8468,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.120 MIT
+### 5.121 MIT
 
 Applies to: libappindicator 0.9.0.
 
@@ -8477,7 +8497,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.121 MIT
+### 5.122 MIT
 
 Applies to: libappindicator-sys 0.9.0 (ships no license file: standard text).
 
@@ -8503,7 +8523,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.122 MIT
+### 5.123 MIT
 
 Applies to: libc 0.2.189.
 
@@ -8535,7 +8555,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.123 MIT
+### 5.124 MIT
 
 Applies to: libsqlite3-sys 0.38.2, rusqlite 0.40.2.
 
@@ -8561,7 +8581,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.124 MIT
+### 5.125 MIT
 
 Applies to: lock_api 0.4.14, parking_lot 0.12.5, parking_lot_core 0.9.12.
 
@@ -8593,7 +8613,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.125 MIT
+### 5.126 MIT
 
 Applies to: lru-slab 0.1.3.
 
@@ -8607,7 +8627,35 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.126 MIT
+### 5.127 MIT
+
+Applies to: mdns-sd 0.21.7.
+
+```text
+MIT License
+
+Copyright (c) 2021-2022, Han Xu, keepsimple@gmail.com
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### 5.128 MIT
 
 Applies to: memoffset 0.9.1.
 
@@ -8633,7 +8681,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.127 MIT
+### 5.129 MIT
 
 Applies to: mime 0.3.17.
 
@@ -8659,7 +8707,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.128 MIT
+### 5.130 MIT
 
 Applies to: miniz_oxide 0.8.9, miniz_oxide 0.9.1.
 
@@ -8690,7 +8738,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.129 MIT
+### 5.131 MIT
 
 Applies to: mio 1.2.3.
 
@@ -8716,7 +8764,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.130 MIT
+### 5.132 MIT
 
 Applies to: muda 0.20.0, tray-icon 0.25.1.
 
@@ -8744,7 +8792,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.131 MIT
+### 5.133 MIT
 
 Applies to: new_debug_unreachable 1.0.6.
 
@@ -8776,7 +8824,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.132 MIT
+### 5.134 MIT
 
 Applies to: num-conv 0.2.2.
 
@@ -8802,7 +8850,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.133 MIT
+### 5.135 MIT
 
 Applies to: objc2-app-kit 0.3.2 (ships no license file: standard text).
 
@@ -8828,7 +8876,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.134 MIT
+### 5.136 MIT
 
 Applies to: objc2-cloud-kit 0.3.2 (ships no license file: standard text).
 
@@ -8854,7 +8902,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.135 MIT
+### 5.137 MIT
 
 Applies to: objc2-core-data 0.3.2 (ships no license file: standard text).
 
@@ -8880,7 +8928,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.136 MIT
+### 5.138 MIT
 
 Applies to: objc2-core-foundation 0.3.2 (ships no license file: standard text).
 
@@ -8906,7 +8954,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.137 MIT
+### 5.139 MIT
 
 Applies to: objc2-core-graphics 0.3.2 (ships no license file: standard text).
 
@@ -8932,7 +8980,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.138 MIT
+### 5.140 MIT
 
 Applies to: objc2-core-image 0.3.2 (ships no license file: standard text).
 
@@ -8958,7 +9006,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.139 MIT
+### 5.141 MIT
 
 Applies to: objc2-core-text 0.3.2 (ships no license file: standard text).
 
@@ -8984,7 +9032,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.140 MIT
+### 5.142 MIT
 
 Applies to: objc2-core-video 0.3.2 (ships no license file: standard text).
 
@@ -9010,7 +9058,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.141 MIT
+### 5.143 MIT
 
 Applies to: objc2-foundation 0.3.2 (ships no license file: standard text).
 
@@ -9036,7 +9084,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.142 MIT
+### 5.144 MIT
 
 Applies to: objc2-io-surface 0.3.2 (ships no license file: standard text).
 
@@ -9062,7 +9110,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.143 MIT
+### 5.145 MIT
 
 Applies to: objc2-javascript-core 0.3.2 (ships no license file: standard text).
 
@@ -9088,7 +9136,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.144 MIT
+### 5.146 MIT
 
 Applies to: objc2-metal 0.3.2 (ships no license file: standard text).
 
@@ -9114,7 +9162,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.145 MIT
+### 5.147 MIT
 
 Applies to: objc2-quartz-core 0.3.2 (ships no license file: standard text).
 
@@ -9140,7 +9188,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.146 MIT
+### 5.148 MIT
 
 Applies to: objc2-security 0.3.2 (ships no license file: standard text).
 
@@ -9166,7 +9214,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.147 MIT
+### 5.149 MIT
 
 Applies to: objc2-web-kit 0.3.2 (ships no license file: standard text).
 
@@ -9192,7 +9240,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.148 MIT
+### 5.150 MIT
 
 Applies to: open 5.4.4.
 
@@ -9224,7 +9272,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.149 MIT
+### 5.151 MIT
 
 Applies to: phf 0.13.1, phf_generator 0.13.1, phf_shared 0.13.1.
 
@@ -9251,7 +9299,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.150 MIT
+### 5.152 MIT
 
 Applies to: plist 1.10.1.
 
@@ -9277,7 +9325,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.151 MIT
+### 5.153 MIT
 
 Applies to: png 0.17.16, png 0.18.1.
 
@@ -9309,7 +9357,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.152 MIT
+### 5.154 MIT
 
 Applies to: powerfmt 0.2.0.
 
@@ -9335,7 +9383,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.153 MIT
+### 5.155 MIT
 
 Applies to: precomputed-hash 0.1.1.
 
@@ -9363,7 +9411,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.154 MIT
+### 5.156 MIT
 
 Applies to: proc-macro-error 1.0.4.
 
@@ -9391,7 +9439,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.155 MIT
+### 5.157 MIT
 
 Applies to: quick-error 2.0.1.
 
@@ -9417,7 +9465,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.156 MIT
+### 5.158 MIT
 
 Applies to: quick-xml 0.42.0.
 
@@ -9447,7 +9495,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.157 MIT
+### 5.159 MIT
 
 Applies to: quinn 0.11.12, quinn-proto 0.11.19, quinn-udp 0.5.16.
 
@@ -9461,7 +9509,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.158 MIT
+### 5.160 MIT
 
 Applies to: rand 0.10.3.
 
@@ -9494,7 +9542,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.159 MIT
+### 5.161 MIT
 
 Applies to: rand_core 0.10.1.
 
@@ -9526,7 +9574,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.160 MIT
+### 5.162 MIT
 
 Applies to: rand_pcg 0.10.2.
 
@@ -9559,7 +9607,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.161 MIT
+### 5.163 MIT
 
 Applies to: raw-window-handle 0.6.2.
 
@@ -9587,7 +9635,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.162 MIT
+### 5.164 MIT
 
 Applies to: react 19.3.0, react-dom 19.3.0, scheduler 0.28.0.
 
@@ -9615,7 +9663,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.163 MIT
+### 5.165 MIT
 
 Applies to: react-router 8.4.0.
 
@@ -9645,7 +9693,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.164 MIT
+### 5.166 MIT
 
 Applies to: reqwest 0.13.5.
 
@@ -9671,7 +9719,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.165 MIT
+### 5.167 MIT
 
 Applies to: rustls-pki-types 1.15.1.
 
@@ -9703,7 +9751,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.166 MIT
+### 5.168 MIT
 
 Applies to: rustls-platform-verifier 0.7.1.
 
@@ -9731,7 +9779,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.167 MIT
+### 5.169 MIT
 
 Applies to: same-file 1.0.6.
 
@@ -9759,7 +9807,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.168 MIT
+### 5.170 MIT
 
 Applies to: schemars 0.8.22, schemars 0.9.0, schemars 1.2.2.
 
@@ -9787,7 +9835,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.169 MIT
+### 5.171 MIT
 
 Applies to: scopeguard 1.2.0.
 
@@ -9819,7 +9867,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.170 MIT
+### 5.172 MIT
 
 Applies to: secret-service 5.2.0.
 
@@ -9851,7 +9899,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.171 MIT
+### 5.173 MIT
 
 Applies to: security-framework 3.7.0, security-framework-sys 2.17.0.
 
@@ -9878,7 +9926,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.172 MIT
+### 5.174 MIT
 
 Applies to: serde_with 3.24.0.
 
@@ -9910,7 +9958,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.173 MIT
+### 5.175 MIT
 
 Applies to: serialize-to-javascript 0.1.2.
 
@@ -9938,7 +9986,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.174 MIT
+### 5.176 MIT
 
 Applies to: sha2 0.10.9.
 
@@ -9972,7 +10020,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.175 MIT
+### 5.177 MIT
 
 Applies to: sha2 0.11.0.
 
@@ -10007,7 +10055,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.176 MIT
+### 5.178 MIT
 
 Applies to: signal-hook-registry 1.4.8.
 
@@ -10039,7 +10087,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.177 MIT
+### 5.179 MIT
 
 Applies to: simd-adler32 0.3.10.
 
@@ -10067,7 +10115,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.178 MIT
+### 5.180 MIT
 
 Applies to: slab 0.4.12.
 
@@ -10099,7 +10147,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.179 MIT
+### 5.181 MIT
 
 Applies to: smallvec 1.16.2.
 
@@ -10131,7 +10179,63 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.180 MIT
+### 5.182 MIT
+
+Applies to: socket-pktinfo 0.4.1.
+
+```text
+MIT License
+
+Copyright (c) 2025 Pixsper
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### 5.183 MIT
+
+Applies to: spin 0.9.9.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Mathijs van de Nes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### 5.184 MIT
 
 Applies to: stable_deref_trait 1.2.1.
 
@@ -10163,7 +10267,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.181 MIT
+### 5.185 MIT
 
 Applies to: strsim 0.11.1.
 
@@ -10193,7 +10297,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.182 MIT
+### 5.186 MIT
 
 Applies to: swift-rs 1.0.8.
 
@@ -10219,7 +10323,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.183 MIT
+### 5.187 MIT
 
 Applies to: synstructure 0.14.0.
 
@@ -10233,7 +10337,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.184 MIT
+### 5.188 MIT
 
 Applies to: tauri-plugin-single-instance 2.5.2.
 
@@ -10261,7 +10365,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.185 MIT
+### 5.189 MIT
 
 Applies to: tendril 0.5.1.
 
@@ -10293,7 +10397,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.186 MIT
+### 5.190 MIT
 
 Applies to: time 0.3.55, time-core 0.1.9.
 
@@ -10319,7 +10423,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.187 MIT
+### 5.191 MIT
 
 Applies to: tokio 1.53.1, tokio-util 0.7.19.
 
@@ -10347,7 +10451,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.188 MIT
+### 5.192 MIT
 
 Applies to: tokio-rustls 0.26.6.
 
@@ -10379,7 +10483,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.189 MIT
+### 5.193 MIT
 
 Applies to: tower 0.5.3, tower-layer 0.3.3, tower-service 0.3.3.
 
@@ -10411,7 +10515,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.190 MIT
+### 5.194 MIT
 
 Applies to: tower-http 0.6.11.
 
@@ -10443,7 +10547,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.191 MIT
+### 5.195 MIT
 
 Applies to: tracing 0.1.44, tracing-core 0.1.36.
 
@@ -10475,7 +10579,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.192 MIT
+### 5.196 MIT
 
 Applies to: try-lock 0.2.5.
 
@@ -10502,7 +10606,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.193 MIT
+### 5.197 MIT
 
 Applies to: typenum 1.20.1.
 
@@ -10530,7 +10634,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.194 MIT AND Unicode-3.0
+### 5.198 MIT AND Unicode-3.0
 
 Applies to: unicode-ident 1.0.26.
 
@@ -10576,7 +10680,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 5.195 MIT
+### 5.199 MIT
 
 Applies to: urlpattern 0.6.0.
 
@@ -10604,7 +10708,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.196 MIT
+### 5.200 MIT
 
 Applies to: utf8parse 0.2.2.
 
@@ -10636,7 +10740,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.197 MIT
+### 5.201 MIT
 
 Applies to: uuid 1.26.1.
 
@@ -10669,7 +10773,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.198 MIT
+### 5.202 MIT
 
 Applies to: want 0.3.1.
 
@@ -10695,7 +10799,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.199 MIT
+### 5.203 MIT
 
 Applies to: web-time 1.1.0.
 
@@ -10723,7 +10827,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.200 MIT
+### 5.204 MIT
 
 Applies to: webkit2gtk 2.0.2.
 
@@ -10750,7 +10854,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.201 MIT
+### 5.205 MIT
 
 Applies to: webkit2gtk-sys 2.0.2.
 
@@ -10775,7 +10879,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.202 MIT
+### 5.206 MIT
 
 Applies to: weezl 0.1.12.
 
@@ -10803,7 +10907,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.203 MIT
+### 5.207 MIT
 
 Applies to: window-vibrancy 0.8.1.
 
@@ -10831,7 +10935,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.204 MIT
+### 5.208 MIT
 
 Applies to: winnow 0.5.40, winnow 1.0.4.
 
@@ -10856,7 +10960,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.205 MIT
+### 5.209 MIT
 
 Applies to: wry 0.57.0.
 
@@ -10884,7 +10988,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.206 MIT
+### 5.210 MIT
 
 Applies to: zbus 5.19.0, zbus_names 4.3.4, zvariant 5.15.0.
 
@@ -10916,7 +11020,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.207 MIT
+### 5.211 MIT
 
 Applies to: zcheapstr 1.1.0.
 
@@ -10948,7 +11052,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.208 MIT
+### 5.212 MIT
 
 Applies to: zeroize 1.9.0.
 
@@ -10980,7 +11084,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.209 MIT
+### 5.213 MIT
 
 Applies to: zune-core 0.5.3, zune-jpeg 0.5.15.
 
@@ -11008,7 +11112,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.210 MIT
+### 5.214 MIT
 
 Applies to: zustand 5.0.15.
 
@@ -11036,7 +11140,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.211 MIT-0
+### 5.215 MIT-0
 
 Applies to: dunce 1.0.5.
 
@@ -11164,7 +11268,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### 5.212 MPL-2.0
+### 5.216 MPL-2.0
 
 Applies to: cssparser 0.37.0, dtoa-short 0.3.5, selectors 0.38.0 (ships no license file: standard text).
 
@@ -11544,7 +11648,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### 5.213 MPL-2.0
+### 5.217 MPL-2.0
 
 Applies to: option-ext 0.2.0.
 
@@ -11924,7 +12028,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### 5.214 OFL-1.1
+### 5.218 OFL-1.1
 
 Applies to: @fontsource-variable/inter 5.3.0.
 
@@ -12024,7 +12128,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 5.215 Unicode-3.0
+### 5.219 Unicode-3.0
 
 Applies to: icu_collections 2.3.0, icu_locale_core 2.3.0, icu_normalizer 2.3.0, icu_normalizer_data 2.3.0, icu_properties 2.3.0, icu_properties_data 2.3.0, icu_provider 2.3.1, litemap 0.8.3, potential_utf 0.1.6, tinystr 0.8.4, writeable 0.6.4, yoke 0.8.3, zerofrom 0.1.8, zerotrie 0.2.5, zerovec 0.11.8.
 
@@ -12077,7 +12181,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### 5.216 Zlib
+### 5.220 Zlib
 
 Applies to: foldhash 0.2.0.
 
@@ -12103,7 +12207,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 5.217 Zlib
+### 5.221 Zlib
 
 Applies to: zlib-rs 0.6.8.
 

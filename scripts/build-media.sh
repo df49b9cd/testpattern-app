@@ -378,7 +378,7 @@ if ! built ffmpeg; then
       --disable-nvdec --disable-ffnvcodec --disable-amf --disable-vdpau \
       --disable-xlib --disable-libxcb --disable-sdl2 \
       --disable-lzma --disable-bzlib \
-      --disable-encoders --enable-encoder=png,mjpeg \
+      --disable-encoders --enable-encoder=png,mjpeg,aac \
       >"$BUILD/ffmpeg-configure.log"
     make -j"$JOBS" >"$BUILD/ffmpeg-make.log" 2>&1
     make install >/dev/null

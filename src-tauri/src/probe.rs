@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde_json::Value;
-use tauri::State;
+use tauri::{Manager, Runtime, State};
 
 use crate::catalog;
 use crate::error::{Error, Result};
@@ -168,14 +168,16 @@ fn read_tracks(stream: &Stream) -> std::result::Result<Option<Value>, String> {
 /// Checks the tracks of one version of a movie (`kind` "movie") or series
 /// ("series": its first episode) and remembers them for the version list.
 #[tauri::command]
-pub async fn version_probe(
+pub async fn version_probe<R: Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     player: State<'_, Player>,
     kind: String,
     source_id: i64,
     id: String,
 ) -> Result<Option<Value>> {
-    if player.busy() {
+    let casting = || app.try_state::<crate::cast::Cast>().is_some_and(|c| c.busy());
+    if player.busy() || casting() {
         return Err(Error::msg(
             "Stop playback first: the account allows one stream at a time",
         ));
@@ -219,7 +221,7 @@ pub async fn version_probe(
     };
     let mut last = None;
     for req in reqs {
-        if player.busy() {
+        if player.busy() || casting() {
             return Ok(None);
         }
         let stream = resolve(&st.db.read(), &req)?;

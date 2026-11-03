@@ -1,13 +1,14 @@
 import clsx from "clsx";
-import { CalendarRange, Clapperboard, Film, House, RefreshCw, Search, Settings, Tv, VolumeX } from "lucide-react";
+import { CalendarRange, Cast, Clapperboard, Film, House, RefreshCw, Search, Settings, Tv, VolumeX, X } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet, useLocation, useMatches, useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useSync } from "../stores/sync";
-import { usePlayer } from "../stores/player";
+import { control, usePlayer } from "../stores/player";
 import { Artwork } from "../components/media";
-import { LiveDot } from "../components/ui";
+import { IconButton, LiveDot } from "../components/ui";
+import { CastMenu } from "../components/CastMenu";
 import { useSpatialNav } from "../hooks/useSpatialNav";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { pipClipPath, usePipVisible, useViewportSize } from "../components/PipPlayer";
@@ -67,7 +68,7 @@ export function Layout() {
         navigate("/player");
       } else if (action === "mute") {
         e.preventDefault();
-        void api.set("mute", !usePlayer.getState().props.mute);
+        void control.setMute(!usePlayer.getState().props.mute);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -95,7 +96,9 @@ function Logo() {
           <span key={c} className="h-full w-[5px]" style={{ background: c }} />
         ))}
       </div>
-      <span className="text-[17px] font-bold tracking-tight">testpattern</span>
+      <span className="flex-1 text-[17px] font-bold tracking-tight">testpattern</span>
+      {/* pick a TV first, then whatever is played goes there */}
+      <CastMenu placement="below" className="-my-2 -mr-2" triggerClassName="text-dim" />
     </div>
   );
 }
@@ -148,8 +151,13 @@ function Sidebar() {
 function NowPlayingCard() {
   const now = usePlayer((s) => s.now);
   const mute = usePlayer((s) => s.props.mute);
+  const cast = usePlayer((s) => s.cast);
+  const notice = usePlayer((s) => s.castNotice);
   const navigate = useNavigate();
-  if (!now) return null;
+  if (!now) {
+    if (cast) return <CastCard name={cast.deviceName} />;
+    return notice ? <CastNotice text={notice} /> : null;
+  }
   return (
     <button
       onClick={() => navigate("/player")}
@@ -172,11 +180,40 @@ function NowPlayingCard() {
       <span className="min-w-0">
         <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-dim">
           {now.kind === "live" && <LiveDot />}
-          Now playing
+          {cast ? <span className="truncate text-accent-strong">On {cast.deviceName}</span> : "Now playing"}
         </span>
         <span className="block truncate text-[13px] font-semibold">{now.title}</span>
       </span>
     </button>
+  );
+}
+
+/** Casting with nothing playing yet: everything played goes to the TV. */
+function CastCard({ name }: { name: string }) {
+  return (
+    <div className="mx-3 mb-3 flex items-center gap-3 rounded-xl bg-accent/10 p-2.5 ring-1 ring-accent/20">
+      <Cast className="size-5 shrink-0 text-accent-strong" />
+      <span className="min-w-0 flex-1">
+        <span className="block text-[11px] font-semibold uppercase tracking-wide text-dim">Casting to</span>
+        <span className="block truncate text-[13px] font-semibold">{name}</span>
+      </span>
+      <IconButton label="Stop casting" size="sm" onClick={() => void usePlayer.getState().stopCasting()}>
+        <X className="size-4" />
+      </IconButton>
+    </div>
+  );
+}
+
+/** Why casting ended (TV switched off, another app took over, …). */
+function CastNotice({ text }: { text: string }) {
+  return (
+    <div className="mx-3 mb-3 flex items-start gap-2.5 rounded-xl bg-white/[0.05] p-2.5 text-[12.5px] text-dim ring-1 ring-white/[0.06]">
+      <Cast className="mt-0.5 size-4 shrink-0 text-faint" />
+      <span className="min-w-0 flex-1 leading-snug">{text}</span>
+      <IconButton label="Dismiss" size="sm" className="-m-1" onClick={() => usePlayer.setState({ castNotice: null })}>
+        <X className="size-4" />
+      </IconButton>
+    </div>
   );
 }
 

@@ -5,6 +5,7 @@ vi.mock("../lib/api", () => ({
   api: {
     updateHistory: vi.fn(async (entry: unknown) => void calls.updateHistory.push(entry)),
     setSetting: vi.fn(async () => {}),
+    get: vi.fn(async () => null),
   },
   errorMessage: (e: unknown) => String(e),
 }));
@@ -130,5 +131,39 @@ describe("subKeyAction (S key, PL-100)", () => {
     expect(subKeyHint({ ...props(), tracks: [sub(1)], subVisible: false })).toBe("on");
     expect(subKeyHint({ ...props(), tracks: [sub(1)], subVisible: true })).toBe("off");
     expect(subKeyHint({ ...props(), tracks: [] })).toBeNull();
+  });
+});
+
+describe("cast", () => {
+  it("castProps maps the TV status onto mpv-shaped props", async () => {
+    const { castProps } = await import("./player");
+    const p = castProps({ ...usePlayer.getState().props, tracks: [{ id: 1, type: "audio" }] }, {
+      deviceId: "d", deviceName: "TV", state: "paused", position: 42, duration: 100, live: false, volume: 0.7, muted: true, error: null,
+    });
+    expect(p.pause).toBe(true);
+    expect(p.timePos).toBe(42);
+    expect(p.duration).toBe(100);
+    expect(p.seekable).toBe(true);
+    expect(p.volume).toBe(70);
+    expect(p.mute).toBe(true);
+    expect(p.tracks).toEqual([]); // the TV picks its own tracks
+  });
+
+  it("castPlayerStatus maps TV states to player states", async () => {
+    const { castPlayerStatus } = await import("./player");
+    expect(castPlayerStatus({ deviceId: "d", deviceName: "TV", state: "loading", position: 0, duration: 0, live: true, volume: 1, muted: false, error: null })).toEqual({ status: "loading", error: null });
+    expect(castPlayerStatus({ deviceId: "d", deviceName: "TV", state: "error", position: 0, duration: 0, live: true, volume: 1, muted: false, error: "boom" })).toEqual({ status: "error", error: "boom" });
+    expect(castPlayerStatus({ deviceId: "d", deviceName: "TV", state: "ended", position: 0, duration: 0, live: false, volume: 1, muted: false, error: null }).status).toBe("ended");
+  });
+
+  it("onCastStatus ignores other devices and ended sessions", () => {
+    usePlayer.setState({ now: { kind: "live", sourceId: 1, id: "c", title: "C" }, status: "playing", cast: { deviceId: "a", deviceName: "A", state: "playing", position: 0, duration: 0, live: true, volume: 1, muted: false, error: null } });
+    usePlayer.getState().onCastStatus({ deviceId: "b", deviceName: "B", state: "playing", position: 5, duration: 0, live: true, volume: 1, muted: false, error: null });
+    expect(usePlayer.getState().cast?.position).toBe(0);
+    usePlayer.getState().onCastStatus({ deviceId: "a", deviceName: "A", state: "playing", position: 9, duration: 0, live: true, volume: 1, muted: false, error: null });
+    expect(usePlayer.getState().cast?.position).toBe(9);
+    usePlayer.getState().onCastStatus({ deviceId: "a", deviceName: "A", state: "stopped", position: 9, duration: 0, live: true, volume: 1, muted: false, error: null });
+    expect(usePlayer.getState().cast).toBeNull();
+    expect(usePlayer.getState().castNotice).toContain("ended");
   });
 });

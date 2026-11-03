@@ -5,10 +5,33 @@ fn main() {
     tauri_build::build();
 
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
-        Ok("linux") => link_media_engine(),
-        Ok("macos") => link_media_engine_macos(),
+        Ok("linux") => {
+            build_cast_remux();
+            link_media_engine();
+        }
+        Ok("macos") => {
+            build_cast_remux();
+            link_media_engine_macos();
+        }
         _ => {}
     }
+}
+
+/// The Chromecast relay's remuxer (src/cast/remux.c) against the embedded
+/// FFmpeg's headers. Built before the media engine is linked: static
+/// archives must come after the code that uses them.
+fn build_cast_remux() {
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let prefix = std::env::var("TP_MEDIA_PREFIX")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| manifest.join("../third_party/prefix"));
+    println!("cargo:rerun-if-changed=src/cast/remux.c");
+    cc::Build::new()
+        .file("src/cast/remux.c")
+        .include(prefix.join("include"))
+        .flag_if_supported("-Wno-unused-parameter")
+        .warnings(true)
+        .compile("tp_cast_remux");
 }
 
 /// macOS: link the static media engine from the prefix, plus the frameworks.
