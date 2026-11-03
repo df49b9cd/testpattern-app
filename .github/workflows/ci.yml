@@ -1,11 +1,12 @@
-# CI (WORKLOG T-037/T-057). Every push to main and every pull request runs
+# CI (WORKLOG T-037/T-057/T-059). Every push to main and every pull request runs
 # scripts/check.sh on Ubuntu 24.04 (Rust unit tests + clippy, TypeScript
 # typecheck + vitest, third-party notices) and on macOS 26 (the same checks
 # plus the keychain round-trip test, PL-111). Version tags (v*), pushes to
 # main and manual runs also build the portable release bundles — Linux
-# (.deb/AppImage/.rpm, T-049) and macOS (.dmg, T-028) — as run artifacts;
-# tag builds publish them on a GitHub release: version-gated, checksummed,
-# draft, with release notes and Sigstore build-provenance attestations.
+# (.deb/AppImage/.rpm, T-049; Flatpak, T-059) and macOS (.dmg, T-028) — as
+# run artifacts; tag builds publish them on a GitHub release: version-gated,
+# checksummed, draft, with release notes and Sigstore build-provenance
+# attestations.
 # The end-to-end smoke test stays local: it needs the IPTV account, which
 # allows one stream at a time.
 #
@@ -301,7 +302,7 @@ jobs:
   # on a DRAFT release with generated + manual notes — a human publishes.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [bundle, bundle-macos]
+    needs: [bundle, bundle-macos, flatpak]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -334,7 +335,7 @@ jobs:
       - name: Checksums
         run: |
           cd release
-          sha256sum -- *.dmg *.deb *.AppImage *.rpm > SHA256SUMS
+          sha256sum -- *.dmg *.deb *.AppImage *.rpm *.flatpak > SHA256SUMS
           cat SHA256SUMS
 
       - name: Prerelease?
@@ -351,6 +352,8 @@ jobs:
           ## Install
 
           **Linux** (Ubuntu 24.04+, Debian 13, Fedora 40+ — glibc ≥ 2.39): the \`.deb\`, the \`.rpm\` or the AppImage. Wayland and X11 both work; VA-API hardware decoding where the GPU offers it.
+
+          **Flatpak** (any distro with Flatpak; the GNOME runtime comes from Flathub): \`flatpak install --user testpattern.flatpak\`.
 
           **macOS 13+ (Apple Silicon)**: the \`.dmg\`. If Gatekeeper warns on first launch, right-click the app and choose Open (releases are signed and notarized when Apple credentials are configured; otherwise ad-hoc signed).
 
@@ -380,5 +383,30 @@ jobs:
             release/*.deb
             release/*.AppImage
             release/*.rpm
+            release/*.flatpak
             release/SHA256SUMS
           fail_on_unmatched_files: true
+
+  # Flatpak (T-059), built from packaging/flatpak/ in Flathub's GNOME image on
+  # the same triggers as the other bundles; the action uploads
+  # testpattern.flatpak as an artifact, which the release job picks up.
+  flatpak:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pins
+        run: scripts/flatpak.sh pins
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/dev.testpattern.app.yml
+          bundle: testpattern.flatpak
+          artifact-name: testpattern-flatpak-x86_64
+          cache-key: flatpak-${{ hashFiles('packaging/flatpak/dev.testpattern.app.yml', 'scripts/build-media.sh') }}

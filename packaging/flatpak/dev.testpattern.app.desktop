@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=testpattern
+Comment=IPTV player for Xtream Codes accounts and M3U playlists
+Exec=testpattern
+Icon=dev.testpattern.app
+Terminal=false
+Categories=AudioVideo;Video;Player;TV;
+Keywords=IPTV;TV;M3U;Xtream;EPG;XMLTV;
+StartupWMClass=testpattern

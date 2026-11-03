@@ -104,7 +104,8 @@ actions=0
 for uses in $(grep -ho 'uses: *[^ ]*@v[0-9][^ ]*' "$ROOT"/.github/workflows/*.yml | sed 's/uses: *//' | sort -u); do
   repo=${uses%@*}
   major=${uses#*@}
-  newest=$(git ls-remote --tags "https://github.com/$repo" 2>/dev/null | grep -v '\^{}' | sed 's#.*refs/tags/##' |
+  # owner/repo/sub-action@v1 → the tags live on owner/repo
+  newest=$(git ls-remote --tags "https://github.com/$(cut -d/ -f1-2 <<<"$repo")" 2>/dev/null | grep -v '\^{}' | sed 's#.*refs/tags/##' |
     grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
   mark=ok
   [[ -n "$newest" && "${newest%%.*}" != "$major" ]] && { mark=OLD; actions=1; }
