@@ -11,6 +11,7 @@ name = "testpattern_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
+cc = "1.2"
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
@@ -20,10 +21,15 @@ chrono = { version = "0.4", features = ["serde"] }
 env_logger = "0.11"
 flate2 = "1"
 futures-util = "0.3"
+getrandom = "0.4"
+# the local networks to look for Chromecasts on (cast/probe.rs)
+if-addrs = "0.15"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 libc = "0.2"
 libloading = "0.9"
 log = "0.4"
+# Chromecast discovery (cast/mod.rs)
+mdns-sd = { version = "0.21", default-features = false, features = ["logging"] }
 parking_lot = "0.12"
 quick-xml = "0.42"
 regex = "1"
@@ -40,7 +46,9 @@ tauri-plugin-opener = "2.5"
 tauri-plugin-single-instance = "2.4"
 tauri-plugin-window-state = "2.4"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
+# the Cast channel to a Chromecast (cast/castv2.rs); the same rustls/aws-lc as reqwest
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "logging", "tls12"] }
 url = "2"
 
 [profile.release]

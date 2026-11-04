@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { api } from "../lib/api";
 import { listen } from "../lib/bridge";
 import { useQueryClient } from "@tanstack/react-query";
-import type { PlayerEvent, SyncProgress, TmdbStatus } from "../lib/types";
+import type { CastStatus, PlayerEvent, SyncProgress, TmdbStatus } from "../lib/types";
 import { usePlayer } from "../stores/player";
 import { useSync } from "../stores/sync";
 
@@ -12,6 +12,15 @@ export function useBackendEvents() {
   useEffect(() => {
     const unlisteners = [
       listen<PlayerEvent>("player://event", (e) => usePlayer.getState().onEvent(e.payload)),
+      listen<CastStatus>("cast://status", (e) => usePlayer.getState().onCastStatus(e.payload)),
+      // a cast that outlived a reload of the UI: show it, so it can be stopped
+      api
+        .castStatus()
+        .then((s) => {
+          if (s && !usePlayer.getState().cast) usePlayer.setState({ cast: s });
+        })
+        .catch(() => {})
+        .then(() => () => {}),
       // mpv applied the saved volume before the UI was listening: start in sync
       Promise.all([api.get<number>("volume"), api.get<boolean>("mute")])
         .then(([volume, mute]) =>

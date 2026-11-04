@@ -1,3 +1,4 @@
+mod cast;
 mod catalog;
 mod db;
 #[cfg(debug_assertions)]
@@ -75,6 +76,7 @@ pub fn run() {
                 Ok(()) => settings::apply_player(app.handle(), &st, None),
                 Err(e) => log::error!("native player unavailable: {e}"),
             }
+            cast::init(app.handle());
 
             #[cfg(debug_assertions)]
             dev_hooks(app);
@@ -159,6 +161,12 @@ pub fn run() {
             library::recent_channels,
             playback::play,
             playback::player_record,
+            cast::cast_devices,
+            cast::cast_add_device,
+            cast::cast_play,
+            cast::cast_control,
+            cast::cast_stop,
+            cast::cast_status,
             settings::settings_get,
             settings::settings_set,
             images::images_cache_info,

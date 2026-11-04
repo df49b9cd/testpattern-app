@@ -32,7 +32,8 @@ import { inTauri } from "../lib/bridge";
 import { clock, elapsed, hhmm, nowUnix } from "../lib/format";
 import { channelNowPlaying, playEpisode } from "../lib/play";
 import type { Channel, Episode, Track } from "../lib/types";
-import { usePlayer, setSubsEnabled, subKeyAction, subKeyHint } from "../stores/player";
+import { control, usePlayer, setSubsEnabled, subKeyAction, subKeyHint } from "../stores/player";
+import { CastingBackdrop, CastMenu } from "../components/CastMenu";
 import { queryClient } from "../lib/queryClient";
 import { ChannelLogo } from "../components/media";
 import { Badge, Button, IconButton, LiveDot, ProgressBar } from "../components/ui";
@@ -61,6 +62,7 @@ export function PlayerPage() {
   const error = usePlayer((s) => s.error);
   const p = usePlayer((s) => s.props);
   const reconnectAttempt = usePlayer((s) => s.reconnectAttempt);
+  const casting = usePlayer((s) => !!s.cast);
 
   const [chrome, setChrome] = useState(true);
   const [panel, setPanel] = useState<null | "channels" | "audio" | "subs" | "aspect" | "speed">(null);
@@ -91,7 +93,7 @@ export function PlayerPage() {
     // start-up and mpv's sub-visibility push must not fire the hint when
     // subs are on
     if (settings?.["player.subsEnabled"] !== false) return;
-    if (typeof sid !== "number" || subVisible) return;
+    if (typeof sid !== "number" || subVisible || usePlayer.getState().cast) return;
     if (settings?.["ui.subHintSeen"] === true) return;
     say(subKeyHint(usePlayer.getState().props) === "cycle" ? "Subtitles are off — press S to switch" : "Subtitles are off — press S to turn them on");
     queryClient.setQueryData(["settings"], (cur: Record<string, unknown> | undefined) => ({ ...cur, "ui.subHintSeen": true }));
@@ -143,8 +145,9 @@ export function PlayerPage() {
     exiting.current = true;
     const cur = usePlayer.getState().now;
     navigate(-1);
-    // live keeps playing (preview on the Live TV page); VOD saves & stops
-    if (cur && cur.kind !== "live") await usePlayer.getState().stop();
+    // live keeps playing (preview on the Live TV page); VOD saves & stops —
+    // unless it plays on a TV, which goes on until casting is stopped
+    if (cur && cur.kind !== "live" && !usePlayer.getState().cast) await usePlayer.getState().stop();
   }, [navigate]);
 
   // Picture-in-picture (T-034): keep playing in a small window while browsing
@@ -170,21 +173,27 @@ export function PlayerPage() {
   const togglePause = useCallback(() => {
     const { props: cur, now: np } = usePlayer.getState();
     const paused = cur.pause;
-    if (!paused && np?.kind === "live") setLiveGap((g) => g ?? Math.max(0, cur.cacheTime - cur.timePos));
-    void api.set("pause", !paused);
+    if (!paused && np?.kind === "live" && !usePlayer.getState().cast) setLiveGap((g) => g ?? Math.max(0, cur.cacheTime - cur.timePos));
+    void control.setPause(!paused);
     setFlash(paused ? "play" : "pause");
     window.setTimeout(() => setFlash(null), 500);
   }, []);
 
   const seekBy = useCallback((secs: number) => {
-    void api.command("seek", secs, "relative");
+    void control.seekBy(secs);
     say(secs < 0 ? `« ${secs} s` : `» +${secs} s`);
     poke();
   }, [poke, say]);
 
   const nudgeVolume = useCallback((delta: number) => {
     const st = usePlayer.getState();
-    void api.set("volume", Math.max(0, Math.min(150, st.props.volume + delta))).then(() => {
+    const target = Math.max(0, Math.min(st.cast ? 100 : 150, st.props.volume + delta));
+    if (st.cast) {
+      void control.setVolume(target).then(() => say(`TV volume ${Math.round(target)}`));
+      poke();
+      return;
+    }
+    void api.set("volume", target).then(() => {
       // mpv applies async; read what it has a moment later so the chip shows
       // the real level, not the pre-clamp guess.
       window.setTimeout(() => {
@@ -198,7 +207,7 @@ export function PlayerPage() {
 
   const toggleMute = useCallback(() => {
     const st = usePlayer.getState();
-    void api.set("mute", !st.props.mute).then(() => say(st.props.mute ? "Sound on" : "Muted")).catch(() => {});
+    void control.setMute(!st.props.mute).then(() => say(st.props.mute ? "Sound on" : "Muted"));
     poke();
   }, [say, poke]);
 
@@ -257,8 +266,8 @@ export function PlayerPage() {
       else if (k === "Escape") {
         if (panel) setPanel(null);
         else void exit();
-      } else if (k === "a" || k === "A") void api.command("cycle", "audio");
-      else if (k === "s" || k === "S") {
+      } else if ((k === "a" || k === "A") && !casting) void api.command("cycle", "audio");
+      else if ((k === "s" || k === "S") && !casting) {
         const action = subKeyAction(usePlayer.getState().props);
         if (!action) {
           handled = false;
@@ -281,9 +290,9 @@ export function PlayerPage() {
           void setSubsEnabled(false).catch(() => {});
           say("Subtitles off");
         }
-      } else if (k === "i" || k === "I") setInfo((v) => !v);
-      else if ((k === "r" || k === "R") && live) toggleRecord();
-      else if (k === "p" || k === "P") void toPip();
+      } else if ((k === "i" || k === "I") && !casting) setInfo((v) => !v);
+      else if ((k === "r" || k === "R") && live && !casting) toggleRecord();
+      else if ((k === "p" || k === "P") && !casting) void toPip();
       else if ((k === "l" || k === "L" || k === "c" || k === "C") && live) setPanel((v) => (v === "channels" ? null : "channels"));
       else if (/^[0-9]$/.test(k) && live) {
         const next = (digits + k).slice(-4);
@@ -302,7 +311,7 @@ export function PlayerPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePause, seekBy, zap, zapList, zapTo, exit, panel, digits, live, poke, toggleRecord, toPip, nudgeVolume, toggleMute]);
+  }, [togglePause, seekBy, zap, zapList, zapTo, exit, panel, digits, live, poke, toggleRecord, toPip, nudgeVolume, toggleMute, casting]);
 
   if (!now) return null;
   const busy = status === "loading" || status === "reconnecting" || (p.buffering && status === "playing");
@@ -321,6 +330,7 @@ export function PlayerPage() {
         if (e.target === e.currentTarget) void toggleFullscreen().then(() => isFullscreen().then(setFullscreen));
       }}
     >
+      <CastingBackdrop />
       {/* center state */}
       <div className="pointer-events-none absolute inset-0 grid place-items-center">
         {busy && (
@@ -375,7 +385,7 @@ export function PlayerPage() {
         </div>
         <div className="flex items-center gap-2">
           {recordingFile && <RecordingBadge since={recordingSince} />}
-          <TechBadges />
+          {!casting && <TechBadges />}
           <Clock />
         </div>
       </div>
@@ -386,7 +396,7 @@ export function PlayerPage() {
         </div>
       )}
 
-      {info && <StatsOverlay />}
+      {info && !casting && <StatsOverlay />}
       {notice && (
         <div className="pointer-events-none absolute left-1/2 top-24 -translate-x-1/2 rounded-xl bg-black/70 px-4 py-2 text-sm text-white backdrop-blur animate-fade-in">
           {notice}
@@ -425,7 +435,7 @@ export function PlayerPage() {
               </IconButton>
             </>
           )}
-          {live && (
+          {live && !casting && (
             <IconButton
               label={recordingFile ? "Stop recording (R)" : "Record (R)"}
               onClick={toggleRecord}
@@ -446,6 +456,9 @@ export function PlayerPage() {
           )}
           <div className="flex-1" />
           <Volume />
+          <CastMenu />
+          {!casting && (
+            <>
           <MenuButton label="Audio" icon={<AudioLines className="size-5" />} open={panel === "audio"} onToggle={() => setPanel(panel === "audio" ? null : "audio")}>
             <TrackMenu type="audio" onDone={() => setPanel(null)} />
           </MenuButton>
@@ -460,17 +473,23 @@ export function PlayerPage() {
               <SpeedMenu onDone={() => setPanel(null)} />
             </MenuButton>
           )}
+            </>
+          )}
           {live && (
             <IconButton label="Channels (L)" active={panel === "channels"} onClick={() => setPanel(panel === "channels" ? null : "channels")} className="text-white">
               <List className="size-5" />
             </IconButton>
           )}
-          <IconButton label="Picture in picture (P)" onClick={() => void toPip()} className="text-white">
-            <PictureInPicture2 className="size-5" />
-          </IconButton>
-          <IconButton label="Info (I)" active={info} onClick={() => setInfo((v) => !v)} className="text-white">
-            <Info className="size-5" />
-          </IconButton>
+          {!casting && (
+            <>
+              <IconButton label="Picture in picture (P)" onClick={() => void toPip()} className="text-white">
+                <PictureInPicture2 className="size-5" />
+              </IconButton>
+              <IconButton label="Info (I)" active={info} onClick={() => setInfo((v) => !v)} className="text-white">
+                <Info className="size-5" />
+              </IconButton>
+            </>
+          )}
           <IconButton
             label={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"}
             onClick={() => void toggleFullscreen().then(() => isFullscreen().then(setFullscreen))}
@@ -537,7 +556,7 @@ function SeekBar({ onSeek }: { onSeek: () => void }) {
     return Math.min(1, Math.max(0, (clientX - r.left) / r.width));
   };
   const commit = (f: number) => {
-    void api.command("seek", (f * dur).toFixed(2), "absolute");
+    void control.seekTo(f * dur);
     onSeek();
   };
   return (
@@ -647,21 +666,22 @@ function BehindLive({ gap, onLive }: { gap: number; onLive: () => void }) {
 function Volume() {
   const volume = usePlayer((s) => s.props.volume);
   const mute = usePlayer((s) => s.props.mute);
+  const casting = usePlayer((s) => !!s.cast);
   const Icon = mute || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
   return (
     <div className="group/vol flex items-center">
-      <IconButton label={mute ? "Unmute (M)" : "Mute (M)"} onClick={() => void api.set("mute", !mute)} className="text-white">
+      <IconButton label={mute ? "Unmute (M)" : "Mute (M)"} onClick={() => void control.setMute(!mute)} className="text-white">
         <Icon className="size-5" />
       </IconButton>
       <input
         type="range"
         min={0}
-        max={130}
+        max={casting ? 100 : 130}
         step={1}
         value={mute ? 0 : Math.round(volume)}
         onChange={(e) => {
-          void api.set("volume", Number(e.target.value));
-          if (mute) void api.set("mute", false);
+          void control.setVolume(Number(e.target.value));
+          if (mute) void control.setMute(false);
         }}
         className="h-1 w-0 cursor-pointer accent-white opacity-0 transition-all duration-200 group-hover/vol:w-24 group-hover/vol:opacity-100"
         aria-label="Volume"

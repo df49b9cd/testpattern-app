@@ -3,7 +3,7 @@
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
-use tauri::{Runtime, State};
+use tauri::{Manager, Runtime, State};
 
 use crate::error::{Error, Result};
 use crate::player::{LoadOptions, MediaRef, Player};
@@ -41,7 +41,7 @@ pub struct Stream {
     pub user_agent: Option<String>,
     pub referrer: Option<String>,
     /// live channels: title and logo for "recently watched"
-    channel: Option<(String, Option<String>)>,
+    pub channel: Option<(String, Option<String>)>,
 }
 
 /// Resolves (source, item) to its stream.
@@ -216,7 +216,12 @@ pub async fn play<R: Runtime>(
         let w = st.db.write();
         library::touch_channel(&w, req.source_id, &req.id, &title, logo.as_deref())?;
     }
-    // one stream per account: a running version check closes its stream first
+    // one stream per account: casting and a running version check close
+    // their stream first
+    if let Some(cast) = _app.try_state::<crate::cast::Cast>().filter(|c| c.busy()) {
+        log::info!("play: ending the cast session first");
+        cast.stop();
+    }
     if crate::probe::running() {
         tokio::task::spawn_blocking(crate::probe::cancel)
             .await

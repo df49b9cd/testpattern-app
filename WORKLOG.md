@@ -290,6 +290,7 @@ Every dependency must be on its **latest stable** release. Audited
 | `src-tauri/src/lib.rs` | App setup, state, command registration, background sync timer |
 | `src-tauri/src/state.rs` · `error.rs` · `util/` | Shared `App` state + HTTP client · UI-facing error type (never carries URLs) · FNV hash, lenient JSON accessors |
 | `src-tauri/src/player/` | `mpv_sys.rs` FFI · `mpv.rs` safe wrapper · `mod.rs` Player/commands/events/redaction/IPC allowlists · `linux.rs` GTK GLArea surface |
+| `src-tauri/src/cast/` | Chromecast (T-058): `mod.rs` discovery (mDNS) + session task + `cast_*` commands · `castv2.rs` Cast v2 protocol over TLS · `relay.rs` LAN HTTP relay (tokenised URLs) · `probe.rs` finding TVs without mDNS (network sweep, by address) · `remux.c` FFmpeg → fragmented MP4, non-AAC audio → AAC |
 | `src-tauri/src/devtools.rs` | Debug-only HTTP automation + browser bridge (`/snapshot`, `/eval`, `/click`, `/invoke`, `/img`) |
 | `src-tauri/src/db.rs` | SQLite pool + schema migrations (+ `test_conn()` for unit tests) |
 | `src-tauri/src/sources/` | `xtream.rs` API client (+ mirrors) · `m3u.rs` parser · `mod.rs` CRUD + sync |
@@ -307,7 +308,7 @@ Every dependency must be on its **latest stable** release. Audited
 | `src/main.tsx` | Entry; dev builds expose `window.__TP__` for automation |
 | `src/app/` | `App.tsx` providers · `router.tsx` routes · `Root.tsx` first-run redirect + global effects · `Layout.tsx` sidebar |
 | `src/pages/` | `Home` `Live` `Guide` `Movies` `MovieDetail` `Series` `SeriesDetail` `Search` `Settings` `Onboarding` `Player` |
-| `src/components/` | `ui.tsx` primitives · `media.tsx` artwork/cards/shelves · `PosterGrid.tsx` · `LibraryBrowser.tsx` (facet panel) · `Versions.tsx` (version picker) · `DetailHero.tsx` · `SourceForm.tsx` · `PipPlayer.tsx` · `ErrorBoundary.tsx` |
+| `src/components/` | `ui.tsx` primitives · `media.tsx` artwork/cards/shelves · `PosterGrid.tsx` · `LibraryBrowser.tsx` (facet panel) · `Versions.tsx` (version picker) · `DetailHero.tsx` · `SourceForm.tsx` · `PipPlayer.tsx` · `CastMenu.tsx` (TV picker, casting backdrop) · `ErrorBoundary.tsx` |
 | `src/lib/` | `types.ts` (mirrors Rust JSON) · `api.ts` · `bridge.ts` · `queryClient.ts` · `img.ts` · `format.ts` · `play.ts` · `open.ts` · `liveLists.ts` (Live/Guide list keys) |
 | `src/stores/` | `player.ts` (now playing, mpv props, progress saving, viewport) · `sync.ts` |
 | `src/hooks/` | `useBackendEvents` · `useProgressSaver` · `useVideoViewport` · `useSpatialNav` |
@@ -1047,6 +1048,57 @@ UHF/Infuse feature, **P2** = later.
   unlocked keychain only (locked classification stays covered by the
   pure unit test) and CI bounds it with the watchdog.
 
+- **T-058 Chromecast** — cast button in the player chrome and next to the
+  sidebar logo: picks a Chromecast / Google TV found on the LAN (mDNS
+  `_googlecast._tcp`, devices without video out skipped). **Without
+  mDNS** — routers that don't pass multicast between Wi-Fi clients (AP
+  isolation, IGMP snooping; the user's GL.iNet does this) — `probe.rs`
+  finds them anyway: remembered TVs (`cast.devices` setting, saved on every
+  successful connect) are re-checked, then the local private /24 networks
+  are swept for the Cast port 8009 (≈1 s, at most once a minute) and each
+  hit is identified via `http://<ip>:8008/setup/eureka_info` (name +
+  `ssdp_udn`, the same id as mDNS's TXT `id` without dashes, so both paths
+  merge into one entry). The menu also has **"Add a TV by IP address"**
+  for networks larger than a /24 or that block the sweep. Picking one moves
+  what plays to the TV (VOD continues at its position, live at "now");
+  with nothing playing, everything played afterwards goes there. The
+  player stays the remote: play/pause, seek (VOD), TV volume/mute, zapping;
+  stopping the cast continues a movie/episode here, paused, where the TV
+  was. `src-tauri/src/cast/`: Google's **Default Media Receiver**
+  (`CC1AD845`, no registration) loads `http://<lan-ip>:<port>/cast/<token>/<n>.mp4`
+  from the **relay** — provider URLs (credentials) never reach the TV; the
+  token is random per item and only served to that device's address. The
+  relay runs the embedded FFmpeg (`remux.c`, compiled by `build.rs` via
+  `cc`): video copied (H.264/HEVC/VP9/AV1), AAC/MP3 copied (ADTS →
+  `aac_adtstoasc` — fMP4 doesn't insert it itself, not even the ffmpeg
+  tool), anything else → stereo AAC 192k (**`build-media.sh` now enables
+  FFmpeg's `aac` encoder**; the media engine is rebuilt once). Live TV:
+  timestamp jumps > 10 s are re-based, dropped channels reloaded 3×. Seeks
+  are a new URL whose start the relay remembers (output starts at the
+  keyframe before; the real start comes back to fix the clock). One
+  provider stream at a time: local `play`, the version probe and a new
+  relay request all end the previous one; mirrors are tried in order.
+  Audio follows `player.audioLang`; subtitles are not cast. New crates
+  `mdns-sd`, `tokio-rustls` (same rustls/aws-lc as reqwest; the device
+  certificate is Google-CA-signed, so like every sender only the handshake
+  signature is checked), `getrandom`, `cc`. macOS: `src-tauri/Info.plist`
+  (`NSLocalNetworkUsageDescription`, `NSBonjourServices`) and the
+  `network.server` entitlement. Verified without a TV against a stand-in
+  receiver (Python, CASTV2 over TLS, fetches the LOAD URL like the real
+  one) + a local M3U: discovery, live (endless TS) and VOD casting, AC-3
+  MKV → H.264 + AAC stereo fMP4 (ffprobe-clean), resume at 15.8 s, seek,
+  pause/play, volume, stop → local resume at the TV's position, UI picker
+  and casting screen. **Verified on a real Chromecast Ultra** (2026-11-02,
+  "Family Room TV", cast firmware 1.56): found by the sweep in ~1 s with
+  mDNS blocked by the router; VOD from 5 s / 20 s (AC-3 MKV → fMP4 AAC)
+  and endless live TS both play; pause/play, seek (40 s, +30 s from the
+  player chrome), TV volume; stop casting resumes locally, paused, at the
+  TV's position (56 s). **Firewall:** on a firewalld desktop (Fedora's
+  `public` zone allows only ssh/dhcpv6) mDNS and the relay's incoming
+  connection are blocked by default — the user needed
+  `--add-service=mdns` and a TCP rule for the relay's (ephemeral) port.
+  Open: a fixed, configurable relay port so that rule can be one port.
+
 - **T-059 Flatpak** — `packaging/flatpak/dev.testpattern.app.yml` +
   `scripts/flatpak.sh` (see §3): GNOME 51 runtime, libass 0.17.5 /
   libunibreak 8.0 / uchardet 0.0.8 as shared modules (not in the runtime),
@@ -1101,6 +1153,16 @@ UHF/Infuse feature, **P2** = later.
 ---
 
 ## 6. Log
+
+- **2026-11-02** — T-058 Chromecast (user request: "support chromecasting").
+  See the card. Tests: 3 Rust (protobuf framing, relay URL parsing), 3
+  vitest (cast status → player state); `scripts/check.sh` green. Then, on
+  the user's network, the Ultra never appeared: the router drops mDNS
+  between Wi-Fi clients (found with a /24 sweep: port 8009 open on
+  192.168.8.17). User: "build the fallback — we cannot rely on people
+  being able to modify router settings" → `cast/probe.rs` (sweep +
+  remembered TVs + add by IP, 3 more Rust tests); first real-device casts
+  all pass (see the card).
 
 - **2026-11-02** — T-059 Flatpak (user request: "installable as a
   flatpak"). New `packaging/flatpak/` (manifest, desktop entry, metainfo),

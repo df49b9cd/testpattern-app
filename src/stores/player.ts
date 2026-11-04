@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api, errorMessage } from "../lib/api";
 import { invalidateWatchState, queryClient } from "../lib/queryClient";
-import type { Channel, PlayKind, PlayerEvent, Track } from "../lib/types";
+import type { CastDevice, CastMeta, CastStatus, Channel, PlayKind, PlayRequest, PlayerEvent, Track } from "../lib/types";
 
 /** What is (or is about to be) playing, with enough context for the UI. */
 export interface NowPlaying {
@@ -15,6 +15,8 @@ export interface NowPlaying {
   ext?: string | null;
   /** resume position (seconds) */
   start?: number | null;
+  /** open paused (continuing here after casting) */
+  paused?: boolean;
   // live
   channel?: Channel;
   /** channel list for up/down zapping */
@@ -111,9 +113,18 @@ interface PlayerStore {
   /** playing on in a floating window while browsing (components/PipPlayer.tsx) */
   pip: boolean;
   setPip: (on: boolean) => void;
+  /** casting to a TV: everything played goes there (src-tauri/src/cast) */
+  cast: CastStatus | null;
+  /** why casting ended, when it wasn't the user */
+  castNotice: string | null;
   play: (np: NowPlaying) => Promise<void>;
   stop: () => Promise<void>;
+  /** Moves what's playing (if anything) to a TV, or switches TVs. */
+  castTo: (device: CastDevice) => Promise<void>;
+  /** Ends casting; a movie or episode continues here, paused. */
+  stopCasting: () => Promise<void>;
   onEvent: (e: PlayerEvent) => void;
+  onCastStatus: (s: CastStatus) => void;
 }
 
 const num = (v: unknown, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
@@ -188,6 +199,62 @@ export function applyProp(p: PlaybackProps, name: string, v: unknown): Partial<P
   }
 }
 
+function playRequest(np: NowPlaying): PlayRequest {
+  return {
+    kind: np.kind,
+    sourceId: np.sourceId,
+    id: np.id,
+    ext: np.ext,
+    start: np.start,
+    title: np.title,
+    catchupStart: np.catchupStart,
+    catchupMinutes: np.catchupMinutes,
+    paused: np.paused,
+  };
+}
+
+/** What the TV shows about the item. */
+export function castMeta(np: NowPlaying): CastMeta {
+  return { title: np.title, subtitle: np.subtitle ?? null, image: np.backdrop ?? np.image ?? null };
+}
+
+/** Cast status → the player status the UI shows. */
+export function castPlayerStatus(s: CastStatus): { status: PlayerStatus; error: string | null } {
+  switch (s.state) {
+    case "connecting":
+    case "loading":
+      return { status: "loading", error: null };
+    case "ended":
+      return { status: "ended", error: null };
+    case "error":
+      return { status: "error", error: s.error ?? "The TV could not play this stream" };
+    default:
+      return { status: "playing", error: null };
+  }
+}
+
+/** Cast status → the playback props the UI reads (mpv's are idle meanwhile). */
+export function castProps(p: PlaybackProps, s: CastStatus): PlaybackProps {
+  return {
+    ...p,
+    pause: s.state === "paused",
+    timePos: s.position,
+    duration: s.duration,
+    buffering: s.state === "buffering",
+    cacheTime: 0,
+    seeking: false,
+    seekable: !s.live,
+    idle: false,
+    eof: s.state === "ended",
+    volume: Math.round(s.volume * 100),
+    mute: s.muted,
+    speed: 1,
+    tracks: [],
+    chapters: [],
+    recording: "",
+  };
+}
+
 export const usePlayer = create<PlayerStore>((set, get) => ({
   now: null,
   status: "idle",
@@ -195,7 +262,9 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   reconnectAttempt: 0,
   props: initialProps,
   pip: false,
-  setPip: (on) => set({ pip: on && !!get().now }),
+  setPip: (on) => set({ pip: on && !!get().now && !get().cast }),
+  cast: null,
+  castNotice: null,
 
   play: async (np) => {
     const prev = get().now;
@@ -209,31 +278,76 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
       props: { ...get().props, timePos: np.start ?? 0, duration: 0, tracks: [], chapters: [], eof: false, buffering: false },
     });
     try {
-      await api.play({
-        kind: np.kind,
-        sourceId: np.sourceId,
-        id: np.id,
-        ext: np.ext,
-        start: np.start,
-        title: np.title,
-        catchupStart: np.catchupStart,
-        catchupMinutes: np.catchupMinutes,
-      });
+      const cast = get().cast;
+      // the first item starts the session on the TV, later ones reuse it
+      if (cast) await api.castPlay(playRequest(np), castMeta(np), cast.deviceId);
+      else await api.play(playRequest(np));
     } catch (e) {
       set({ status: "error", error: errorMessage(e) });
     }
   },
 
   stop: async () => {
-    const { now, props } = get();
+    const { now, props, cast } = get();
     const saved = !!now && (await saveProgress(now, props));
-    set({ now: null, status: "idle", error: null, pip: false });
-    await api.stop().catch(() => {});
+    set({ now: null, status: "idle", error: null, pip: false, cast: null });
+    await (cast ? api.castStop() : api.stop()).catch(() => {});
     // the page we return to may show this item's progress
     if (saved) invalidateWatchState();
   },
 
+  castTo: async (device) => {
+    const { now, props, cast } = get();
+    if (cast?.deviceId === device.id) return;
+    // VOD continues where it is; live starts at "now"
+    const np = now && now.kind !== "live" ? { ...now, start: props.timePos || now.start, paused: false } : now;
+    if (now && (await saveProgress(now, props))) invalidateWatchState();
+    set({
+      cast: {
+        deviceId: device.id,
+        deviceName: device.name,
+        state: np ? "connecting" : "ready",
+        position: np?.start ?? 0,
+        duration: 0,
+        live: now?.kind === "live",
+        volume: 1,
+        muted: false,
+        error: null,
+      },
+      castNotice: null,
+      pip: false,
+      ...(np ? { now: np, status: "loading" as const, error: null } : {}),
+    });
+    if (!np) return;
+    try {
+      await api.castPlay(playRequest(np), castMeta(np), device.id);
+    } catch (e) {
+      set({ cast: null, castNotice: errorMessage(e), status: "error", error: errorMessage(e) });
+    }
+  },
+
+  stopCasting: async () => {
+    if (!get().cast) return;
+    set({ cast: null });
+    await api.castStop().catch(() => {});
+    continueHere();
+  },
+
+  onCastStatus: (s) => {
+    const cur = get().cast;
+    // a session that already ended here (or the one a TV switch replaced)
+    if (!cur || s.deviceId !== cur.deviceId) return;
+    if (s.state === "stopped") {
+      set({ cast: null, castNotice: s.error ?? `Casting to ${s.deviceName} ended` });
+      continueHere();
+      return;
+    }
+    set({ cast: s, props: castProps(get().props, s), ...(get().now ? castPlayerStatus(s) : {}) });
+  },
+
   onEvent: (e) => {
+    // mpv is stopped while casting; its last events must not touch the TV's state
+    if (get().cast) return;
     switch (e.type) {
       case "prop": {
         const patch = applyProp(get().props, e.name, e.value);
@@ -262,6 +376,55 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     }
   },
 }));
+
+/** After casting: a movie or episode continues here (paused), live TV stops. */
+function continueHere() {
+  const { now, props } = usePlayer.getState();
+  // the TV's volume was showing: back to this computer's
+  void Promise.all([api.get<number>("volume"), api.get<boolean>("mute")])
+    .then(([volume, mute]) =>
+      usePlayer.setState((s) => ({ props: { ...s.props, volume: volume ?? s.props.volume, mute: mute ?? s.props.mute } })),
+    )
+    .catch(() => {});
+  if (!now) return;
+  if (now.kind === "live") {
+    usePlayer.setState({ now: null, status: "idle", error: null, props: { ...props, eof: false } });
+    return;
+  }
+  void usePlayer.getState().play({ ...now, start: props.timePos || now.start, paused: true });
+}
+
+/**
+ * Playback controls for whichever side is playing: this computer (mpv) or
+ * the TV being cast to.
+ */
+export const control = {
+  setPause(pause: boolean) {
+    if (usePlayer.getState().cast) return api.castControl(pause ? "pause" : "play").catch(() => {});
+    return api.set("pause", pause).catch(() => {});
+  },
+  seekTo(seconds: number) {
+    const { cast, props } = usePlayer.getState();
+    if (!cast) return api.command("seek", seconds.toFixed(2), "absolute").catch(() => {});
+    const t = Math.max(0, props.duration > 0 ? Math.min(seconds, props.duration - 1) : seconds);
+    usePlayer.setState({ props: { ...props, timePos: t } });
+    return api.castControl("seek", t).catch(() => {});
+  },
+  seekBy(seconds: number) {
+    const { cast, props } = usePlayer.getState();
+    if (!cast) return api.command("seek", seconds, "relative").catch(() => {});
+    return control.seekTo(props.timePos + seconds);
+  },
+  /** mpv scale: 0…150 (the TV's 0…100) */
+  setVolume(volume: number) {
+    if (usePlayer.getState().cast) return api.castControl("volume", Math.min(100, volume) / 100).catch(() => {});
+    return api.set("volume", volume).catch(() => {});
+  },
+  setMute(mute: boolean) {
+    if (usePlayer.getState().cast) return api.castControl("mute", mute ? 1 : 0).catch(() => {});
+    return api.set("mute", mute).catch(() => {});
+  },
+};
 
 /**
  * Subtitles on/off from the player chrome (PL-99): persists the setting and

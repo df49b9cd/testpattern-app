@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the bundle's Info.plist by tauri build (macOS). -->
+<plist version="1.0">
+<dict>
+  <!-- Casting (src/cast): macOS asks before an app may search the local
+       network or accept connections from it; without these keys the
+       Chromecast search finds nothing and the TV can't fetch the stream. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>testpattern looks for Chromecasts on your network and streams to the one you pick.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_googlecast._tcp</string>
+  </array>
+</dict>
+</plist>
