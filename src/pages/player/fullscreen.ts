@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri } from "../../lib/bridge";
-import { playerWrite } from "../../lib/playerWrite";
+import { backgroundWrite } from "../../lib/backgroundWrite";
 
 async function toggleFullscreen() {
   if (inTauri) {
@@ -22,7 +22,7 @@ async function isFullscreen() {
 export function useFullscreen() {
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => void isFullscreen().then(setFullscreen), []);
-  const flipFullscreen = useCallback(() => void playerWrite(toggleFullscreen().then(() => isFullscreen().then(setFullscreen))), []);
+  const flipFullscreen = useCallback(() => void backgroundWrite(toggleFullscreen().then(() => isFullscreen().then(setFullscreen))), []);
   /** Leaves fullscreen; true when it was. */
   const leaveFullscreen = useCallback(async () => {
     if (!(await isFullscreen())) return false;

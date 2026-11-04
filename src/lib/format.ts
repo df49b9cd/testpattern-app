@@ -37,6 +37,21 @@ export function elapsed(start: number, stop: number, now = nowUnix()): number {
   return Math.min(1, Math.max(0, (now - start) / (stop - start)));
 }
 
+/** A programme on air at `now` (unix seconds). */
+export function isAiring(p: { start: number; stop: number }, now: number): boolean {
+  return p.start <= now && p.stop > now;
+}
+
+/**
+ * The programme on air at `now` and the ones after it (from the end of the
+ * current one, or from now when nothing airs), in list order.
+ */
+export function currentAndUpcoming<T extends { start: number; stop: number }>(list: readonly T[], now: number): { current: T | undefined; upcoming: T[] } {
+  const current = list.find((p) => isAiring(p, now));
+  const from = current?.stop ?? now;
+  return { current, upcoming: list.filter((p) => p.start >= from) };
+}
+
 /** "3 min ago" / "2 h ago" / "yesterday" style relative time. */
 export function ago(unix: number | null | undefined): string {
   if (!unix) return "never";

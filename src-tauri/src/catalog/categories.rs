@@ -1,11 +1,19 @@
 //! Category lists of each kind (the browse sidebars).
 
-use super::*;
+use rusqlite::params;
+use tauri::State;
+
+use crate::error::{Error, Result};
+use crate::kind::ItemKind;
+use crate::settings;
+use crate::state::{AppState, read_blocking};
+
+use super::{CategoryItem, split_badges};
 
 #[tauri::command]
 pub async fn categories(state: State<'_, AppState>, kind: ItemKind) -> Result<Vec<CategoryItem>> {
     if kind == ItemKind::Episode {
-        return Err(Error::msg("episodes have no categories"));
+        return Err(Error::msg("episodes have no categories".into()));
     }
     let table = kind.table();
     read_blocking(state.inner(), move |conn| {

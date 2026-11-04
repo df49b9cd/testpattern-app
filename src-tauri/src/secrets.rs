@@ -30,6 +30,10 @@ pub const UNAVAILABLE: &str = "The password is stored in the system keyring, whi
 /// setting that holds one when there is no keyring → the entry's label.
 pub const NAMED: &[(&str, &str)] = &[(crate::tmdb::KEY_SETTING, "TMDB API key")];
 
+// The two caches mirror the system keyring, which is process-wide itself;
+// they're read deep inside database closures (`sources::load`, `tmdb::key`)
+// that only get a connection, so they stay statics rather than `App` fields.
+
 /// Passwords read from the keyring, by source id.
 static CACHE: LazyLock<Mutex<HashMap<i64, String>>> = LazyLock::new(Default::default);
 /// `NAMED` secrets read from the keyring, by setting key.
@@ -80,7 +84,7 @@ impl Unlock {
 async fn timed<T>(unlock: Unlock, call: impl Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(unlock.timeout(), call)
         .await
-        .map_err(|_| Error::msg("keyring: no answer in time"))?
+        .map_err(|_| Error::msg("keyring: no answer in time".into()))?
 }
 
 /// A random id per profile, so two profiles (e.g. the test one) never share
@@ -193,7 +197,7 @@ mod backend {
         let item = match (found.unlocked.first(), found.locked.first()) {
             (Some(item), _) => item,
             (None, Some(_)) if unlock == Unlock::Never => {
-                return Err(Error::msg("keyring: locked"));
+                return Err(Error::msg("keyring: locked".into()));
             }
             (None, Some(item)) => {
                 ss.unlock_all(&[item]).await.map_err(err)?;
@@ -214,7 +218,7 @@ mod backend {
             .map_err(err)?;
         if !found.locked.is_empty() {
             if unlock == Unlock::Never {
-                return Err(Error::msg("keyring: locked"));
+                return Err(Error::msg("keyring: locked".into()));
             }
             ss.unlock_all(&found.locked.iter().collect::<Vec<_>>())
                 .await
@@ -239,6 +243,7 @@ mod backend {
 
     use super::{Entry, Unlock};
     use crate::error::{Error, Result};
+    use crate::state::run_blocking;
 
     fn err(e: impl std::fmt::Display) -> Error {
         Error::msg(format!("keyring: {e}"))
@@ -280,7 +285,7 @@ mod backend {
 
     /// Is this error one we returned for a locked keychain?
     fn is_error_locked(e: &Error) -> bool {
-        e.to_string().contains("keychain is locked")
+        matches!(e, Error::KeyringLocked)
     }
 
     fn not_found(stderr: &str) -> bool {
@@ -322,7 +327,7 @@ mod backend {
             return Ok(None);
         }
         if is_locked(out.status.code(), &stderr) {
-            return Err(err("the keychain is locked"));
+            return Err(Error::KeyringLocked);
         }
         Err(err(stderr.trim()))
     }
@@ -344,10 +349,14 @@ mod backend {
             return Ok(false);
         }
         if is_locked(out.status.code(), &stderr) {
-            return Err(err("the keychain is locked"));
+            return Err(Error::KeyringLocked);
         }
         Err(err(stderr.trim()))
     }
+
+    // `security` is a blocking subprocess (and `unlock-keychain` may wait on
+    // the user): every call runs on the blocking pool, so the runtime keeps
+    // going and `timed()` can actually give up on it.
 
     pub async fn store(
         profile: &str,
@@ -365,17 +374,20 @@ mod backend {
         }
         add.push("-w".into());
         add.push(password.into());
-        // unlock-keychain prompts when locked; skip it for Unlock::Never
-        if unlock == Unlock::Never {
-            match run(vec!["show-keychain-info".into()]) {
-                Ok(_) => {}
-                Err(e) if is_error_locked(&e) => return Ok(false),
-                Err(e) => return Err(e), // a real failure, not "locked"
+        run_blocking(move || {
+            // unlock-keychain prompts when locked; skip it for Unlock::Never
+            if unlock == Unlock::Never {
+                match run(vec!["show-keychain-info".into()]) {
+                    Ok(_) => {}
+                    Err(e) if is_error_locked(&e) => return Ok(false),
+                    Err(e) => return Err(e), // a real failure, not "locked"
+                }
+            } else {
+                let _ = run(vec!["unlock-keychain".into()]); // may prompt; ignore outcome
             }
-        } else {
-            let _ = run(vec!["unlock-keychain".into()]); // may prompt; ignore outcome
-        }
-        run(add)
+            run(add)
+        })
+        .await?
     }
 
     pub async fn load(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<Option<String>> {
@@ -384,7 +396,7 @@ mod backend {
             .into_iter()
             .filter(|(k, _)| *k != "-l")
             .collect();
-        match sec(&a, "find-generic-password") {
+        run_blocking(move || match sec(&a, "find-generic-password") {
             Err(e) if unlock == Unlock::Prompt && is_error_locked(&e) => {
                 // only now that a lookup failed on a locked keychain: unlock
                 // (may prompt once), then retry
@@ -392,20 +404,23 @@ mod backend {
                 sec(&a, "find-generic-password")
             }
             r => r,
-        }
+        })
+        .await?
     }
 
     pub async fn delete(profile: &str, entry: Entry<'_>, unlock: Unlock) -> Result<()> {
-        if unlock != Unlock::Never {
-            let _ = run(vec!["unlock-keychain".into()]);
-        }
-        let a = attrs(profile, entry, "");
         let mut d: Vec<String> = vec!["delete-generic-password".into()];
-        for (k, v) in a.iter().filter(|(k, _)| *k != "-l") {
+        for (k, v) in attrs(profile, entry, "").iter().filter(|(k, _)| *k != "-l") {
             d.push((*k).to_string());
             d.push(v.to_string());
         }
-        run(d).map(|_| ())
+        run_blocking(move || {
+            if unlock != Unlock::Never {
+                let _ = run(vec!["unlock-keychain".into()]);
+            }
+            run(d).map(|_| ())
+        })
+        .await?
     }
 }
 
@@ -416,10 +431,10 @@ mod backend {
     use crate::error::{Error, Result};
 
     pub async fn store(_: &str, _: Entry<'_>, _: &str, _: &str, _: Unlock) -> Result<bool> {
-        Err(Error::msg("keyring: not supported on this platform"))
+        Err(Error::msg("keyring: not supported on this platform".into()))
     }
     pub async fn load(_: &str, _: Entry<'_>, _: Unlock) -> Result<Option<String>> {
-        Err(Error::msg("keyring: not supported on this platform"))
+        Err(Error::msg("keyring: not supported on this platform".into()))
     }
     pub async fn delete(_: &str, _: Entry<'_>, _: Unlock) -> Result<()> {
         Ok(())
@@ -877,7 +892,8 @@ mod tests {
             // runner alike — every `security` call that has to open a locked
             // keychain (even `show-keychain-info`) routes through a
             // SecurityAgent password dialog and blocks the run until a human
-            // answers; tokio's timeout cannot preempt it (PL-113). Which
+            // answers; a timeout only abandons the `security` child, which
+            // still holds the runtime's shutdown (PL-113). Which
             // failures map to "locked" is covered by
             // keychain_locked_marker_classification below.
         });

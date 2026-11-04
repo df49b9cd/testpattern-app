@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { keyString, parseKey, queryFor, titleFor } from "../lib/liveLists";
-import type { LiveNav } from "../lib/types";
+import { keyString, parseKey, queryFor, titleFor } from "./liveLists";
+import type { Category, LiveNav } from "./types";
 
 describe("live list keys (URL ?list=)", () => {
   it("parses the special lists, favorites by default", () => {
@@ -30,5 +30,15 @@ describe("live list keys (URL ?list=)", () => {
     expect(titleFor(parseKey("nav:DK/Sports"), nav)).toBe("Denmark · Sports");
     expect(titleFor(parseKey("nav:*/Sports"), nav)).toBe("Sports");
     expect(titleFor(parseKey("nav:DK/*"), nav)).toBe("Denmark");
+  });
+  it("titles provider categories by region and name", () => {
+    const cats: Category[] = [
+      { sourceId: 3, id: "uk:sports", title: "Sports", region: "UK", badges: [], count: 4 },
+      { sourceId: 3, id: "misc", title: "Misc", region: null, badges: [], count: 1 },
+    ];
+    expect(titleFor(parseKey("3:uk:sports"), undefined, cats)).toBe("UK · Sports");
+    expect(titleFor(parseKey("3:misc"), undefined, cats)).toBe("Misc");
+    // not loaded (yet) or gone
+    expect(titleFor(parseKey("3:uk:sports"))).toBe("Channels");
   });
 });

@@ -641,11 +641,15 @@ mod tests {
         #[test]
         fn wrapper_embeds_the_id_the_script_and_the_retry_bound() {
             let w = eval_wrapper(7, "return 1+1;");
-            assert!(w.contains("id: 7"));
-            assert!(w.contains("return 1+1;"));
-            assert!(w.contains("i < 200"));
-            assert!(w.contains("__devtools_eval_result"));
-            assert!(w.contains("result IPC failed after 200 retries"));
+            for part in [
+                "id: 7",
+                "return 1+1;",
+                "i < 200",
+                "__devtools_eval_result",
+                "result IPC failed after 200 retries",
+            ] {
+                assert!(w.contains(part), "wrapper lacks {part:?}:\n{w}");
+            }
         }
     }
 }

@@ -13,6 +13,7 @@ mod render;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -29,7 +30,7 @@ use mpv_sys::{
 };
 
 pub const EVENT: &str = "player://event";
-pub const USER_AGENT: &str = concat!("testpattern/", env!("CARGO_PKG_VERSION"));
+pub use crate::state::DEFAULT_USER_AGENT as USER_AGENT;
 
 /// `time-pos` changes every frame; ~5 Hz is plenty for the UI.
 const TIME_POS_INTERVAL: Duration = Duration::from_millis(200);
@@ -99,6 +100,9 @@ pub struct LoadOptions {
 
 #[derive(Default)]
 struct Session {
+    /// Which `load` opened this session; a delayed reconnect only reloads
+    /// while the session it was scheduled for is still the current one.
+    generation: u64,
     url: String,
     options: LoadOptions,
     /// Same stream on mirror servers, tried if the first open fails.
@@ -163,6 +167,8 @@ pub fn file_name_for(title: &str) -> String {
 pub struct Player {
     mpv: Arc<Mpv>,
     session: Arc<Mutex<Option<Session>>>,
+    /// Source of `Session::generation`.
+    generations: AtomicU64,
 }
 
 const OBSERVED: &[(&str, mpv_format)] = &[
@@ -247,6 +253,7 @@ impl Player {
         let player = Player {
             mpv,
             session: Arc::new(Mutex::new(None)),
+            generations: AtomicU64::new(0),
         };
         player.spawn_event_loop(app.clone());
         Ok(player)
@@ -377,7 +384,7 @@ impl Player {
     /// Live streams drop all the time; transparently re-open them a few times.
     fn maybe_reconnect(
         mpv: &Arc<Mpv>,
-        session: &Mutex<Option<Session>>,
+        session: &Arc<Mutex<Option<Session>>>,
         reason: EndReason,
     ) -> Option<u32> {
         if !matches!(reason, EndReason::Eof | EndReason::Error) {
@@ -420,13 +427,19 @@ impl Player {
             let _ = mpv.set_string("stream-record", &rec.file().to_string_lossy());
         }
         let attempt = s.reconnects;
+        let generation = s.generation;
         let url = s.url.clone();
         let opts = file_options(&s.options);
         drop(guard);
-        let mpv = mpv.clone();
+        let (mpv, session) = (mpv.clone(), session.clone());
         std::thread::spawn(move || {
             std::thread::sleep(RECONNECT_BACKOFF_STEP * attempt);
-            let _ = mpv.command_async(&["loadfile", &url, "replace", "-1", &opts]);
+            // the user may have switched channel or stopped meanwhile; hold
+            // the lock while loading so a new `load` can't slip in between
+            let guard = session.lock();
+            if guard.as_ref().is_some_and(|s| s.generation == generation) {
+                let _ = mpv.command_async(&["loadfile", &url, "replace", "-1", &opts]);
+            }
         });
         Some(attempt)
     }
@@ -445,6 +458,7 @@ impl Player {
         // a new stream ends any recording (mpv would record it into the same file)
         let _ = self.mpv.set_string("stream-record", "");
         *self.session.lock() = Some(Session {
+            generation: self.generations.fetch_add(1, Ordering::Relaxed) + 1,
             url: url.to_owned(),
             options,
             alternates,
@@ -640,7 +654,7 @@ pub fn player_load(
     options: Option<LoadOptions>,
 ) -> crate::error::Result<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(Error::msg("only http(s) streams can be loaded"));
+        return Err(Error::msg("only http(s) streams can be loaded".into()));
     }
     player
         .load(&url, options.unwrap_or_default())

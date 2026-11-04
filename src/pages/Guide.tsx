@@ -1,14 +1,16 @@
 import clsx from "clsx";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { CalendarRange, ChevronLeft, ChevronRight, History, Play, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
-import { day, hhmm, nowUnix } from "../lib/format";
+import { day, hhmm, isAiring, nowUnix } from "../lib/format";
+import { itemKey } from "../lib/item";
 import { keyString, parseKey, queryFor } from "../lib/liveLists";
 import { playCatchup, playChannel } from "../lib/play";
 import type { Channel, ChannelQuery, GuideRow, Programme } from "../lib/types";
+import { usePagedQuery } from "../hooks/usePagedQuery";
 import { ChannelLogo } from "../components/media";
 import { Button, EmptyState, IconButton, LiveDot, Spinner } from "../components/ui";
 
@@ -18,11 +20,16 @@ const ROW = 64;
 const CHANNEL_COL = 220;
 const HALF_HOUR = 1800;
 
+/** The grid's left edge for `now`: the half hour an hour back. */
+function guideOrigin(now: number): number {
+  return Math.floor((now - 3600) / HALF_HOUR) * HALF_HOUR;
+}
+
 export function GuidePage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const list = params.get("list") ?? "epg";
-  const [origin, setOrigin] = useState(() => Math.floor((nowUnix() - 3600) / HALF_HOUR) * HALF_HOUR);
+  const [origin, setOrigin] = useState(() => guideOrigin(nowUnix()));
   const from = origin;
   const to = origin + HOURS * 3600;
   const width = ((to - from) / 60) * PX_PER_MIN;
@@ -47,25 +54,18 @@ export function GuidePage() {
       )
     : [];
 
-  const q = useInfiniteQuery({
+  const q = usePagedQuery<GuideRow>({
     queryKey: ["guide", list, from],
-    initialPageParam: 0,
-    queryFn: ({ pageParam }) => api.guide({ ...base, from, to, offset: pageParam, limit: 60 }),
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, p) => n + p.items.length, 0);
-      return loaded < last.total ? loaded : undefined;
-    },
+    pageSize: 60,
+    fetchPage: (offset, limit) => api.guide({ ...base, from, to, offset, limit }),
   });
-  const rows: GuideRow[] = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);
-  const total = q.data?.pages[0]?.total ?? 0;
+  const { items: rows, total, fetchMoreNear } = q;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({ count: total, getScrollElement: () => scrollRef.current, estimateSize: () => ROW, overscan: 8 });
   const items = virtualizer.getVirtualItems();
   const last = items.length ? items[items.length - 1].index : 0;
-  useEffect(() => {
-    if (last >= rows.length - 10 && q.hasNextPage && !q.isFetchingNextPage) void q.fetchNextPage();
-  }, [last, rows.length, q]);
+  useEffect(() => fetchMoreNear(last, 10), [last, fetchMoreNear]);
 
   // start scrolled so "now" sits near the left edge
   useLayoutEffect(() => {
@@ -101,7 +101,7 @@ export function GuidePage() {
           </optgroup>
           <optgroup label="Provider categories">
             {(categories.data ?? []).map((c) => (
-              <option key={`${c.sourceId}:${c.id}`} value={`${c.sourceId}:${c.id}`}>
+              <option key={itemKey(c)} value={keyString({ type: "cat", sourceId: c.sourceId, id: c.id })}>
                 {c.region ? `${c.region} · ` : ""}
                 {c.title}
               </option>
@@ -128,7 +128,7 @@ export function GuidePage() {
           <IconButton label="Earlier" onClick={() => shift(-3)}>
             <ChevronLeft className="size-5" />
           </IconButton>
-          <Button size="sm" onClick={() => setOrigin(Math.floor((nowUnix() - 3600) / HALF_HOUR) * HALF_HOUR)}>
+          <Button size="sm" onClick={() => setOrigin(guideOrigin(nowUnix()))}>
             Now
           </Button>
           <IconButton label="Later" onClick={() => shift(3)}>
@@ -188,7 +188,7 @@ export function GuidePage() {
                       const left = Math.max(0, x(p.start));
                       const right = Math.min(width, x(p.stop));
                       if (right - left < 2) return null;
-                      const live = p.start <= now && p.stop > now;
+                      const live = isAiring(p, now);
                       const past = p.stop <= now;
                       return (
                         <button
@@ -235,7 +235,7 @@ function ProgrammeDialog({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
-  const live = p.start <= now && p.stop > now;
+  const live = isAiring(p, now);
   const canCatchup = channel.archive && p.start < now && p.start > now - channel.archiveDays * 86400;
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm animate-fade-in" onClick={onClose}>

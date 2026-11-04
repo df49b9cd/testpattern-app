@@ -1,6 +1,23 @@
 //! The `cast_*` commands the UI drives casting with.
 
-use super::*;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tokio::sync::mpsc;
+
+use crate::error::{Error, Result};
+use crate::playback::PlayRequest;
+use crate::player::Player;
+use crate::state::{AppState, read_blocking};
+use crate::{playback, settings};
+
+use super::discovery::{search, start_browsing};
+use super::session::run;
+use super::{
+    Cast, CastState, Cmd, Device, Devices, Item, Meta, STATUS_EVENT, Session, Status, emit_devices,
+    probe, relay, remember,
+};
 
 /// The cast devices found so far; the first call starts looking
 /// (updates follow as `cast://devices`).
@@ -8,7 +25,7 @@ use super::*;
 pub fn cast_devices<R: Runtime>(app: AppHandle<R>, cast: State<'_, Cast>) -> Result<Devices> {
     if cast.relay.is_none() {
         return Err(Error::msg(
-            "Casting is unavailable: no network port could be opened",
+            "Casting is unavailable: no network port could be opened".into(),
         ));
     }
     // mDNS is optional: the search by address finds TVs without it
@@ -28,7 +45,7 @@ pub async fn cast_add_device<R: Runtime>(
     address: String,
 ) -> Result<Device> {
     let ip = probe::parse_address(&address)
-        .ok_or_else(|| Error::msg("Enter the TV's IP address, like 192.168.1.20"))?;
+        .ok_or_else(|| Error::msg("Enter the TV's IP address, like 192.168.1.20".into()))?;
     let device = probe::probe(&state.http, ip).await.ok_or_else(|| {
         Error::msg(format!(
             "No Chromecast answered at {ip}. Check the address in the Google Home app."
@@ -84,7 +101,7 @@ pub async fn cast_play<R: Runtime>(
     let reuse = match (&device_id, running) {
         (None, Some(_)) => true,
         (Some(id), Some(s)) => &s.device.id == id,
-        (None, None) => return Err(Error::msg("Not casting")),
+        (None, None) => return Err(Error::msg("Not casting".into())),
         (Some(_), None) => false,
     };
     if reuse {
@@ -99,7 +116,7 @@ pub async fn cast_play<R: Runtime>(
         return s
             .tx
             .send(Cmd::Load(item))
-            .map_err(|_| Error::msg("The cast session has ended"));
+            .map_err(|_| Error::msg("The cast session has ended".into()));
     }
 
     let id = device_id.unwrap_or_default();
@@ -108,7 +125,7 @@ pub async fn cast_play<R: Runtime>(
         .lock()
         .get(&id)
         .cloned()
-        .ok_or_else(|| Error::msg("That TV is no longer on the network"))?;
+        .ok_or_else(|| Error::msg("That TV is no longer on the network".into()))?;
     if let Some(old) = session.take() {
         let _ = old.tx.send(Cmd::Stop);
     }
@@ -116,7 +133,7 @@ pub async fn cast_play<R: Runtime>(
     let status = Arc::new(Mutex::new(Status {
         device_id: device.id.clone(),
         device_name: device.name.clone(),
-        state: "connecting",
+        state: CastState::Connecting,
         live: item.source.live,
         volume: 1.0,
         ..Default::default()

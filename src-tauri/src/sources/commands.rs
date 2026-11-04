@@ -1,6 +1,18 @@
 //! The Sources page: list, test, add, update and remove sources.
 
-use super::*;
+use rusqlite::params;
+use serde::Serialize;
+use tauri::{AppHandle, Runtime, State};
+
+use crate::db::now;
+use crate::error::{Error, Result};
+use crate::state::{AppState, read_blocking, write_blocking};
+
+use super::xtream::{AccountInfo, Xtream};
+use super::{
+    SourceInput, SourceKind, SourceView, SyncScope, default_name, download_text, load, load_all,
+    m3u, normalize_input, spawn_sync, view,
+};
 
 #[tauri::command]
 pub async fn sources_list(state: State<'_, AppState>) -> Result<Vec<SourceView>> {
@@ -49,7 +61,7 @@ pub async fn source_test(
     {
         let src = read_blocking(state.inner(), move |conn| load(conn, id)).await?;
         if src.password_in_keyring && src.password.is_none() {
-            return Err(Error::msg(crate::secrets::UNAVAILABLE));
+            return Err(Error::msg(crate::secrets::UNAVAILABLE.into()));
         }
         input.password = src.password;
     }
@@ -60,17 +72,20 @@ pub async fn source_test(
                 &input.alt_urls,
                 input.username.as_deref().unwrap_or(""),
                 input.password.as_deref().unwrap_or(""),
-                http_client(input.user_agent.as_deref()),
+                state.client(input.user_agent.as_deref()),
             );
             Ok(TestResult::Xtream {
                 account: x.account().await?,
             })
         }
         SourceKind::M3u => {
-            let text = download_text(&http_client(input.user_agent.as_deref()), &input.url).await?;
+            let text =
+                download_text(&state.client(input.user_agent.as_deref()), &input.url).await?;
             let pl = m3u::parse(&text);
             if pl.entries.is_empty() {
-                return Err(Error::msg("The playlist is empty or not an M3U file"));
+                return Err(Error::msg(
+                    "The playlist is empty or not an M3U file".into(),
+                ));
             }
             let mut c = (0, 0, 0);
             for e in &pl.entries {
@@ -112,7 +127,7 @@ pub async fn source_add<R: Runtime>(
                                  catchup_shift_minutes)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                input.kind.as_str(),
+                input.kind,
                 name.trim(),
                 input.url,
                 serde_json::to_string(&input.alt_urls)?,
@@ -162,7 +177,7 @@ pub async fn source_update(
                     epg_url = ?8, user_agent = ?9, catchup_shift_minutes = ?10 WHERE id = ?1",
                 params![
                     id,
-                    input.kind.as_str(),
+                    input.kind,
                     name,
                     input.url,
                     serde_json::to_string(&input.alt_urls)?,

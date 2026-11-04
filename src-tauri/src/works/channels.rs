@@ -1,6 +1,12 @@
 //! Live channels: feeds folded into one group per channel and country.
 
-use super::*;
+use std::collections::HashMap;
+
+use rusqlite::{Connection, params};
+
+use crate::error::Result;
+
+use super::{genre, most_common, norm_title};
 
 /// Variant preference when nothing was chosen yet: full/regular HD streams
 /// first, then RAW, 4K, HEVC-only and SD last. Higher is better.

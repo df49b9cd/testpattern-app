@@ -1,6 +1,19 @@
 //! Movie and series listings (one row per work) and their browse facets.
 
-use super::*;
+use std::time::Instant;
+
+use rusqlite::types::Value as Sql;
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
+use serde::Serialize;
+use tauri::State;
+
+use crate::error::{Error, Result};
+use crate::kind::WorkKind;
+use crate::settings;
+use crate::state::{AppState, read_blocking};
+
+use super::types::{FACETS, like_pattern, work_info};
+use super::{MediaQuery, MovieItem, Page, SeriesItem};
 
 /// One movie copy with its work's grouping info.
 pub(super) const MOVIE_SELECT: &str = "
@@ -91,6 +104,64 @@ pub(super) fn row_to_series(r: &Row) -> rusqlite::Result<SeriesItem> {
         favorite: r.get(10)?,
         work: work_info(r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?),
     })
+}
+
+/// The movie work `key` (browse-list shape).
+pub(super) fn movie_by_key(conn: &Connection, key: &str) -> Result<Option<MovieItem>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "{} WHERE w.kind = 'movie' AND w.key = ?1",
+            movie_work_select()
+        ))?
+        .query_row([key], row_to_movie)
+        .optional()?)
+}
+
+/// One movie copy.
+pub(super) fn movie_by_item(
+    conn: &Connection,
+    source_id: i64,
+    id: &str,
+) -> Result<Option<MovieItem>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "{MOVIE_SELECT} WHERE m.source_id = ?1 AND m.id = ?2"
+        ))?
+        .query_row(params![source_id, id], row_to_movie)
+        .optional()?)
+}
+
+/// The series work `key` (browse-list shape).
+pub(super) fn series_by_key(conn: &Connection, key: &str) -> Result<Option<SeriesItem>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "{SERIES_WORK_SELECT} WHERE w.kind = 'series' AND w.key = ?1"
+        ))?
+        .query_row([key], row_to_series)
+        .optional()?)
+}
+
+/// One series copy.
+pub(super) fn series_by_item(
+    conn: &Connection,
+    source_id: i64,
+    id: &str,
+) -> Result<Option<SeriesItem>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "{SERIES_SELECT} WHERE s.source_id = ?1 AND s.id = ?2"
+        ))?
+        .query_row(params![source_id, id], row_to_series)
+        .optional()?)
+}
+
+/// Episode history rows of a show, all copies counted as one: `?{k}` is the
+/// work key (may be NULL), `?{s}`/`?{i}` the copy's source id and series id.
+/// Expects `history h` joined to `series s` on the episode's series.
+pub(super) fn episode_history_filter(k: usize, s: usize, i: usize) -> String {
+    format!(
+        "((?{k} IS NOT NULL AND s.work_key = ?{k}) OR (h.source_id = ?{s} AND h.series_id = ?{i}))"
+    )
 }
 
 /// Browse lists: one row per work. Filters match through the members, so a
@@ -424,6 +495,7 @@ pub fn facets_for(conn: &Connection, kind: WorkKind, q: &MediaQuery) -> Result<F
 
 #[cfg(test)]
 mod tests {
+    use super::super::FacetFilter;
     use super::*;
     use crate::catalog::details::tests::two_copy_show;
 

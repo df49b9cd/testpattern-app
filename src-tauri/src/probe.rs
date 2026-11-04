@@ -207,7 +207,7 @@ pub async fn version_probe<R: Runtime>(
     };
     if player.busy() || casting() {
         return Err(Error::msg(
-            "Stop playback first: the account allows one stream at a time",
+            "Stop playback first: the account allows one stream at a time".into(),
         ));
     }
     let st = state.inner().clone();
@@ -242,7 +242,7 @@ pub async fn version_probe<R: Runtime>(
                 })
                 .collect();
             if reqs.is_empty() {
-                return Err(Error::msg("This version has no episodes yet"));
+                return Err(Error::msg("This version has no episodes yet".into()));
             }
             (reqs, ItemKind::Episode)
         }
