@@ -335,6 +335,15 @@ jobs:
           merge-multiple: true
           path: release
 
+      # the Linux artifact keeps the bundler's deb/, appimage/ and rpm/
+      # folders (upload-artifact preserves paths below their common parent);
+      # the release assets are the files themselves
+      - name: Flatten
+        run: |
+          find release -mindepth 2 -type f -exec mv -n -t release {} +
+          find release -mindepth 1 -type d -empty -delete
+          ls -l release
+
       - name: Checksums
         run: |
           cd release
