@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{Error, Result};
-use crate::state::AppState;
+use crate::state::{AppState, read_blocking, write_blocking};
 
 /// Shown when a source's password is in the keyring but couldn't be read.
 pub const UNAVAILABLE: &str = "The password is stored in the system keyring, which is locked or not available. \
@@ -434,17 +434,18 @@ pub async fn move_to_keyring(
     password: &str,
     unlock: Unlock,
 ) -> bool {
-    let (profile, name) = {
-        let conn = st.db.write();
-        let Ok(profile) = profile_id(&conn) else {
-            return false;
-        };
+    let found = write_blocking(st, move |conn| {
+        let profile = profile_id(conn)?;
         let name: String = conn
             .query_row("SELECT name FROM source WHERE id = ?1", [source_id], |r| {
                 r.get(0)
             })
             .unwrap_or_else(|_| format!("source {source_id}"));
-        (profile, name)
+        Ok((profile, name))
+    })
+    .await;
+    let Ok((profile, name)) = found else {
+        return false;
     };
     let label = format!("testpattern: {name}");
     match timed(
@@ -455,7 +456,7 @@ pub async fn move_to_keyring(
     {
         Ok(true) => {
             remember(source_id, password);
-            match clear_plaintext(&st.db.write(), source_id) {
+            match write_blocking(st, move |conn| clear_plaintext(conn, source_id)).await {
                 Ok(()) => true,
                 Err(e) => {
                     log::warn!(
@@ -513,7 +514,7 @@ fn scrub(conn: &Connection) {
 /// keyring can't delete anything.
 pub async fn forget(st: &AppState, source_id: i64) {
     uncache(source_id);
-    let Ok(profile) = profile_id(&st.db.write()) else {
+    let Ok(profile) = write_blocking(st, |conn| profile_id(conn)).await else {
         return;
     };
     if let Err(e) = timed(
@@ -575,7 +576,7 @@ fn label_of(name: &str) -> &'static str {
 /// — without one — in the database setting `name`. Returns whether it went
 /// into the keyring.
 pub async fn store_named(st: &AppState, name: &str, secret: &str, unlock: Unlock) -> Result<bool> {
-    let profile = profile_id(&st.db.write())?;
+    let profile = write_blocking(st, |conn| profile_id(conn)).await?;
     let label = format!("testpattern: {}", label_of(name));
     match timed(
         unlock,
@@ -587,7 +588,8 @@ pub async fn store_named(st: &AppState, name: &str, secret: &str, unlock: Unlock
             NAMED_CACHE
                 .lock()
                 .insert(name.to_owned(), secret.to_owned());
-            clear_plaintext_setting(&st.db.write(), name)?;
+            let key = name.to_owned();
+            write_blocking(st, move |conn| clear_plaintext_setting(conn, &key)).await?;
             Ok(true)
         }
         stored => {
@@ -595,12 +597,16 @@ pub async fn store_named(st: &AppState, name: &str, secret: &str, unlock: Unlock
                 Ok(_) => log::info!("{name}: keyring locked, stored in the database for now"),
                 Err(e) => log::info!("{name}: stored in the database ({e})"),
             }
-            let conn = st.db.write();
-            conn.execute("DELETE FROM setting WHERE key = ?1", [flag(name)])?;
-            conn.execute(
-                "INSERT INTO setting (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                rusqlite::params![name, serde_json::to_string(secret)?],
-            )?;
+            let (key, value) = (name.to_owned(), serde_json::to_string(secret)?);
+            write_blocking(st, move |conn| {
+                conn.execute("DELETE FROM setting WHERE key = ?1", [flag(&key)])?;
+                conn.execute(
+                    "INSERT INTO setting (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    rusqlite::params![key, value],
+                )?;
+                Ok(())
+            })
+            .await?;
             NAMED_CACHE.lock().remove(name);
             Ok(false)
         }
@@ -609,16 +615,18 @@ pub async fn store_named(st: &AppState, name: &str, secret: &str, unlock: Unlock
 
 /// Removes a `NAMED` secret everywhere; the keyring entry goes in the
 /// background (a locked keyring asks first).
-pub fn forget_named(st: &AppState, name: &str) -> Result<()> {
-    {
-        let conn = st.db.write();
-        clear_plaintext_setting(&conn, name)?;
-        conn.execute("DELETE FROM setting WHERE key = ?1", [flag(name)])?;
-    }
+pub async fn forget_named(st: &AppState, name: &str) -> Result<()> {
+    let key = name.to_owned();
+    write_blocking(st, move |conn| {
+        clear_plaintext_setting(conn, &key)?;
+        conn.execute("DELETE FROM setting WHERE key = ?1", [flag(&key)])?;
+        Ok(())
+    })
+    .await?;
     NAMED_CACHE.lock().remove(name);
     let (st, name) = (st.clone(), name.to_owned());
     tauri::async_runtime::spawn(async move {
-        let Ok(profile) = profile_id(&st.db.write()) else {
+        let Ok(profile) = write_blocking(&st, |conn| profile_id(conn)).await else {
             return;
         };
         if let Err(e) = timed(
@@ -655,8 +663,7 @@ fn clear_plaintext_setting(conn: &Connection, name: &str) -> Result<()> {
 /// again later when the keyring was locked then) — all, or `only` one source.
 /// Without `only`, the `NAMED` secrets that live in the keyring too.
 pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
-    let (profile, missing) = {
-        let conn = st.db.write();
+    let found = write_blocking(st, move |conn| {
         let ids: Vec<i64> = conn
             .prepare(
                 "SELECT id FROM source WHERE password_in_keyring = 1 AND (?1 IS NULL OR id = ?1)",
@@ -673,19 +680,20 @@ pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
                 NAMED
                     .iter()
                     .filter(|(name, _)| {
-                        setting(&conn, &flag(name)).is_some()
+                        setting(conn, &flag(name)).is_some()
                             && !NAMED_CACHE.lock().contains_key(*name)
                     })
                     .map(|(name, _)| Entry::Named(name)),
             );
         }
         if missing.is_empty() {
-            return;
+            return Ok(None);
         }
-        let Ok(profile) = profile_id(&conn) else {
-            return;
-        };
-        (profile, missing)
+        Ok(Some((profile_id(conn)?, missing)))
+    })
+    .await;
+    let Ok(Some((profile, missing))) = found else {
+        return;
     };
     let mut unlock = unlock;
     for entry in missing {
@@ -712,12 +720,14 @@ pub async fn ensure_loaded(st: &AppState, only: Option<i64>, unlock: Unlock) {
 /// while the keyring is unlocked (never prompts).
 pub async fn startup(st: &AppState) {
     ensure_loaded(st, None, Unlock::Prompt).await;
-    let plaintext: Vec<(i64, String)> = {
-        let conn = st.db.read();
-        conn.prepare("SELECT id, password FROM source WHERE password_in_keyring = 0 AND COALESCE(password, '') <> ''")
+    let plaintext: Vec<(i64, String)> = read_blocking(st, |conn| {
+        Ok(conn
+            .prepare("SELECT id, password FROM source WHERE password_in_keyring = 0 AND COALESCE(password, '') <> ''")
             .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-            .unwrap_or_default()
-    };
+            .unwrap_or_default())
+    })
+    .await
+    .unwrap_or_default();
     let mut moved = 0;
     let mut blocked = false;
     for (id, password) in plaintext {
@@ -729,8 +739,12 @@ pub async fn startup(st: &AppState) {
         moved += 1;
     }
     for (name, _) in NAMED {
-        let plain =
-            setting(&st.db.read(), name).filter(|_| setting(&st.db.read(), &flag(name)).is_none());
+        let plain = read_blocking(st, move |conn| {
+            Ok(setting(conn, name).filter(|_| setting(conn, &flag(name)).is_none()))
+        })
+        .await
+        .ok()
+        .flatten();
         if blocked || plain.is_none() {
             continue;
         }
@@ -750,8 +764,14 @@ pub async fn startup(st: &AppState) {
         }
     }
     if moved > 0 {
-        let st = st.clone();
-        let _ = tokio::task::spawn_blocking(move || scrub(&st.db.write())).await;
+        let scrubbed = write_blocking(st, |conn| {
+            scrub(conn);
+            Ok(())
+        })
+        .await;
+        if let Err(e) = scrubbed {
+            log::warn!("could not rebuild the database: {e}");
+        }
     }
 }
 

@@ -39,4 +39,5 @@ export const useSync = create<SyncStore>((set) => ({
     }),
 }));
 
-export const anySyncRunning = (s: SyncStore) => Object.values(s.bySource).some((v) => v.running);
+/** A sync in progress (any source), for the sidebar's status line; undefined when none. */
+export const runningSync = (s: SyncStore): SyncState | undefined => Object.values(s.bySource).find((v) => v.running);

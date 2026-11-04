@@ -175,25 +175,27 @@ fn take_superscripts(name: &str, badges: &mut Vec<&'static str>) -> String {
     out
 }
 
-static DECOR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[◉•●★☆✪⚽♦◆▶►▬■□▪\u{2066}-\u{2069}\u{FE0F}]").unwrap());
-static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s{2,}").unwrap());
-static PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*([A-Z0-9][A-Z0-9&+/.]{0,11})\s*[:|]\s+").unwrap());
+static DECOR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[◉•●★☆✪⚽♦◆▶►▬■□▪\u{2066}-\u{2069}\u{FE0F}]").expect("valid regex")
+});
+static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s{2,}").expect("valid regex"));
+static PREFIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*([A-Z0-9][A-Z0-9&+/.]{0,11})\s*[:|]\s+").expect("valid regex")
+});
 static SEPARATOR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*(?:#\s*#|(?:[=*~_\-•●▬◆★]\s*){3,})").unwrap());
+    LazyLock::new(|| Regex::new(r"^\s*(?:#\s*#|(?:[=*~_\-•●▬◆★]\s*){3,})").expect("valid regex"));
 // "SC - ", and compound ones like "4K-AMZ - ", "4K-A+ - ", "EN-TOP - " (the
 // first part a quality or a two-letter code, so "X-MEN - …" stays a title)
 static TAG_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*((?:(?:4K|8K|UHD|FHD|HD|SD|[A-Z]{2})-[A-Z0-9+]{1,5})|[A-Z0-9+]{2,4})\s*-\s+")
-        .unwrap()
+        .expect("valid regex")
 });
 static TRAILING_YEAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\s*[\(\[]((?:19|20)\d{2})[\)\]]\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"\s*[\(\[]((?:19|20)\d{2})[\)\]]\s*$").expect("valid regex"));
 static MIDDLE_YEAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.{2,}?)\s*\(((?:19|20)\d{2})\)\s+\S.*$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(.{2,}?)\s*\(((?:19|20)\d{2})\)\s+\S.*$").expect("valid regex"));
 static TRAILING_COUNTRY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\s*\(([A-Z]{2})\)\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"\s*\(([A-Z]{2})\)\s*$").expect("valid regex"));
 
 /// "ᴰᵒˡᵇʸ ⱽᶦˢᶦᵒⁿ" → "Dolby Vision": superscript/modifier letters to ASCII,
 /// everything else untouched.
@@ -285,9 +287,10 @@ fn take_trailing_badges(title: &mut String, badges: &mut Vec<&'static str>) {
     let trimmed = title.trim_end().to_owned();
     if let Some(idx) = trimmed.rfind(' ') {
         let last = &trimmed[idx + 1..];
-        if last.contains('/') && last.split('/').all(|p| badge_for(p).is_some()) {
-            for p in last.split('/') {
-                push_badge(badges, badge_for(p).unwrap());
+        let combo: Option<Vec<_>> = last.split('/').map(badge_for).collect();
+        if let Some(combo) = combo.filter(|_| last.contains('/')) {
+            for b in combo {
+                push_badge(badges, b);
             }
             *title = trimmed[..idx].to_owned();
         }
@@ -302,7 +305,9 @@ pub fn channel(name: &str) -> Cleaned {
     let mut region = None;
     if let Some(m) = PREFIX.captures(&s) {
         // keep event-style names ("US (ESPN+ 358) | ...") untouched
-        let rest = s[m.get(0).unwrap().end()..].trim().to_owned();
+        let rest = s[m.get(0).expect("group 0 is the whole match").end()..]
+            .trim()
+            .to_owned();
         if !rest.is_empty() {
             region = Some(m[1].to_owned());
             s = rest;
@@ -334,18 +339,18 @@ pub fn title(name: &str) -> CleanedTitle {
     let mut tag = None;
     if let Some(m) = TAG_PREFIX.captures(&s) {
         tag = Some(m[1].to_owned());
-        s = s[m.get(0).unwrap().end()..].to_owned();
+        s = s[m.get(0).expect("group 0 is the whole match").end()..].to_owned();
     }
     let mut year = None;
     // strip trailing "(US)" / "(2021)" in any order
     for _ in 0..3 {
         if let Some(m) = TRAILING_COUNTRY.captures(&s) {
-            s.truncate(m.get(0).unwrap().start());
+            s.truncate(m.get(0).expect("group 0 is the whole match").start());
             continue;
         }
         if let Some(m) = TRAILING_YEAR.captures(&s) {
             year = year.or_else(|| m[1].parse().ok());
-            s.truncate(m.get(0).unwrap().start());
+            s.truncate(m.get(0).expect("group 0 is the whole match").start());
             continue;
         }
         break;

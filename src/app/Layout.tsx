@@ -4,7 +4,8 @@ import { useEffect } from "react";
 import { NavLink, Outlet, useLocation, useMatches, useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { useSync } from "../stores/sync";
+import { ROUTES } from "../lib/routes";
+import { runningSync, useSync } from "../stores/sync";
 import { control, usePlayer } from "../stores/player";
 import { Artwork } from "../components/media";
 import { IconButton, LiveDot } from "../components/ui";
@@ -24,13 +25,17 @@ const NAV = [
 ];
 
 /**
- * Should an off-page keydown go to the (hidden) player? Space/K/M only, no
- * modifiers, not while a control has focus (spatial nav activates on Space),
- * and not on the player page (its own handler owns the keys there).
+ * Should an off-page keydown go to the (hidden) player? Only while something
+ * plays; Space/K/M only, no modifiers, not while a control has focus (spatial
+ * nav activates on Space), and not on the player page (its own handler owns
+ * the keys there).
  */
-export function offPageKey(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }, opts: { pathname: string; onBody: boolean }): "play" | "mute" | null {
-  if (usePlayer.getState().now === null) return null;
-  if (opts.pathname === "/player") return null;
+export function offPageKey(
+  e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean },
+  opts: { pathname: string; onBody: boolean; playing: boolean },
+): "play" | "mute" | null {
+  if (!opts.playing) return null;
+  if (opts.pathname === ROUTES.player) return null;
   if (e.ctrlKey || e.metaKey || e.altKey) return null;
   if (e.key === " " || e.key === "k" || e.key === "K") return opts.onBody ? "play" : null;
   if (e.key === "m" || e.key === "M") return "mute";
@@ -62,10 +67,10 @@ export function Layout() {
       // straight to that player instead of doing nothing. Space with a
       // focused control belongs to it (spatial nav activates on Space).
       const onBody = !(document.activeElement instanceof HTMLElement) || document.activeElement === document.body;
-      const action = offPageKey(e, { pathname: location.pathname, onBody });
+      const action = offPageKey(e, { pathname: location.pathname, onBody, playing: usePlayer.getState().now !== null });
       if (action === "play") {
         e.preventDefault();
-        navigate("/player");
+        navigate(ROUTES.player);
       } else if (action === "mute") {
         e.preventDefault();
         void control.setMute(!usePlayer.getState().props.mute);
@@ -160,7 +165,7 @@ function NowPlayingCard() {
   }
   return (
     <button
-      onClick={() => navigate("/player")}
+      onClick={() => navigate(ROUTES.player)}
       className="mx-3 mb-3 flex items-center gap-3 rounded-xl bg-white/[0.05] p-2 text-left ring-1 ring-white/[0.06] transition-colors hover:bg-white/[0.09]"
     >
       <div className="relative shrink-0">
@@ -218,12 +223,11 @@ function CastNotice({ text }: { text: string }) {
 }
 
 function SyncStatus() {
-  const bySource = useSync((s) => s.bySource);
+  const running = useSync(runningSync);
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources });
-  const running = Object.entries(bySource).find(([, v]) => v.running);
   const backendRunning = sources.data?.find((s) => s.syncing);
   if (!running && !backendRunning) return null;
-  const message = running?.[1].message || "Updating library…";
+  const message = running?.message || "Updating library…";
   return (
     <div className="mx-3 mb-3 flex items-center gap-2.5 rounded-xl bg-accent/10 px-3 py-2.5 text-[12.5px] text-accent-strong ring-1 ring-accent/20">
       <RefreshCw className="size-4 shrink-0 animate-spin" />

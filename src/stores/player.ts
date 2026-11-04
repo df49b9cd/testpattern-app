@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { api, errorMessage } from "../lib/api";
+import { playerWrite } from "../lib/playerWrite";
 import { invalidateWatchState, queryClient } from "../lib/queryClient";
+import { writeSetting } from "../lib/settings";
 import type { CastDevice, CastMeta, CastStatus, Channel, PlayKind, PlayRequest, PlayerEvent, Track } from "../lib/types";
 
 /** What is (or is about to be) playing, with enough context for the UI. */
@@ -291,7 +293,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     const { now, props, cast } = get();
     const saved = !!now && (await saveProgress(now, props));
     set({ now: null, status: "idle", error: null, pip: false, cast: null });
-    await (cast ? api.castStop() : api.stop()).catch(() => {});
+    await playerWrite(cast ? api.castStop() : api.stop());
     // the page we return to may show this item's progress
     if (saved) invalidateWatchState();
   },
@@ -329,7 +331,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   stopCasting: async () => {
     if (!get().cast) return;
     set({ cast: null });
-    await api.castStop().catch(() => {});
+    await playerWrite(api.castStop());
     continueHere();
   },
 
@@ -377,15 +379,23 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   },
 }));
 
+/**
+ * Re-reads this computer's volume + mute from mpv into the store: at startup
+ * (mpv applied the saved volume before the UI was listening) and after
+ * casting (the TV's volume was showing).
+ */
+export function syncLocalVolume(): Promise<boolean> {
+  return playerWrite(
+    Promise.all([api.get<number>("volume"), api.get<boolean>("mute")]).then(([volume, mute]) =>
+      usePlayer.setState((s) => ({ props: { ...s.props, volume: volume ?? s.props.volume, mute: mute ?? s.props.mute } })),
+    ),
+  );
+}
+
 /** After casting: a movie or episode continues here (paused), live TV stops. */
 function continueHere() {
   const { now, props } = usePlayer.getState();
-  // the TV's volume was showing: back to this computer's
-  void Promise.all([api.get<number>("volume"), api.get<boolean>("mute")])
-    .then(([volume, mute]) =>
-      usePlayer.setState((s) => ({ props: { ...s.props, volume: volume ?? s.props.volume, mute: mute ?? s.props.mute } })),
-    )
-    .catch(() => {});
+  void syncLocalVolume();
   if (!now) return;
   if (now.kind === "live") {
     usePlayer.setState({ now: null, status: "idle", error: null, props: { ...props, eof: false } });
@@ -394,56 +404,55 @@ function continueHere() {
   void usePlayer.getState().play({ ...now, start: props.timePos || now.start, paused: true });
 }
 
+/** mpv's volume ceiling (`volume-max`, player/mod.rs; the saved volume is clamped the same in settings.rs). */
+export const MAX_VOLUME_LOCAL = 150;
+/** The TV's scale (its 0…1 level as percent). */
+export const MAX_VOLUME_CAST = 100;
+/** The volume ceiling of whichever side is playing. */
+export const maxVolume = () => (usePlayer.getState().cast ? MAX_VOLUME_CAST : MAX_VOLUME_LOCAL);
+
 /**
  * Playback controls for whichever side is playing: this computer (mpv) or
- * the TV being cast to.
+ * the TV being cast to. Fire-and-forget: each resolves true when the write
+ * landed; a failure is logged and handed to `onError`.
  */
 export const control = {
-  setPause(pause: boolean) {
-    if (usePlayer.getState().cast) return api.castControl(pause ? "pause" : "play").catch(() => {});
-    return api.set("pause", pause).catch(() => {});
+  setPause(pause: boolean, onError?: (message: string) => void) {
+    if (usePlayer.getState().cast) return playerWrite(api.castControl(pause ? "pause" : "play"), onError);
+    return playerWrite(api.set("pause", pause), onError);
   },
-  seekTo(seconds: number) {
+  seekTo(seconds: number, onError?: (message: string) => void) {
     const { cast, props } = usePlayer.getState();
-    if (!cast) return api.command("seek", seconds.toFixed(2), "absolute").catch(() => {});
+    if (!cast) return playerWrite(api.command("seek", seconds.toFixed(2), "absolute"), onError);
     const t = Math.max(0, props.duration > 0 ? Math.min(seconds, props.duration - 1) : seconds);
     usePlayer.setState({ props: { ...props, timePos: t } });
-    return api.castControl("seek", t).catch(() => {});
+    return playerWrite(api.castControl("seek", t), onError);
   },
-  seekBy(seconds: number) {
+  seekBy(seconds: number, onError?: (message: string) => void) {
     const { cast, props } = usePlayer.getState();
-    if (!cast) return api.command("seek", seconds, "relative").catch(() => {});
-    return control.seekTo(props.timePos + seconds);
+    if (!cast) return playerWrite(api.command("seek", seconds, "relative"), onError);
+    return control.seekTo(props.timePos + seconds, onError);
   },
-  /** mpv scale: 0…150 (the TV's 0…100) */
-  setVolume(volume: number) {
-    if (usePlayer.getState().cast) return api.castControl("volume", Math.min(100, volume) / 100).catch(() => {});
-    return api.set("volume", volume).catch(() => {});
+  /** 0…MAX_VOLUME_LOCAL here, 0…MAX_VOLUME_CAST on the TV; clamped to the side's range */
+  setVolume(volume: number, onError?: (message: string) => void) {
+    const v = Math.max(0, Math.min(maxVolume(), volume));
+    if (usePlayer.getState().cast) return playerWrite(api.castControl("volume", v / 100), onError);
+    return playerWrite(api.set("volume", v), onError);
   },
-  setMute(mute: boolean) {
-    if (usePlayer.getState().cast) return api.castControl("mute", mute ? 1 : 0).catch(() => {});
-    return api.set("mute", mute).catch(() => {});
+  setMute(mute: boolean, onError?: (message: string) => void) {
+    if (usePlayer.getState().cast) return playerWrite(api.castControl("mute", mute ? 1 : 0), onError);
+    return playerWrite(api.set("mute", mute), onError);
   },
 };
 
 /**
  * Subtitles on/off from the player chrome (PL-99): persists the setting and
- * settings.rs applies mpv `sub-visibility` right away. The settings cache is
- * patched so both toggles (player + Settings page) stay in sync; a failed
- * write rolls the patch back instead of diverging from the backend.
+ * settings.rs applies mpv `sub-visibility` right away. Through writeSetting,
+ * so both toggles (player + Settings page) stay in sync and a failed write
+ * rolls back; rejects on failure.
  */
 export function setSubsEnabled(v: boolean): Promise<void> {
-  const cur = queryClient.getQueryData<Record<string, unknown>>(["settings"]);
-  queryClient.setQueryData(["settings"], { ...cur, "player.subsEnabled": v });
-  return api.setSetting("player.subsEnabled", v).catch((e) => {
-    queryClient.setQueryData(["settings"], (c: Record<string, unknown> | undefined) => ({ ...c, "player.subsEnabled": cur?.["player.subsEnabled"] }));
-    throw e;
-  });
-}
-
-/** Toggle-the-subtitles helper shared by Player.tsx ("S" key) and its menu. */
-export function toggleSubs(): void {
-  void setSubsEnabled(!usePlayer.getState().props.subVisible).catch(() => {});
+  return writeSetting(queryClient, "player.subsEnabled", v);
 }
 
 /**
@@ -476,7 +485,7 @@ let volumeTimer = 0;
 /** Persists the volume (applied at startup, settings.rs) once it settles. */
 function rememberVolume(volume: number) {
   window.clearTimeout(volumeTimer);
-  volumeTimer = window.setTimeout(() => void api.setSetting("player.volume", Math.round(volume)).catch(() => {}), 1000);
+  volumeTimer = window.setTimeout(() => void playerWrite(api.setSetting("player.volume", Math.round(volume))), 1000);
 }
 
 /**
@@ -487,8 +496,8 @@ function rememberVolume(volume: number) {
 export async function saveProgress(np: NowPlaying, p: PlaybackProps): Promise<boolean> {
   if (np.kind !== "movie" && np.kind !== "episode") return false;
   if (p.duration <= 0) return false;
-  return api
-    .updateHistory({
+  return playerWrite(
+    api.updateHistory({
       kind: np.kind,
       sourceId: np.sourceId,
       itemId: np.id,
@@ -502,9 +511,8 @@ export async function saveProgress(np: NowPlaying, p: PlaybackProps): Promise<bo
       ext: np.ext ?? null,
       position: p.timePos,
       duration: p.duration,
-    })
-    .then(() => true)
-    .catch(() => false);
+    }),
+  );
 }
 
 /**
@@ -519,6 +527,6 @@ export async function setVideoViewport(rect: DOMRect | null): Promise<void> {
     ? { left: rect.left / W, right: (W - rect.right) / W, top: rect.top / H, bottom: (H - rect.bottom) / H }
     : { left: 0, right: 0, top: 0, bottom: 0 };
   await Promise.all(
-    Object.entries(m).map(([side, v]) => api.set(`video-margin-ratio-${side}`, clamp(v)).catch(() => {})),
+    Object.entries(m).map(([side, v]) => playerWrite(api.set(`video-margin-ratio-${side}`, clamp(v)))),
   );
 }

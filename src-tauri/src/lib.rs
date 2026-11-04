@@ -6,6 +6,7 @@ mod devtools;
 mod epg;
 mod error;
 mod images;
+mod kind;
 mod library;
 mod names;
 mod playback;
@@ -27,6 +28,10 @@ use tauri::Manager;
 /// Catalog / EPG refresh policy for background syncs.
 const CATALOG_MAX_AGE: i64 = 12 * 3600;
 const EPG_MAX_AGE: i64 = 6 * 3600;
+const STALE_CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
+const CACHE_LIMIT_DELAY: Duration = Duration::from_secs(60);
+const CACHE_LIMIT_EVERY: Duration = Duration::from_secs(6 * 3600);
+const TMDB_DELAY: Duration = Duration::from_secs(20);
 
 pub fn run() {
     env_logger::Builder::from_env(
@@ -70,10 +75,11 @@ pub fn run() {
                 syncing: Default::default(),
             });
             app.manage(st.clone());
+            app.manage(Arc::new(probe::Probe::default()));
 
             let window = app.get_webview_window("main").expect("main window");
             match player::init(app.handle(), &window) {
-                Ok(()) => settings::apply_player(app.handle(), &st, None),
+                Ok(()) => settings::apply_player(app.handle(), &st.db.read(), None),
                 Err(e) => log::error!("native player unavailable: {e}"),
             }
             cast::init(app.handle());
@@ -84,31 +90,31 @@ pub fn run() {
             // Artwork cache size limit: shortly after startup, then every 6 h.
             let cache_state = st.clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                let mut tick = tokio::time::interval(Duration::from_secs(6 * 3600));
+                tokio::time::sleep(CACHE_LIMIT_DELAY).await;
+                let mut tick = tokio::time::interval(CACHE_LIMIT_EVERY);
                 loop {
                     tick.tick().await;
                     images::enforce_limit(cache_state.clone()).await;
                 }
             });
 
-            // Keep catalogs and guides fresh: a first pass as soon as the
             // TMDB details of titles added since the last run (tmdb.rs), after
             // startup settled; syncs start further runs.
             let (tmdb_app, tmdb_state) = (app.handle().clone(), st.clone());
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(20)).await;
+                tokio::time::sleep(TMDB_DELAY).await;
                 tmdb::spawn(tmdb_app, tmdb_state);
             });
 
+            // Keep catalogs and guides fresh: a first pass as soon as the
             // keyring passwords are loaded (secrets.rs), then every 30 min.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 secrets::startup(&st).await;
-                let mut tick = tokio::time::interval(Duration::from_secs(30 * 60));
+                let mut tick = tokio::time::interval(STALE_CHECK_EVERY);
                 tick.tick().await;
                 loop {
-                    sources::sync_stale(&handle, &st, CATALOG_MAX_AGE, EPG_MAX_AGE);
+                    sources::sync_stale(&handle, &st, CATALOG_MAX_AGE, EPG_MAX_AGE).await;
                     tick.tick().await;
                     // a keyring that was locked until now (no prompt)
                     secrets::ensure_loaded(&st, None, secrets::Unlock::Never).await;

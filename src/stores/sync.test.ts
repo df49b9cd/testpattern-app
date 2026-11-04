@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { anySyncRunning, useSync } from "./sync";
+import { runningSync, useSync } from "./sync";
 
 describe("sync progress", () => {
   it("follows a sync from start to finish", () => {
     const { apply } = useSync.getState();
     apply({ stage: "started", sourceId: 7 });
     expect(useSync.getState().bySource[7]).toMatchObject({ running: true, error: null });
-    expect(anySyncRunning(useSync.getState())).toBe(true);
+    expect(runningSync(useSync.getState())).toMatchObject({ running: true, message: "Starting…" });
     apply({ stage: "step", sourceId: 7, message: "Saving…" });
     expect(useSync.getState().bySource[7].message).toBe("Saving…");
     apply({ stage: "done", sourceId: 7, counts: { channels: 1, movies: 0, series: 0, programmes: 0 } });
     expect(useSync.getState().bySource[7]).toMatchObject({ running: false, message: "Up to date" });
-    expect(anySyncRunning(useSync.getState())).toBe(false);
+    expect(runningSync(useSync.getState())).toBeUndefined();
   });
   it("keeps the error of a failed sync until the next one starts", () => {
     const { apply } = useSync.getState();

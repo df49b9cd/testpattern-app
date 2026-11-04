@@ -19,6 +19,14 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
+/// How long the device gets to send its request.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// A device that stops reading this long has gone; ends the stream.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Pause before a second round of the stream and its mirrors, for an
+/// account whose previous provider connection is still closing.
+const RETRY_PAUSE: Duration = Duration::from_millis(1500);
+
 #[repr(C)]
 struct TpRemux {
     url: *const c_char,
@@ -92,16 +100,20 @@ impl Relay {
         let port = listener.local_addr()?.port();
         let shared: Arc<Mutex<Shared>> = Arc::default();
         let accept = shared.clone();
-        std::thread::Builder::new().name("cast-relay".into()).spawn(move || {
-            for conn in listener.incoming().flatten() {
-                let shared = accept.clone();
-                let _ = std::thread::Builder::new().name("cast-stream".into()).spawn(move || {
-                    if let Err(e) = serve(conn, &shared) {
-                        log::debug!("cast relay: {e}");
-                    }
-                });
-            }
-        })?;
+        std::thread::Builder::new()
+            .name("cast-relay".into())
+            .spawn(move || {
+                for conn in listener.incoming().flatten() {
+                    let shared = accept.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("cast-stream".into())
+                        .spawn(move || {
+                            if let Err(e) = serve(conn, &shared) {
+                                log::debug!("cast relay: {e}");
+                            }
+                        });
+                }
+            })?;
         log::info!("cast relay listening on port {port}");
         Ok(Relay { port, shared })
     }
@@ -115,7 +127,14 @@ impl Relay {
         }
         s.entries.insert(
             token.clone(),
-            Entry { source, peer, starts: HashMap::new(), active: None, on_start, error: None },
+            Entry {
+                source,
+                peer,
+                starts: HashMap::new(),
+                active: None,
+                on_start,
+                error: None,
+            },
         );
         token
     }
@@ -130,7 +149,11 @@ impl Relay {
 
     /// Why the last request of `token` failed, if it did.
     pub fn error(&self, token: &str) -> Option<String> {
-        self.shared.lock().entries.get(token).and_then(|e| e.error.clone())
+        self.shared
+            .lock()
+            .entries
+            .get(token)
+            .and_then(|e| e.error.clone())
     }
 
     pub fn unpublish(&self, token: &str) {
@@ -140,7 +163,10 @@ impl Relay {
     }
 
     pub fn url(&self, local: IpAddr, token: &str, n: u32) -> String {
-        format!("http://{}/cast/{token}/{n}.mp4", SocketAddr::new(local, self.port))
+        format!(
+            "http://{}/cast/{token}/{n}.mp4",
+            SocketAddr::new(local, self.port)
+        )
     }
 }
 
@@ -165,7 +191,10 @@ fn parse_path(path: &str) -> Option<(&str, u32)> {
 }
 
 fn respond(conn: &mut TcpStream, status: &str) -> std::io::Result<()> {
-    write!(conn, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    write!(
+        conn,
+        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
 }
 
 /// An endless stream: no length, no ranges.
@@ -173,7 +202,7 @@ const STREAM_HEADERS: &str = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nAcce
                               Cache-Control: no-store\r\nConnection: close\r\n\r\n";
 
 fn serve(mut conn: TcpStream, shared: &Mutex<Shared>) -> std::io::Result<()> {
-    conn.set_read_timeout(Some(Duration::from_secs(10)))?;
+    conn.set_read_timeout(Some(READ_TIMEOUT))?;
     let peer = conn.peer_addr()?.ip();
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut request = String::new();
@@ -189,32 +218,56 @@ fn serve(mut conn: TcpStream, shared: &Mutex<Shared>) -> std::io::Result<()> {
     if method != "GET" && method != "HEAD" {
         return respond(&mut conn, "405 Method Not Allowed");
     }
-    let Some((token, n)) = parse_path(path) else { return respond(&mut conn, "404 Not Found") };
+    let Some((token, n)) = parse_path(path) else {
+        return respond(&mut conn, "404 Not Found");
+    };
     if method == "HEAD" {
-        let known = shared.lock().entries.get(token).is_some_and(|e| e.peer == peer || peer.is_loopback());
-        return if known { conn.write_all(STREAM_HEADERS.as_bytes()) } else { respond(&mut conn, "404 Not Found") };
+        let known = shared
+            .lock()
+            .entries
+            .get(token)
+            .is_some_and(|e| e.peer == peer || peer.is_loopback());
+        return if known {
+            conn.write_all(STREAM_HEADERS.as_bytes())
+        } else {
+            respond(&mut conn, "404 Not Found")
+        };
     }
     let job = {
         let mut s = shared.lock();
-        s.entries.get_mut(token).filter(|e| e.peer == peer || peer.is_loopback()).map(|e| {
-            // one provider connection at a time
-            stop(e);
-            let flag = Arc::new(AtomicBool::new(false));
-            e.active = Some(flag.clone());
-            (e.source.clone(), e.starts.get(&n).copied().unwrap_or(0.0), flag, e.on_start.clone())
-        })
+        s.entries
+            .get_mut(token)
+            .filter(|e| e.peer == peer || peer.is_loopback())
+            .map(|e| {
+                // one provider connection at a time
+                stop(e);
+                let flag = Arc::new(AtomicBool::new(false));
+                e.active = Some(flag.clone());
+                (
+                    e.source.clone(),
+                    e.starts.get(&n).copied().unwrap_or(0.0),
+                    flag,
+                    e.on_start.clone(),
+                )
+            })
     };
-    let Some((source, start, flag, on_start)) = job else { return respond(&mut conn, "404 Not Found") };
+    let Some((source, start, flag, on_start)) = job else {
+        return respond(&mut conn, "404 Not Found");
+    };
 
-    conn.set_write_timeout(Some(Duration::from_secs(30)))?;
+    conn.set_write_timeout(Some(WRITE_TIMEOUT))?;
     log::info!("cast relay: stream #{n} from {start:.1} s to {peer}");
-    let mut sink = Sink { conn, sent: false, stop: flag, on_start: Some(Box::new(move |s| on_start(n, s))) };
+    let mut sink = Sink {
+        conn,
+        sent: false,
+        stop: flag,
+        on_start: Some(Box::new(move |s| on_start(n, s))),
+    };
     let mut result = Err(String::new());
-    // the stream, then its mirrors; a second round after a pause, for an
-    // account whose previous connection is still closing
+    // the stream, then its mirrors; a second round after `RETRY_PAUSE`
     'rounds: for round in 0..2 {
         if round > 0 {
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(RETRY_PAUSE);
         }
         for url in &source.urls {
             if sink.stop.load(Ordering::Relaxed) {
@@ -229,7 +282,10 @@ fn serve(mut conn: TcpStream, shared: &Mutex<Shared>) -> std::io::Result<()> {
     }
     let stopped = sink.stop.load(Ordering::Relaxed);
     match result {
-        Ok(()) => log::info!("cast relay: stream #{n} {}", if stopped { "stopped" } else { "ended" }),
+        Ok(()) => log::info!(
+            "cast relay: stream #{n} {}",
+            if stopped { "stopped" } else { "ended" }
+        ),
         Err(_) if stopped => log::info!("cast relay: stream #{n} stopped"),
         Err(e) => {
             let e = crate::player::redact(&e);
@@ -253,8 +309,16 @@ struct Sink {
     on_start: Option<Box<dyn FnOnce(Started)>>,
 }
 
+// The three callbacks run on the thread inside `tp_remux_run`, which
+// `run_remux` blocks on; `opaque` is its `&mut Sink`, exclusively borrowed
+// for the whole call, and remux.c never calls them concurrently.
+
 extern "C" fn sink_write(opaque: *mut c_void, buf: *const u8, len: c_int) -> c_int {
+    // SAFETY: `opaque` is the `&mut Sink` `run_remux` lent to this call (see
+    // above); no other reference to it is live while the callback runs.
     let sink = unsafe { &mut *(opaque as *mut Sink) };
+    // SAFETY: FFmpeg's AVIO write callback passes `len` initialized bytes at
+    // `buf`, valid for the duration of the call.
     let data = unsafe { std::slice::from_raw_parts(buf, len.max(0) as usize) };
     if sink.stop.load(Ordering::Relaxed) {
         return -1;
@@ -265,15 +329,23 @@ extern "C" fn sink_write(opaque: *mut c_void, buf: *const u8, len: c_int) -> c_i
             return -1;
         }
     }
-    if sink.conn.write_all(data).is_err() { -1 } else { 0 }
+    if sink.conn.write_all(data).is_err() {
+        -1
+    } else {
+        0
+    }
 }
 
 extern "C" fn sink_aborted(opaque: *mut c_void) -> c_int {
+    // SAFETY: `opaque` is the `&mut Sink` `run_remux` lent to this call (see
+    // above), read here only.
     let sink = unsafe { &*(opaque as *const Sink) };
     sink.stop.load(Ordering::Relaxed) as c_int
 }
 
 extern "C" fn sink_started(opaque: *mut c_void, duration: f64, first: f64) {
+    // SAFETY: `opaque` is the `&mut Sink` `run_remux` lent to this call (see
+    // above); no other reference to it is live while the callback runs.
     let sink = unsafe { &mut *(opaque as *mut Sink) };
     if let Some(f) = sink.on_start.take() {
         f(Started { duration, first });
@@ -285,7 +357,12 @@ extern "C" fn sink_started(opaque: *mut c_void, duration: f64, first: f64) {
 fn run_remux(source: &Source, url: &str, start: f64, sink: &mut Sink) -> Result<(), String> {
     let cstr = |s: &str| CString::new(s).map_err(|_| "invalid stream address".to_owned());
     let url = cstr(url)?;
-    let ua = cstr(source.user_agent.as_deref().unwrap_or(crate::player::USER_AGENT))?;
+    let ua = cstr(
+        source
+            .user_agent
+            .as_deref()
+            .unwrap_or(crate::player::USER_AGENT),
+    )?;
     let referrer = source.referrer.as_deref().map(cstr).transpose()?;
     let audio_lang = cstr(&source.audio_lang)?;
     let mut o = TpRemux {
@@ -301,12 +378,24 @@ fn run_remux(source: &Source, url: &str, start: f64, sink: &mut Sink) -> Result<
         started: sink_started,
         error: [0; 256],
     };
+    // SAFETY: `o` matches remux.c's `tp_remux` layout (`repr(C)`); the C
+    // strings and `sink` outlive the call, which is synchronous and keeps no
+    // pointer past its return; `error` is a zeroed buffer remux.c fills with
+    // a NUL-terminated message (snprintf).
     let ret = unsafe { tp_remux_run(&mut o) };
     if ret == 0 {
         return Ok(());
     }
-    let msg = unsafe { CStr::from_ptr(o.error.as_ptr()) }.to_string_lossy().into_owned();
-    Err(if msg.is_empty() { format!("remux failed ({ret})") } else { msg })
+    // SAFETY: `error` started zeroed and remux.c only writes it with
+    // snprintf into its 256 bytes, so it is always NUL-terminated.
+    let msg = unsafe { CStr::from_ptr(o.error.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    Err(if msg.is_empty() {
+        format!("remux failed ({ret})")
+    } else {
+        msg
+    })
 }
 
 #[cfg(test)]

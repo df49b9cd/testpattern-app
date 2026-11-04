@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router";
 import { api } from "../lib/api";
+import { ROUTES } from "../lib/routes";
+import { useSettings } from "../lib/settings";
 import { useBackendEvents } from "../hooks/useBackendEvents";
 import { useProgressSaver } from "../hooks/useProgressSaver";
 import { Spinner } from "../components/ui";
@@ -22,16 +24,16 @@ export function Root() {
   const location = useLocation();
   const navigate = useNavigate();
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources });
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const settings = useSettings();
 
   // Leaving the live preview / player: video goes back to full size, and
   // live previews stop unless the player is being opened.
   // Picture-in-picture (T-034) keeps playing and positions the video itself.
   useEffect(() => {
     const { now, stop, pip } = usePlayer.getState();
-    if (pip && location.pathname !== "/player") return;
-    if (location.pathname !== "/live") void setVideoViewport(null);
-    if (now?.kind === "live" && location.pathname !== "/live" && location.pathname !== "/player") void stop();
+    if (pip && location.pathname !== ROUTES.player) return;
+    if (location.pathname !== ROUTES.live) void setVideoViewport(null);
+    if (now?.kind === "live" && location.pathname !== ROUTES.live && location.pathname !== ROUTES.player) void stop();
   }, [location.pathname]);
 
   useEffect(() => {

@@ -211,7 +211,3 @@ export function Segmented<T extends string>({ value, options, onChange, classNam
     </div>
   );
 }
-
-export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="rounded-md bg-white/10 px-1.5 py-0.5 font-sans text-[11px] font-semibold text-dim ring-1 ring-white/10">{children}</kbd>;
-}

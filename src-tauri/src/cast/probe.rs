@@ -27,17 +27,38 @@ struct EurekaInfo {
 
 /// mDNS TXT `id` and eureka `ssdp_udn` name the same device: one key for both.
 pub fn normalize_id(id: &str) -> String {
-    id.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>().to_lowercase()
+    id.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 /// Asks `ip` whether it is a Cast device; its name and id if so.
 pub async fn probe(http: &reqwest::Client, ip: IpAddr) -> Option<Device> {
-    let url = format!("http://{}/setup/eureka_info?params=name,device_info", SocketAddr::new(ip, SETUP_PORT));
-    let info: EurekaInfo = http.get(url).timeout(Duration::from_secs(3)).send().await.ok()?.json().await.ok()?;
-    let id = info.ssdp_udn.or(info.mac_address).map(|i| normalize_id(&i)).filter(|i| !i.is_empty())?;
+    let url = format!(
+        "http://{}/setup/eureka_info?params=name,device_info",
+        SocketAddr::new(ip, SETUP_PORT)
+    );
+    let info: EurekaInfo = http
+        .get(url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let id = info
+        .ssdp_udn
+        .or(info.mac_address)
+        .map(|i| normalize_id(&i))
+        .filter(|i| !i.is_empty())?;
     Some(Device {
         id,
-        name: info.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Chromecast ({ip})")),
+        name: info
+            .name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| format!("Chromecast ({ip})")),
         // eureka_info doesn't say; a device that answers is a Cast device
         model: String::new(),
         addr: SocketAddr::new(ip, CAST_PORT),
@@ -48,7 +69,9 @@ pub async fn probe(http: &reqwest::Client, ip: IpAddr) -> Option<Device> {
 /// This computer's private IPv4 networks of at most 256 addresses (larger
 /// ones would take too long to sweep; "Add by address" covers them).
 pub fn local_networks() -> Vec<(Ipv4Addr, u8)> {
-    let Ok(ifaces) = if_addrs::get_if_addrs() else { return Vec::new() };
+    let Ok(ifaces) = if_addrs::get_if_addrs() else {
+        return Vec::new();
+    };
     let mut out: Vec<(Ipv4Addr, u8)> = ifaces
         .into_iter()
         .filter(|i| !i.is_loopback())
@@ -68,7 +91,10 @@ pub fn hosts(ip: Ipv4Addr, prefix: u8) -> Vec<Ipv4Addr> {
     let mask = u32::MAX << (32 - prefix);
     let net = u32::from(ip) & mask;
     let broadcast = net | !mask;
-    (net + 1..broadcast).map(Ipv4Addr::from).filter(|h| *h != ip).collect()
+    (net + 1..broadcast)
+        .map(Ipv4Addr::from)
+        .filter(|h| *h != ip)
+        .collect()
 }
 
 /// Addresses on `networks` with the Cast port open (a ~1 s parallel sweep).
@@ -78,9 +104,12 @@ pub async fn sweep(networks: &[(Ipv4Addr, u8)]) -> Vec<IpAddr> {
         for host in hosts(ip, prefix) {
             tasks.spawn(async move {
                 let addr = SocketAddr::new(IpAddr::V4(host), CAST_PORT);
-                let open = tokio::time::timeout(Duration::from_millis(900), tokio::net::TcpStream::connect(addr))
-                    .await
-                    .is_ok_and(|c| c.is_ok());
+                let open = tokio::time::timeout(
+                    Duration::from_millis(900),
+                    tokio::net::TcpStream::connect(addr),
+                )
+                .await
+                .is_ok_and(|c| c.is_ok());
                 open.then_some(IpAddr::V4(host))
             });
         }
@@ -99,7 +128,10 @@ pub async fn sweep(networks: &[(Ipv4Addr, u8)]) -> Vec<IpAddr> {
 pub fn parse_address(input: &str) -> Option<IpAddr> {
     let s = input.trim();
     let host = s.strip_suffix(&format!(":{CAST_PORT}")).unwrap_or(s);
-    host.parse::<Ipv4Addr>().ok().filter(|ip| !ip.is_loopback() && !ip.is_unspecified()).map(IpAddr::V4)
+    host.parse::<Ipv4Addr>()
+        .ok()
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+        .map(IpAddr::V4)
 }
 
 #[cfg(test)]
@@ -109,7 +141,10 @@ mod tests {
     #[test]
     fn mdns_and_setup_ids_match() {
         // mDNS TXT id vs. eureka_info ssdp_udn of the same Chromecast
-        assert_eq!(normalize_id("ce33bf0d7d2ab19d3115eca1c2a3b577"), normalize_id("ce33bf0d-7d2a-b19d-3115-eca1c2a3b577"));
+        assert_eq!(
+            normalize_id("ce33bf0d7d2ab19d3115eca1c2a3b577"),
+            normalize_id("ce33bf0d-7d2a-b19d-3115-eca1c2a3b577")
+        );
         assert_eq!(normalize_id("B0:2A:43:3D:1D:DC"), "b02a433d1ddc");
     }
 
@@ -126,8 +161,14 @@ mod tests {
 
     #[test]
     fn parses_typed_addresses() {
-        assert_eq!(parse_address(" 192.168.8.17 "), Some("192.168.8.17".parse().unwrap()));
-        assert_eq!(parse_address("192.168.8.17:8009"), Some("192.168.8.17".parse().unwrap()));
+        assert_eq!(
+            parse_address(" 192.168.8.17 "),
+            Some("192.168.8.17".parse().unwrap())
+        );
+        assert_eq!(
+            parse_address("192.168.8.17:8009"),
+            Some("192.168.8.17".parse().unwrap())
+        );
         assert_eq!(parse_address("127.0.0.1"), None);
         assert_eq!(parse_address("tv.local"), None);
         assert_eq!(parse_address("192.168.8"), None);

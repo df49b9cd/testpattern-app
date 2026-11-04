@@ -98,10 +98,11 @@ impl Entry {
             return None;
         }
         static SXXEYY: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"(?i)^(.*?)[\s._-]*\bS(\d{1,3})[\s._-]*E(\d{1,4})\b(.*)$").unwrap()
+            Regex::new(r"(?i)^(.*?)[\s._-]*\bS(\d{1,3})[\s._-]*E(\d{1,4})\b(.*)$")
+                .expect("valid regex")
         });
         static NXNN: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"(?i)^(.*?)[\s._-]*\b(\d{1,2})x(\d{2,3})\b(.*)$").unwrap()
+            Regex::new(r"(?i)^(.*?)[\s._-]*\b(\d{1,2})x(\d{2,3})\b(.*)$").expect("valid regex")
         });
         let name = self.name.trim();
         let c = SXXEYY.captures(name).or_else(|| NXNN.captures(name))?;
@@ -341,7 +342,7 @@ pub fn catchup_url(
 
 fn fill_placeholders(template: &str, start: i64, duration: i64, now: i64, shift: i64) -> String {
     static PLACEHOLDER: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\$?\{([A-Za-z-]+)(?::([^}]*))?\}").unwrap());
+        LazyLock::new(|| Regex::new(r"\$?\{([A-Za-z-]+)(?::([^}]*))?\}").expect("valid regex"));
     PLACEHOLDER
         .replace_all(template, |c: &Captures| {
             let arg = c.get(2).map(|m| m.as_str());
@@ -401,7 +402,7 @@ fn flussonic_url(url: &str, start: i64, duration: i64) -> Option<String> {
 fn xtream_url(url: &str, start: i64, duration: i64) -> Option<String> {
     static LIVE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^(https?://[^/?#]+)/(?:live/)?([^/?#]+)/([^/?#]+)/(\d+)(?:\.[A-Za-z0-9]+)?$")
-            .unwrap()
+            .expect("valid regex")
     });
     let c = LIVE.captures(url)?;
     let minutes = ((duration + 59) / 60).max(1);

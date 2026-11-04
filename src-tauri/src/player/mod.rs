@@ -8,6 +8,8 @@ mod macos;
 pub mod mpv;
 /// libmpv constants (also used by `crate::probe` for a `video-params` node watch).
 pub(crate) mod mpv_sys;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod render;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,11 +20,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
+use crate::error::Error;
+use crate::kind::ItemKind;
 use mpv::{EndReason, Event, Mpv};
-use mpv_sys::*;
+use mpv_sys::{
+    MPV_FORMAT_DOUBLE, MPV_FORMAT_FLAG, MPV_FORMAT_INT64, MPV_FORMAT_NODE, MPV_FORMAT_STRING,
+    mpv_format,
+};
 
 pub const EVENT: &str = "player://event";
 pub const USER_AGENT: &str = concat!("testpattern/", env!("CARGO_PKG_VERSION"));
+
+/// `time-pos` changes every frame; ~5 Hz is plenty for the UI.
+const TIME_POS_INTERVAL: Duration = Duration::from_millis(200);
+/// A live stream that played this long earns a fresh reconnect budget.
+const RECONNECT_BUDGET_RESET: Duration = Duration::from_secs(30);
+/// Automatic re-opens of a live stream before giving up.
+const MAX_RECONNECTS: u32 = 5;
+/// Reconnect backoff: attempt `n` waits `n` times this.
+const RECONNECT_BACKOFF_STEP: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(
@@ -56,8 +72,8 @@ pub enum PlayerEvent {
 /// learns about its tracks can be stored for the version picker.
 #[derive(Debug, Clone)]
 pub struct MediaRef {
-    /// "movie" | "episode"
-    pub kind: &'static str,
+    /// Movie or Episode
+    pub kind: ItemKind,
     pub source_id: i64,
     pub id: String,
 }
@@ -187,6 +203,9 @@ impl Player {
     fn new<R: Runtime>(app: &AppHandle<R>) -> Result<Self, mpv::MpvError> {
         // libmpv refuses to start unless numbers are formatted the C way; GTK
         // has already applied the user's locale at this point.
+        // SAFETY: a static C string for the locale name; this runs once in
+        // the setup hook, before mpv or any other thread of ours reads the
+        // locale (setlocale is not thread-safe against concurrent locale use).
         unsafe { libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr()) };
         let mpv = Arc::new(Mpv::new(&[
             ("vo", "libmpv"),
@@ -239,7 +258,8 @@ impl Player {
         std::thread::Builder::new()
             .name("mpv-events".into())
             .spawn(move || {
-                let mut last_time_emit = Instant::now() - Duration::from_secs(1);
+                // None: emit the next time-pos right away
+                let mut last_time_emit: Option<Instant> = None;
                 loop {
                     let Some(ev) = mpv.wait_event(-1.0) else {
                         continue;
@@ -247,12 +267,11 @@ impl Player {
                     let out = match ev {
                         Event::Shutdown => break,
                         Event::PropertyChange { name, value } => {
-                            // time-pos changes every frame; ~5 Hz is plenty for the UI.
                             if name == "time-pos" {
-                                if last_time_emit.elapsed() < Duration::from_millis(200) {
+                                if last_time_emit.is_some_and(|t| t.elapsed() < TIME_POS_INTERVAL) {
                                     continue;
                                 }
-                                last_time_emit = Instant::now();
+                                last_time_emit = Some(Instant::now());
                             }
                             if name == "track-list" || name == "video-params" {
                                 Self::learn_tracks(&app, &session, &name, &value);
@@ -268,7 +287,7 @@ impl Player {
                             PlayerEvent::FileLoaded
                         }
                         Event::PlaybackRestart | Event::Seek => {
-                            last_time_emit = Instant::now() - Duration::from_secs(1);
+                            last_time_emit = None;
                             if matches!(ev, Event::Seek) {
                                 continue;
                             }
@@ -383,11 +402,11 @@ impl Player {
         }
         // A stream that played fine for a while earns a fresh retry budget.
         if s.loaded_at
-            .is_some_and(|t| t.elapsed() > Duration::from_secs(30))
+            .is_some_and(|t| t.elapsed() > RECONNECT_BUDGET_RESET)
         {
             s.reconnects = 0;
         }
-        if s.reconnects >= 5 {
+        if s.reconnects >= MAX_RECONNECTS {
             if s.recording.take().is_some() {
                 let _ = mpv.set_string("stream-record", "");
             }
@@ -406,7 +425,7 @@ impl Player {
         drop(guard);
         let mpv = mpv.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500 * attempt as u64));
+            std::thread::sleep(RECONNECT_BACKOFF_STEP * attempt);
             let _ = mpv.command_async(&["loadfile", &url, "replace", "-1", &opts]);
         });
         Some(attempt)
@@ -490,10 +509,10 @@ impl Player {
 /// (`/live/<user>/<pass>/…`, `username=…&password=…`).
 pub fn redact(text: &str) -> String {
     static PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"/(live|movie|series|timeshift)/[^/\s]+/[^/\s]+/").unwrap()
+        regex::Regex::new(r"/(live|movie|series|timeshift)/[^/\s]+/[^/\s]+/").expect("valid regex")
     });
     static QUERY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)\b(username|password)=[^&\s]*").unwrap()
+        regex::Regex::new(r"(?i)\b(username|password)=[^&\s]*").expect("valid regex")
     });
     let t = PATH.replace_all(text, "/$1/***/***/");
     QUERY.replace_all(&t, "$1=***").into_owned()
@@ -609,48 +628,52 @@ fn readable(name: &str) -> bool {
         && !name.starts_with("playlist")
 }
 
-type Res<T> = Result<T, String>;
+/// mpv failures reach the UI as their message, as before.
+fn mpv_error(e: mpv::MpvError) -> Error {
+    Error::msg(e.to_string())
+}
 
 #[tauri::command]
 pub fn player_load(
     player: State<'_, Player>,
     url: String,
     options: Option<LoadOptions>,
-) -> Res<()> {
+) -> crate::error::Result<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("only http(s) streams can be loaded".into());
+        return Err(Error::msg("only http(s) streams can be loaded"));
     }
     player
         .load(&url, options.unwrap_or_default())
-        .map_err(|e| e.to_string())
+        .map_err(mpv_error)
 }
 
 #[tauri::command]
-pub fn player_stop(player: State<'_, Player>) -> Res<()> {
-    player.stop().map_err(|e| e.to_string())
+pub fn player_stop(player: State<'_, Player>) -> crate::error::Result<()> {
+    player.stop().map_err(mpv_error)
 }
 
 #[tauri::command]
-pub fn player_command(player: State<'_, Player>, args: Vec<String>) -> Res<()> {
+pub fn player_command(player: State<'_, Player>, args: Vec<String>) -> crate::error::Result<()> {
     if !command_allowed(&args) {
-        return Err(format!(
+        return Err(Error::msg(format!(
             "mpv command not allowed: {}",
             args.first().map_or("", String::as_str)
-        ));
+        )));
     }
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    player.mpv.command(&args).map_err(|e| e.to_string())
+    player.mpv.command(&args).map_err(mpv_error)
 }
 
 #[tauri::command]
-pub fn player_set(player: State<'_, Player>, name: String, value: Value) -> Res<()> {
+pub fn player_set(
+    player: State<'_, Player>,
+    name: String,
+    value: Value,
+) -> crate::error::Result<()> {
     if !property_allowed(&name) {
-        return Err(format!("mpv property not allowed: {name}"));
+        return Err(Error::msg(format!("mpv property not allowed: {name}")));
     }
-    player
-        .mpv
-        .set_json(&name, &value)
-        .map_err(|e| e.to_string())
+    player.mpv.set_json(&name, &value).map_err(mpv_error)
 }
 
 #[tauri::command]

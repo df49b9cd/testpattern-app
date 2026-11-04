@@ -19,6 +19,10 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Tauri(#[from] tauri::Error),
+    /// TMDB refused the API key (401/403); stops a run instead of counting as
+    /// one failed title.
+    #[error("TMDB did not accept the API key")]
+    TmdbRejected,
 }
 
 impl From<reqwest::Error> for Error {

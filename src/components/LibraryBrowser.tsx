@@ -4,6 +4,8 @@ import { ChevronDown, Film, Heart, LayoutGrid, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
+import { itemKey } from "../lib/item";
+import { loadJson, saveJson } from "../lib/storage";
 import type { FacetFilter, FacetName, Facets, FacetValue, MediaQuery, MediaSort, Movie, Series } from "../lib/types";
 import { PosterCard } from "./media";
 import { PosterGrid } from "./PosterGrid";
@@ -46,7 +48,7 @@ const FILTER_NAMES: Record<FacetName, string> = {
 };
 
 /** Browse filters from the URL (`?service=Netflix&genre=Crime&fav=1`). */
-export function filtersFromParams(params: URLSearchParams): FacetFilter[] {
+function filtersFromParams(params: URLSearchParams): FacetFilter[] {
   return FACET_NAMES.flatMap((facet) => {
     const value = params.get(facet);
     return value ? [{ facet, value }] : [];
@@ -158,7 +160,7 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
           <PosterGrid<Movie>
             queryKey={["movies", "grid", query]}
             fetchPage={(offset, limit) => api.movies({ ...query, offset, limit })}
-            itemKey={(m) => m.key ?? `${m.sourceId}-${m.id}`}
+            itemKey={(m) => m.key ?? itemKey(m)}
             header={header}
             empty={empty}
             renderItem={(m, w) => (
@@ -180,7 +182,7 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
           <PosterGrid<Series>
             queryKey={["series", "grid", query]}
             fetchPage={(offset, limit) => api.series({ ...query, offset, limit })}
-            itemKey={(s) => s.key ?? `${s.sourceId}-${s.id}`}
+            itemKey={(s) => s.key ?? itemKey(s)}
             header={header}
             empty={empty}
             renderItem={(s, w) => (
@@ -238,21 +240,11 @@ function FilterChip({ children, onRemove }: { children: React.ReactNode; onRemov
 // ------------------------------------------------------------ facet panel
 
 function usePersistedFlags(key: string, initial: Record<string, boolean>) {
-  const [flags, setFlags] = useState<Record<string, boolean>>(() => {
-    try {
-      return { ...initial, ...JSON.parse(localStorage.getItem(key) ?? "{}") };
-    } catch {
-      return initial;
-    }
-  });
+  const [flags, setFlags] = useState<Record<string, boolean>>(() => ({ ...initial, ...loadJson<Record<string, boolean>>(key, {}) }));
   const toggle = (name: string) =>
     setFlags((f) => {
       const next = { ...f, [name]: !f[name] };
-      try {
-        localStorage.setItem(key, JSON.stringify(next));
-      } catch {
-        /* per-viewer convenience only */
-      }
+      saveJson(key, next);
       return next;
     });
   return [flags, toggle] as const;

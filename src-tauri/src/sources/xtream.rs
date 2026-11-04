@@ -10,6 +10,12 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::util::json::{f64_of, i64_of, str_of};
 
+/// Per-request limits: account checks and short EPG are quick, the full
+/// stream lists of large panels take minutes to generate.
+const QUICK_TIMEOUT: Duration = Duration::from_secs(20);
+const LIST_TIMEOUT: Duration = Duration::from_secs(180);
+const INFO_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct Xtream {
     bases: Vec<String>,
     current: AtomicUsize,
@@ -192,7 +198,7 @@ impl Xtream {
     }
 
     pub async fn account(&self) -> Result<AccountInfo> {
-        let v = self.get(None, &[], Duration::from_secs(20)).await?;
+        let v = self.get(None, &[], QUICK_TIMEOUT).await?;
         let ui = v.get("user_info").cloned().unwrap_or(Value::Null);
         let si = v.get("server_info").cloned().unwrap_or(Value::Null);
         if i64_of(&ui["auth"]) != Some(1) {
@@ -228,9 +234,7 @@ impl Xtream {
     }
 
     pub async fn list(&self, action: &str) -> Result<Vec<Value>> {
-        let v = self
-            .get(Some(action), &[], Duration::from_secs(180))
-            .await?;
+        let v = self.get(Some(action), &[], LIST_TIMEOUT).await?;
         Ok(match v {
             Value::Array(a) => a,
             // some panels return {} for empty lists
@@ -242,7 +246,7 @@ impl Xtream {
         self.get(
             Some("get_vod_info"),
             &[("vod_id", id.to_owned())],
-            Duration::from_secs(30),
+            INFO_TIMEOUT,
         )
         .await
     }
@@ -251,7 +255,7 @@ impl Xtream {
         self.get(
             Some("get_series_info"),
             &[("series_id", id.to_owned())],
-            Duration::from_secs(30),
+            INFO_TIMEOUT,
         )
         .await
     }
@@ -263,7 +267,7 @@ impl Xtream {
                 ("stream_id", stream_id.to_owned()),
                 ("limit", limit.to_string()),
             ],
-            Duration::from_secs(20),
+            QUICK_TIMEOUT,
         )
         .await
     }

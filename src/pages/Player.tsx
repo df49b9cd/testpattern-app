@@ -26,34 +26,27 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "../lib/api";
-import { inTauri } from "../lib/bridge";
 import { clock, elapsed, hhmm, nowUnix } from "../lib/format";
-import { channelNowPlaying, playEpisode } from "../lib/play";
-import type { Channel, Episode, Track } from "../lib/types";
-import { control, usePlayer, setSubsEnabled, subKeyAction, subKeyHint } from "../stores/player";
+import { itemKey, sameItem, type ItemRef } from "../lib/item";
+import { playEpisode } from "../lib/play";
+import { playerWrite } from "../lib/playerWrite";
+import { SETTINGS_KEY, writeSetting } from "../lib/settings";
+import type { Channel, Settings, Track } from "../lib/types";
+import { control, MAX_VOLUME_CAST, MAX_VOLUME_LOCAL, maxVolume, usePlayer, setSubsEnabled, subKeyAction, subKeyHint } from "../stores/player";
 import { CastingBackdrop, CastMenu } from "../components/CastMenu";
 import { queryClient } from "../lib/queryClient";
+import { useChannelEpg } from "../hooks/useChannelEpg";
 import { ChannelLogo } from "../components/media";
 import { Badge, Button, IconButton, LiveDot, ProgressBar } from "../components/ui";
+import { useFullscreen } from "./player/fullscreen";
+import { nextEpisode } from "./player/logic";
+import { useChromeAutoHide } from "./player/useChromeAutoHide";
+import { usePlayerKeys, type KeyBinding } from "./player/usePlayerKeys";
+import { useRecording } from "./player/useRecording";
+import { useZapping } from "./player/useZapping";
 
-const HIDE_AFTER = 3000;
-
-async function toggleFullscreen() {
-  if (inTauri) {
-    const w = getCurrentWindow();
-    await w.setFullscreen(!(await w.isFullscreen()));
-  } else if (document.fullscreenElement) {
-    await document.exitFullscreen();
-  } else {
-    await document.documentElement.requestFullscreen();
-  }
-}
-
-async function isFullscreen() {
-  return inTauri ? getCurrentWindow().isFullscreen() : !!document.fullscreenElement;
-}
+const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
 export function PlayerPage() {
   const navigate = useNavigate();
@@ -64,12 +57,9 @@ export function PlayerPage() {
   const reconnectAttempt = usePlayer((s) => s.reconnectAttempt);
   const casting = usePlayer((s) => !!s.cast);
 
-  const [chrome, setChrome] = useState(true);
   const [panel, setPanel] = useState<null | "channels" | "audio" | "subs" | "aspect" | "speed">(null);
   const [info, setInfo] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
   const [flash, setFlash] = useState<null | "play" | "pause">(null);
-  const [digits, setDigits] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef(0);
   const say = useCallback((text: string) => {
@@ -77,27 +67,22 @@ export function PlayerPage() {
     window.clearTimeout(noticeTimer.current);
     noticeTimer.current = window.setTimeout(() => setNotice(null), 4000);
   }, []);
-  const hideTimer = useRef(0);
-  const digitTimer = useRef(0);
+  const { chrome, poke } = useChromeAutoHide(() => setPanel(null));
+  const { fullscreen, flipFullscreen, leaveFullscreen } = useFullscreen();
 
   // PL-100: subtitles are persisted-off but a subtitle track is selected and
-  // hidden — tell the first-run user once how to bring them up instead of
-  // leaving them clueless. Baselines on the persisted setting so a user whose
-  // subs are on doesn't the hint during the start-up gap before mpv pushes
-  // sub-visibility.
+  // hidden — tell the first-run user once how to bring them up. Only for users
+  // whose persisted setting is off, so the start-up gap before mpv pushes
+  // sub-visibility doesn't fire the hint for users whose subs are on.
   const sid = p.sid;
   const subVisible = p.subVisible;
   useEffect(() => {
-    const settings = queryClient.getQueryData<Record<string, unknown> | undefined>(["settings"]);
-    // only for users whose persisted setting is off — the gap between
-    // start-up and mpv's sub-visibility push must not fire the hint when
-    // subs are on
+    const settings = queryClient.getQueryData<Settings>(SETTINGS_KEY);
     if (settings?.["player.subsEnabled"] !== false) return;
     if (typeof sid !== "number" || subVisible || usePlayer.getState().cast) return;
-    if (settings?.["ui.subHintSeen"] === true) return;
+    if (settings["ui.subHintSeen"] === true) return;
     say(subKeyHint(usePlayer.getState().props) === "cycle" ? "Subtitles are off — press S to switch" : "Subtitles are off — press S to turn them on");
-    queryClient.setQueryData(["settings"], (cur: Record<string, unknown> | undefined) => ({ ...cur, "ui.subHintSeen": true }));
-    void api.setSetting("ui.subHintSeen", true).catch(() => {});
+    void playerWrite(writeSetting(queryClient, "ui.subHintSeen", true));
   }, [sid, subVisible, say]);
 
   const live = now?.kind === "live";
@@ -112,57 +97,33 @@ export function PlayerPage() {
     }
   }, [now, navigate]);
 
-  useEffect(() => {
-    void isFullscreen().then(setFullscreen);
-    // this is the full-screen player: no picture-in-picture while it's open
-    usePlayer.getState().setPip(false);
-  }, []);
+  // this is the full-screen player: no picture-in-picture while it's open
+  useEffect(() => usePlayer.getState().setPip(false), []);
 
-  const poke = useCallback(() => {
-    setChrome(true);
-    window.clearTimeout(hideTimer.current);
-    hideTimer.current = window.setTimeout(() => {
-      if (!usePlayer.getState().props.pause) {
-        setChrome(false);
-        setPanel(null);
-      }
-    }, HIDE_AFTER);
-  }, []);
-  useEffect(() => {
-    poke();
-    return () => window.clearTimeout(hideTimer.current);
-  }, [poke]);
   // keep chrome up while paused / failing
   const pinned = p.pause || status !== "playing" || panel !== null;
   const visible = chrome || pinned;
 
   const exit = useCallback(async () => {
-    if (await isFullscreen()) {
-      await toggleFullscreen();
-      setFullscreen(false);
-      return;
-    }
+    if (await leaveFullscreen()) return;
     exiting.current = true;
     const cur = usePlayer.getState().now;
     navigate(-1);
     // live keeps playing (preview on the Live TV page); VOD saves & stops —
     // unless it plays on a TV, which goes on until casting is stopped
     if (cur && cur.kind !== "live" && !usePlayer.getState().cast) await usePlayer.getState().stop();
-  }, [navigate]);
+  }, [navigate, leaveFullscreen]);
 
   // Picture-in-picture (T-034): keep playing in a small window while browsing
   const toPip = useCallback(async () => {
-    if (await isFullscreen()) {
-      await toggleFullscreen();
-      setFullscreen(false);
-    }
+    await leaveFullscreen();
     exiting.current = true;
     usePlayer.getState().setPip(true);
     // back to where the user came from (react-router keeps the history index)
     const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
     if (idx > 0) navigate(-1);
     else navigate("/", { replace: true });
-  }, [navigate]);
+  }, [navigate, leaveFullscreen]);
 
   // Live TV can be paused (mpv keeps buffering). The normal read-ahead gap
   // between playback and buffer end is noted at pause time, so "behind" only
@@ -187,131 +148,58 @@ export function PlayerPage() {
 
   const nudgeVolume = useCallback((delta: number) => {
     const st = usePlayer.getState();
-    const target = Math.max(0, Math.min(st.cast ? 100 : 150, st.props.volume + delta));
-    if (st.cast) {
-      void control.setVolume(target).then(() => say(`TV volume ${Math.round(target)}`));
-      poke();
-      return;
-    }
-    void api.set("volume", target).then(() => {
+    const target = Math.max(0, Math.min(maxVolume(), st.props.volume + delta));
+    void control.setVolume(target).then((ok) => {
+      if (!ok) return;
+      if (st.cast) {
+        say(`TV volume ${Math.round(target)}`);
+        return;
+      }
       // mpv applies async; read what it has a moment later so the chip shows
       // the real level, not the pre-clamp guess.
       window.setTimeout(() => {
-        void api.get("volume").then((v) => {
-          if (typeof v === "number") say(`Volume ${Math.round(v)}`);
-        }).catch(() => {});
+        void playerWrite(
+          api.get("volume").then((v) => {
+            if (typeof v === "number") say(`Volume ${Math.round(v)}`);
+          }),
+        );
       }, 60);
-    }).catch(() => {});
+    });
     poke();
   }, [say, poke]);
 
   const toggleMute = useCallback(() => {
     const st = usePlayer.getState();
-    void control.setMute(!st.props.mute).then(() => say(st.props.mute ? "Sound on" : "Muted"));
+    void control.setMute(!st.props.mute).then((ok) => ok && say(st.props.mute ? "Sound on" : "Muted"));
     poke();
   }, [say, poke]);
 
-  // ---- live zapping
-  const zapList = now?.zapList ?? [];
-  // by feed, else by channel (another feed of it may be playing)
-  const groupKey = now?.channel?.group?.key;
-  let zapIndex = live ? zapList.findIndex((c) => c.sourceId === now?.sourceId && c.id === now?.id) : -1;
-  if (live && zapIndex < 0 && groupKey) zapIndex = zapList.findIndex((c) => c.group?.key === groupKey);
-  const zapTo = useCallback(
-    (c: Channel) => {
-      void usePlayer.getState().play(channelNowPlaying(c, usePlayer.getState().now?.zapList));
-      poke();
-    },
-    [poke],
-  );
-  const zap = useCallback(
-    (dir: number) => {
-      if (!zapList.length) return;
-      const i = zapIndex < 0 ? 0 : (zapIndex + dir + zapList.length) % zapList.length;
-      zapTo(zapList[i]);
-    },
-    [zapList, zapIndex, zapTo],
-  );
+  const { zapList, zap, zapTo, digits, enterDigit } = useZapping(poke);
+  const { recordingFile, recordingSince, toggleRecord } = useRecording(say);
 
-  // ---- recording (live TV, T-035)
-  const recordingFile = p.recording;
-  const lastRecording = useRef("");
-  const [recordingSince, setRecordingSince] = useState(0);
-  useEffect(() => {
-    if (recordingFile && !lastRecording.current) setRecordingSince(Date.now());
-    // ended by the user, a channel change or a failed stream: say where it went
-    if (!recordingFile && lastRecording.current) say(`Recording saved: ${lastRecording.current.split("/").pop()}`);
-    lastRecording.current = recordingFile;
-  }, [recordingFile, say]);
-  const toggleRecord = useCallback(() => {
-    const on = !usePlayer.getState().props.recording;
-    api.record(on).catch((e) => say(`Can't record: ${String(e)}`));
-  }, [say]);
-
-  // ---- keyboard
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === "INPUT") return;
-      const k = e.key;
-      let handled = true;
-      if (k === " " || k === "k" || k === "K") togglePause();
-      else if (k === "ArrowLeft" && !live) seekBy(e.shiftKey ? -60 : -10);
-      else if (k === "ArrowRight" && !live) seekBy(e.shiftKey ? 60 : 30);
-      else if ((k === "ArrowUp" && live) || k === "PageUp") zap(-1);
-      else if ((k === "ArrowDown" && live) || k === "PageDown") zap(1);
-      else if (k === "ArrowUp" && !live) nudgeVolume(5);
-      else if (k === "ArrowDown" && !live) nudgeVolume(-5);
-      else if (k === "f" || k === "F") void toggleFullscreen().then(() => isFullscreen().then(setFullscreen));
-      else if (k === "m" || k === "M") toggleMute();
-      else if (k === "Escape") {
-        if (panel) setPanel(null);
-        else void exit();
-      } else if ((k === "a" || k === "A") && !casting) void api.command("cycle", "audio");
-      else if ((k === "s" || k === "S") && !casting) {
-        const action = subKeyAction(usePlayer.getState().props);
-        if (!action) {
-          handled = false;
-          return;
-        }
-        if ("cycle" in action) {
-          void api
-            .set("sid", action.cycle)
-            .then(() => {
-              if (action.cycle !== false) void setSubsEnabled(true).catch(() => {});
-              say(action.cycle === false ? "Subtitles off" : "Subtitles on");
-            })
-            .catch(() => {});
-        } else if (action.toggle) {
-          // turning on: only claim it when the write landed
-          void setSubsEnabled(true)
-            .then(() => say("Subtitles on"))
-            .catch(() => {});
-        } else {
-          void setSubsEnabled(false).catch(() => {});
-          say("Subtitles off");
-        }
-      } else if ((k === "i" || k === "I") && !casting) setInfo((v) => !v);
-      else if ((k === "r" || k === "R") && live && !casting) toggleRecord();
-      else if ((k === "p" || k === "P") && !casting) void toPip();
-      else if ((k === "l" || k === "L" || k === "c" || k === "C") && live) setPanel((v) => (v === "channels" ? null : "channels"));
-      else if (/^[0-9]$/.test(k) && live) {
-        const next = (digits + k).slice(-4);
-        setDigits(next);
-        window.clearTimeout(digitTimer.current);
-        digitTimer.current = window.setTimeout(() => {
-          const target = zapList.find((c) => String(c.num) === next);
-          if (target) zapTo(target);
-          setDigits("");
-        }, 1400);
-      } else handled = false;
-      if (handled) {
-        e.preventDefault();
-        poke();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [togglePause, seekBy, zap, zapList, zapTo, exit, panel, digits, live, poke, toggleRecord, toPip, nudgeVolume, toggleMute, casting]);
+  // ---- keyboard (first matching entry wins)
+  const keys: KeyBinding[] = [
+    { keys: [" ", "k", "K"], run: togglePause },
+    { keys: ["ArrowLeft"], when: !live, run: (e) => seekBy(e.shiftKey ? -60 : -10) },
+    { keys: ["ArrowRight"], when: !live, run: (e) => seekBy(e.shiftKey ? 60 : 30) },
+    { keys: ["ArrowUp"], when: live, run: () => zap(-1) },
+    { keys: ["ArrowDown"], when: live, run: () => zap(1) },
+    { keys: ["PageUp"], run: () => zap(-1) },
+    { keys: ["PageDown"], run: () => zap(1) },
+    { keys: ["ArrowUp"], when: !live, run: () => nudgeVolume(5) },
+    { keys: ["ArrowDown"], when: !live, run: () => nudgeVolume(-5) },
+    { keys: ["f", "F"], run: flipFullscreen },
+    { keys: ["m", "M"], run: toggleMute },
+    { keys: ["Escape"], run: () => (panel ? setPanel(null) : void exit()) },
+    { keys: ["a", "A"], when: !casting, run: () => void playerWrite(api.command("cycle", "audio")) },
+    { keys: ["s", "S"], when: !casting, run: () => subtitleKey(say) },
+    { keys: ["i", "I"], when: !casting, run: () => setInfo((v) => !v) },
+    { keys: ["r", "R"], when: live && !casting, run: toggleRecord },
+    { keys: ["p", "P"], when: !casting, run: () => void toPip() },
+    { keys: ["l", "L", "c", "C"], when: live, run: () => setPanel((v) => (v === "channels" ? null : "channels")) },
+    { keys: DIGITS, when: live, run: (e) => enterDigit(e.key) },
+  ];
+  usePlayerKeys(keys, poke);
 
   if (!now) return null;
   const busy = status === "loading" || status === "reconnecting" || (p.buffering && status === "playing");
@@ -327,7 +215,7 @@ export function PlayerPage() {
         }
       }}
       onDoubleClick={(e) => {
-        if (e.target === e.currentTarget) void toggleFullscreen().then(() => isFullscreen().then(setFullscreen));
+        if (e.target === e.currentTarget) flipFullscreen();
       }}
     >
       <CastingBackdrop />
@@ -492,7 +380,7 @@ export function PlayerPage() {
           )}
           <IconButton
             label={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"}
-            onClick={() => void toggleFullscreen().then(() => isFullscreen().then(setFullscreen))}
+            onClick={flipFullscreen}
             className="text-white"
           >
             {fullscreen ? <Minimize className="size-5" /> : <Maximize className="size-5" />}
@@ -500,9 +388,31 @@ export function PlayerPage() {
         </div>
       </div>
 
-      {live && panel === "channels" && <ChannelPanel channels={zapList} current={now.id} onPick={zapTo} />}
+      {live && panel === "channels" && <ChannelPanel channels={zapList} current={now} onPick={zapTo} />}
     </div>
   );
+}
+
+/**
+ * The S key (PL-100): cycles through several subtitle tracks, or toggles the
+ * only one. False (unhandled) when there is nothing to switch.
+ */
+function subtitleKey(say: (text: string) => void): void | false {
+  const action = subKeyAction(usePlayer.getState().props);
+  if (!action) return false;
+  if ("cycle" in action) {
+    void playerWrite(api.set("sid", action.cycle)).then((ok) => {
+      if (!ok) return;
+      if (action.cycle !== false) void playerWrite(setSubsEnabled(true));
+      say(action.cycle === false ? "Subtitles off" : "Subtitles on");
+    });
+  } else if (action.toggle) {
+    // turning on: only claim it when the write landed
+    void playerWrite(setSubsEnabled(true)).then((ok) => ok && say("Subtitles on"));
+  } else {
+    void playerWrite(setSubsEnabled(false));
+    say("Subtitles off");
+  }
 }
 
 // ------------------------------------------------------------------ parts
@@ -611,13 +521,7 @@ function SeekBar({ onSeek }: { onSeek: () => void }) {
 }
 
 function LiveInfo({ channel }: { channel?: Channel }) {
-  const t = nowUnix();
-  const epg = useQuery({
-    queryKey: ["epg", channel?.sourceId, channel?.id],
-    queryFn: () => api.epg(channel!.sourceId, channel!.id, t - 3600, t + 6 * 3600),
-    enabled: !!channel,
-    refetchInterval: 5 * 60_000,
-  });
+  const epg = useChannelEpg(channel);
   const [, tick] = useState(0);
   useEffect(() => {
     const i = window.setInterval(() => tick((x) => x + 1), 30_000);
@@ -676,7 +580,7 @@ function Volume() {
       <input
         type="range"
         min={0}
-        max={casting ? 100 : 130}
+        max={casting ? MAX_VOLUME_CAST : MAX_VOLUME_LOCAL}
         step={1}
         value={mute ? 0 : Math.round(volume)}
         onChange={(e) => {
@@ -739,18 +643,18 @@ function TrackMenu({ type, onDone }: { type: "audio" | "sub"; onDone: () => void
   const current = usePlayer((s) => (type === "audio" ? s.props.aid : s.props.sid));
   const subVisible = usePlayer((s) => s.props.subVisible);
   const pick = (v: number | "no") => {
-    void api.set(type === "audio" ? "aid" : "sid", v);
+    void playerWrite(api.set(type === "audio" ? "aid" : "sid", v));
     // picking a track while subtitles are hidden must show it (PL-100);
     // "Off" persists the disabling so it survives the next session
-    if (type === "sub") void setSubsEnabled(v !== "no").catch(() => {});
+    if (type === "sub") void playerWrite(setSubsEnabled(v !== "no"));
     onDone();
   };
   // turning visibility on with no track selected: select the first one so
   // something actually shows (visibility and selection are separate in mpv)
   const toggleVisible = () => {
     const on = !subVisible;
-    void setSubsEnabled(on).catch(() => {});
-    if (on && (current === false || current === null) && tracks.length > 0) void api.set("sid", tracks[0].id);
+    void playerWrite(setSubsEnabled(on));
+    if (on && (current === false || current === null) && tracks.length > 0) void playerWrite(api.set("sid", tracks[0].id));
     onDone();
   };
   return (
@@ -814,8 +718,8 @@ function AspectMenu({ onDone }: { onDone: () => void }) {
           key={o.label}
           active={(aspect === o.aspect || (o.aspect === "no" && (aspect === "-1" || aspect === "no"))) && Math.abs(panscan - o.panscan) < 0.01}
           onClick={() => {
-            void api.set("video-aspect-override", o.aspect);
-            void api.set("panscan", o.panscan);
+            void playerWrite(api.set("video-aspect-override", o.aspect));
+            void playerWrite(api.set("panscan", o.panscan));
             onDone();
           }}
         >
@@ -835,7 +739,7 @@ function SpeedMenu({ onDone }: { onDone: () => void }) {
           key={v}
           active={Math.abs(speed - v) < 0.01}
           onClick={() => {
-            void api.set("speed", v);
+            void playerWrite(api.set("speed", v));
             onDone();
           }}
         >
@@ -846,7 +750,7 @@ function SpeedMenu({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ChannelPanel({ channels, current, onPick }: { channels: Channel[]; current: string; onPick: (c: Channel) => void }) {
+function ChannelPanel({ channels, current, onPick }: { channels: Channel[]; current: ItemRef; onPick: (c: Channel) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.querySelector("[data-current=true]")?.scrollIntoView({ block: "center" });
@@ -855,24 +759,27 @@ function ChannelPanel({ channels, current, onPick }: { channels: Channel[]; curr
     <div className="absolute bottom-0 right-0 top-0 flex w-[380px] flex-col bg-black/75 backdrop-blur-2xl animate-fade-in" onClick={(e) => e.stopPropagation()}>
       <div className="px-5 pb-3 pt-6 text-sm font-bold uppercase tracking-wider text-white/60">Channels</div>
       <div ref={ref} className="flex-1 overflow-y-auto px-2 pb-6">
-        {channels.map((c) => (
+        {channels.map((c) => {
+          const isCurrent = sameItem(c, current);
+          return (
           <button
-            key={`${c.sourceId}-${c.id}`}
-            data-current={c.id === current}
+            key={itemKey(c)}
+            data-current={isCurrent}
             onClick={() => onPick(c)}
-            className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors", c.id === current ? "bg-white/15" : "hover:bg-white/[0.07]")}
+            className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors", isCurrent ? "bg-white/15" : "hover:bg-white/[0.07]")}
           >
             <span className="w-8 text-right text-xs tabular-nums text-white/40">{c.num ?? ""}</span>
             <ChannelLogo src={c.logo} title={c.title} size={36} className="size-9" />
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5 truncate text-sm font-semibold text-white">
-                {c.id === current && <LiveDot />}
+                {isCurrent && <LiveDot />}
                 {c.title}
               </span>
               <span className="block truncate text-xs text-white/50">{c.now?.title ?? ""}</span>
             </span>
           </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -907,13 +814,10 @@ function NextEpisode() {
     queryFn: () => api.seriesDetail(now!.sourceId, now!.seriesId!),
     enabled: !!now?.seriesId,
   });
-  const next: Episode | undefined = useMemo(() => {
-    const eps = (detail.data?.seasons ?? []).filter((s) => s.season > 0).flatMap((s) => s.episodes);
-    // the list merges every copy of the show: find ours by its number
-    let i = eps.findIndex((e) => e.season === now?.season && e.episode === now?.episode);
-    if (i < 0) i = eps.findIndex((e) => e.id === now?.id);
-    return i >= 0 ? eps[i + 1] : undefined;
-  }, [detail.data, now?.id, now?.season, now?.episode]);
+  const id = now?.id;
+  const season = now?.season;
+  const episode = now?.episode;
+  const next = useMemo(() => nextEpisode(detail.data?.seasons ?? [], { id, season, episode }), [detail.data, id, season, episode]);
   const [left, setLeft] = useState(10);
   const [cancelled, setCancelled] = useState(false);
   useEffect(() => {
