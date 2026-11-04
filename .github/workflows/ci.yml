@@ -275,7 +275,10 @@ jobs:
           dmg=$(ls src-tauri/target/release/bundle/dmg/*.dmg)
           hdiutil verify "$dmg"
           mnt=$(mktemp -d)
-          hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg" >/dev/null
+          # bundle.licenseFile makes the bundler embed the GPL as the dmg's
+          # license agreement; without a TTY hdiutil cancels the attach unless
+          # the agreement prompt is answered on stdin
+          yes | PAGER=cat hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg" >/dev/null
           trap 'hdiutil detach "$mnt" -force >/dev/null 2>&1' EXIT
           app="$mnt/testpattern.app"
           bin="$app/Contents/MacOS/testpattern"
