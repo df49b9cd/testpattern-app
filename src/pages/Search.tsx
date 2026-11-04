@@ -3,8 +3,10 @@ import { History, Search as SearchIcon, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
+import { itemKey } from "../lib/item";
 import { elapsed } from "../lib/format";
 import { playChannel } from "../lib/play";
+import { loadJson, saveJson } from "../lib/storage";
 import { ChannelLogo, PosterCard, Shelf, ShelfItem } from "../components/media";
 import { QualityBadges, workSubtitle } from "../components/LibraryBrowser";
 import { EmptyState, LiveDot, ProgressBar, Spinner } from "../components/ui";
@@ -12,19 +14,10 @@ import { EmptyState, LiveDot, ProgressBar, Spinner } from "../components/ui";
 const RECENT_KEY = "search.recent";
 
 function loadRecent(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
+  return loadJson<string[]>(RECENT_KEY, []);
 }
 function saveRecent(q: string) {
-  const list = [q, ...loadRecent().filter((x) => x.toLowerCase() !== q.toLowerCase())].slice(0, 8);
-  try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
-  } catch {
-    /* ignore */
-  }
+  saveJson(RECENT_KEY, [q, ...loadRecent().filter((x) => x.toLowerCase() !== q.toLowerCase())].slice(0, 8));
 }
 
 export function SearchPage() {
@@ -111,7 +104,7 @@ export function SearchPage() {
               <div className="grid grid-cols-1 gap-1 xl:grid-cols-2">
                 {r.channels.slice(0, 12).map((c) => (
                   <button
-                    key={`${c.sourceId}-${c.id}`}
+                    key={itemKey(c)}
                     onClick={() => {
                       remember();
                       void playChannel(c, navigate, r.channels);
@@ -140,7 +133,7 @@ export function SearchPage() {
           {r.movies.length > 0 && (
             <Shelf title="Movies">
               {r.movies.map((m) => (
-                <ShelfItem key={`${m.sourceId}-${m.id}`} width={160}>
+                <ShelfItem key={itemKey(m)} width={160}>
                   <PosterCard
                     title={m.title}
                     subtitle={workSubtitle(m.year, m)}
@@ -162,7 +155,7 @@ export function SearchPage() {
           {r.series.length > 0 && (
             <Shelf title="Series">
               {r.series.map((s) => (
-                <ShelfItem key={`${s.sourceId}-${s.id}`} width={160}>
+                <ShelfItem key={itemKey(s)} width={160}>
                   <PosterCard
                     title={s.title}
                     subtitle={workSubtitle(s.year, s)}

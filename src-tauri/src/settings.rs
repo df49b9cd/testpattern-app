@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::error::Result;
-use crate::state::AppState;
+use crate::state::{AppState, read_blocking, write_blocking};
 
 pub fn defaults() -> Map<String, Value> {
     let v = json!({
@@ -83,11 +83,10 @@ pub fn sub_visibility(conn: &Connection) -> &'static str {
 
 /// Pushes player settings into mpv: all of them (startup) or just `only` —
 /// re-applying e.g. `hwdec` mid-playback would needlessly touch the decoder.
-pub fn apply_player<R: Runtime>(app: &AppHandle<R>, st: &AppState, only: Option<&str>) {
+pub fn apply_player<R: Runtime>(app: &AppHandle<R>, conn: &Connection, only: Option<&str>) {
     let Some(player) = app.try_state::<crate::player::Player>() else {
         return;
     };
-    let conn = st.db.read();
     let wanted = |key: &str| only.is_none_or(|o| o == key);
     let set = |name: &str, v: String| {
         if let Err(e) = player.mpv().set_string(name, &v) {
@@ -95,20 +94,20 @@ pub fn apply_player<R: Runtime>(app: &AppHandle<R>, st: &AppState, only: Option<
         }
     };
     if wanted("player.hwdec") {
-        set("hwdec", get_str(&conn, "player.hwdec"));
+        set("hwdec", get_str(conn, "player.hwdec"));
     }
     if wanted("player.audioLang") {
-        set("alang", get_str(&conn, "player.audioLang"));
+        set("alang", get_str(conn, "player.audioLang"));
     }
     if wanted("player.subLang") {
-        set("slang", get_str(&conn, "player.subLang"));
+        set("slang", get_str(conn, "player.subLang"));
     }
     if wanted("player.subsEnabled") {
-        set("sub-visibility", sub_visibility(&conn).into());
+        set("sub-visibility", sub_visibility(conn).into());
     }
     // the UI remembers the volume it last set (stores/player.ts)
     if wanted("player.volume")
-        && let Some(v) = get(&conn, "player.volume").as_f64()
+        && let Some(v) = get(conn, "player.volume").as_f64()
     {
         let _ = player.mpv().set_double("volume", v.clamp(0.0, 150.0));
     }
@@ -126,8 +125,7 @@ pub fn put(conn: &Connection, key: &str, value: &Value) -> Result<()> {
 
 #[tauri::command]
 pub async fn settings_get(state: State<'_, AppState>) -> Result<Map<String, Value>> {
-    let conn = state.db.read();
-    all(&conn)
+    read_blocking(state.inner(), all).await
 }
 
 #[tauri::command]
@@ -137,11 +135,14 @@ pub async fn settings_set<R: Runtime>(
     key: String,
     value: Value,
 ) -> Result<()> {
-    put(&state.db.write(), &key, &value)?;
-    if key.starts_with("player.") {
-        apply_player(&app, state.inner(), Some(&key));
-    }
-    Ok(())
+    write_blocking(state.inner(), move |conn| {
+        put(conn, &key, &value)?;
+        if key.starts_with("player.") {
+            apply_player(&app, conn, Some(&key));
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

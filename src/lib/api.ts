@@ -81,7 +81,7 @@ export const api = {
   /** `meta` describes items without history yet (never-played episodes). */
   markWatched: (kind: "movie" | "episode", sourceId: number, itemId: string, watched: boolean, meta?: WatchedMeta) =>
     invoke<void>("mark_watched", { kind, sourceId, itemId, watched, meta }),
-  removeHistory: (kind: string, sourceId: number, itemId: string) =>
+  removeHistory: (kind: HistoryItem["kind"], sourceId: number, itemId: string) =>
     invoke<void>("history_remove", { kind, sourceId, itemId }),
   continueWatching: (limit = 20) => invoke<HistoryItem[]>("continue_watching", { limit }),
   recentChannels: (limit = 20) => invoke<RecentChannel[]>("recent_channels", { limit }),

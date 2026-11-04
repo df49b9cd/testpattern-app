@@ -20,7 +20,7 @@ use tokio::sync::Semaphore;
 
 use crate::error::{Error, Result};
 use crate::settings;
-use crate::state::AppState;
+use crate::state::{AppState, read_blocking};
 use crate::util::fnv1a;
 
 /// Dead links are remembered this long (`<key>.miss` markers).
@@ -52,7 +52,7 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
         .status(code)
         .header("Access-Control-Allow-Origin", "*")
         .body(Vec::new())
-        .unwrap()
+        .expect("static status and headers are valid")
 }
 
 fn content_type(bytes: &[u8]) -> &'static str {
@@ -87,7 +87,7 @@ fn ok(bytes: Vec<u8>) -> Response<Vec<u8>> {
         .header("Cache-Control", "public, max-age=604800, immutable")
         .header("Access-Control-Allow-Origin", "*")
         .body(bytes)
-        .unwrap()
+        .expect("static headers are valid")
 }
 
 fn params(request: &Request<Vec<u8>>) -> Option<(String, u32)> {
@@ -293,13 +293,14 @@ fn cache_dir(st: &AppState) -> PathBuf {
 
 /// Applies the size limit (setting `cache.imagesMb`) in the background.
 pub async fn enforce_limit(st: AppState) {
-    let cap_mb = {
-        let conn = st.db.read();
-        settings::get(&conn, "cache.imagesMb")
-            .as_u64()
-            .unwrap_or(DEFAULT_CACHE_MB)
-            .max(16)
-    };
+    let cap_mb = read_blocking(&st, |conn| {
+        Ok(settings::get(conn, "cache.imagesMb").as_u64())
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(DEFAULT_CACHE_MB)
+    .max(16);
     let dir = cache_dir(&st);
     match tokio::task::spawn_blocking(move || prune(&dir, cap_mb << 20, SystemTime::now())).await {
         Ok(Ok(s)) => log::info!(

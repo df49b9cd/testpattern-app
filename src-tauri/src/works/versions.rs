@@ -9,8 +9,9 @@ use tauri::State;
 use super::variant::{self, Origin, Variant};
 use crate::db::now;
 use crate::error::{Error, Result};
+use crate::kind::{ItemKind, WorkKind};
 use crate::settings;
-use crate::state::AppState;
+use crate::state::{AppState, write_blocking};
 
 /// One copy of a work as the detail pages show it.
 #[derive(Debug, Clone, Serialize)]
@@ -88,8 +89,13 @@ impl Member {
 }
 
 /// Work key of one copy.
-pub fn work_key(conn: &Connection, kind: &str, source_id: i64, id: &str) -> Result<Option<String>> {
-    let table = if kind == "movie" { "movie" } else { "series" };
+pub fn work_key(
+    conn: &Connection,
+    kind: WorkKind,
+    source_id: i64,
+    id: &str,
+) -> Result<Option<String>> {
+    let table = kind.table();
     Ok(conn
         .query_row(
             &format!("SELECT work_key FROM {table} WHERE source_id = ?1 AND id = ?2"),
@@ -101,22 +107,20 @@ pub fn work_key(conn: &Connection, kind: &str, source_id: i64, id: &str) -> Resu
 }
 
 /// All copies of a work (just the given one when it isn't grouped yet).
-pub fn members(conn: &Connection, kind: &str, source_id: i64, id: &str) -> Result<Vec<Member>> {
+pub fn members(conn: &Connection, kind: WorkKind, source_id: i64, id: &str) -> Result<Vec<Member>> {
     let key = work_key(conn, kind, source_id, id)?;
-    let (table, ext, played) = if kind == "movie" {
-        (
-            "movie",
+    let table = kind.table();
+    let (ext, played) = match kind {
+        WorkKind::Movie => (
             "x.ext",
             "(SELECT h.position || '|' || h.duration || '|' || h.watched || '|' || h.updated_at FROM history h
                WHERE h.source_id = x.source_id AND h.kind = 'movie' AND h.item_id = x.id)",
-        )
-    } else {
-        (
-            "series",
+        ),
+        WorkKind::Series => (
             "NULL",
             "(SELECT '0|0|0|' || MAX(h.updated_at) FROM history h
                WHERE h.source_id = x.source_id AND h.kind = 'episode' AND h.series_id = x.id)",
-        )
+        ),
     };
     let filter = if key.is_some() {
         "x.work_key = ?1"
@@ -162,7 +166,7 @@ pub fn members(conn: &Connection, kind: &str, source_id: i64, id: &str) -> Resul
     Ok(rows)
 }
 
-pub fn preference(conn: &Connection, kind: &str, key: &str) -> Result<Option<(i64, String)>> {
+pub fn preference(conn: &Connection, kind: WorkKind, key: &str) -> Result<Option<(i64, String)>> {
     Ok(conn
         .query_row(
             "SELECT source_id, item_id FROM work_pref WHERE kind = ?1 AND key = ?2",
@@ -229,7 +233,7 @@ pub fn choose(
 pub fn tracks(
     conn: &Connection,
     source_id: i64,
-    kind: &str,
+    kind: ItemKind,
     item_id: &str,
 ) -> Result<Option<Value>> {
     Ok(conn
@@ -275,7 +279,7 @@ pub fn summarize_tracks(track_list: &Value, hdr: bool) -> Option<Value> {
 pub fn save_tracks(
     conn: &Connection,
     source_id: i64,
-    kind: &str,
+    kind: ItemKind,
     item_id: &str,
     json: &str,
 ) -> Result<()> {
@@ -291,23 +295,22 @@ pub fn save_tracks(
 #[tauri::command]
 pub async fn work_prefer(
     state: State<'_, AppState>,
-    kind: String,
+    kind: WorkKind,
     source_id: i64,
     id: String,
 ) -> Result<()> {
-    if kind != "movie" && kind != "series" {
-        return Err(Error::msg(format!("no versions for {kind}")));
-    }
-    let conn = state.db.write();
-    let key = work_key(&conn, &kind, source_id, &id)?
-        .ok_or_else(|| Error::NotFound(format!("{kind} {id}")))?;
-    conn.execute(
-        "INSERT INTO work_pref (kind, key, source_id, item_id, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(kind, key) DO UPDATE SET source_id = excluded.source_id, item_id = excluded.item_id,
-                                              updated_at = excluded.updated_at",
-        params![kind, key, source_id, id, now()],
-    )?;
-    Ok(())
+    write_blocking(state.inner(), move |conn| {
+        let key = work_key(conn, kind, source_id, &id)?
+            .ok_or_else(|| Error::NotFound(format!("{kind} {id}")))?;
+        conn.execute(
+            "INSERT INTO work_pref (kind, key, source_id, item_id, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(kind, key) DO UPDATE SET source_id = excluded.source_id, item_id = excluded.item_id,
+                                                  updated_at = excluded.updated_at",
+            params![kind, key, source_id, id, now()],
+        )?;
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -351,10 +354,10 @@ mod tests {
             [],
         )
         .unwrap();
-        save_tracks(&c, 1, "movie", "m", &s.to_string()).unwrap();
-        save_tracks(&c, 1, "movie", "m", &s.to_string()).unwrap();
+        save_tracks(&c, 1, ItemKind::Movie, "m", &s.to_string()).unwrap();
+        save_tracks(&c, 1, ItemKind::Movie, "m", &s.to_string()).unwrap();
         assert_eq!(
-            tracks(&c, 1, "movie", "m").unwrap().unwrap()["audio"][0]["lang"],
+            tracks(&c, 1, ItemKind::Movie, "m").unwrap().unwrap()["audio"][0]["lang"],
             "eng"
         );
     }

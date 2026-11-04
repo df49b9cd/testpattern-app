@@ -57,7 +57,7 @@ export function queryFor(k: ListKey): ChannelQuery {
   }
 }
 
-export function countryName(nav: LiveNav | undefined, code: string | undefined): string {
+function countryName(nav: LiveNav | undefined, code: string | undefined): string {
   if (code === undefined) return "";
   return nav?.countries.find((c) => (c.code ?? "") === code)?.name ?? (code || "Other");
 }

@@ -33,6 +33,19 @@ use tauri::{AppHandle, Manager, Runtime};
 /// Pages that may use the bridge: the Vite dev server (`bun run dev`).
 const ALLOWED_ORIGINS: &[&str] = &["http://localhost:1420", "http://127.0.0.1:1420"];
 const MAX_BODY: usize = 16 << 20;
+/// How long a client gets to send its request.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Main-thread work (snapshot, click) that does not report back by then
+/// failed (the main loop is wedged or the window is gone).
+#[cfg(target_os = "linux")]
+const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest a script may run in the webview (Linux).
+#[cfg(target_os = "linux")]
+const EVAL_TIMEOUT: Duration = Duration::from_secs(20);
+/// macOS: longer than the wrapper's ~10 s IPC retry loop (`eval_wrapper`) on
+/// top of the script's own run time, so its error result arrives first.
+#[cfg(target_os = "macos")]
+const EVAL_TIMEOUT: Duration = Duration::from_secs(25);
 
 pub fn start<R: Runtime>(app: &AppHandle<R>) {
     let port: u16 = std::env::var("TP_DEV_PORT")
@@ -97,7 +110,7 @@ fn check_request(method: &str, path: &str, port: u16, h: &Headers) -> Result<(),
 }
 
 fn handle<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, port: u16) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_read_timeout(Some(READ_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -243,7 +256,7 @@ fn invoke_via_webview<R: Runtime>(app: &AppHandle<R>, body: &str) -> Result<Stri
     let args = req.get("args").cloned().unwrap_or(serde_json::json!({}));
     let js = format!(
         "try {{ return {{ ok: await window.__TAURI_INTERNALS__.invoke({}, {}) }}; }} catch (e) {{ return {{ error: e }}; }}",
-        serde_json::to_string(cmd).unwrap(),
+        serde_json::to_string(cmd).expect("a string serializes"),
         args
     );
     let out = eval(app, &js)?;
@@ -326,7 +339,7 @@ fn snapshot<R: Runtime>(app: &AppHandle<R>, out: &str) -> Result<(), String> {
         let _ = tx.send(result);
     })
     .map_err(|e| e.to_string())?;
-    rx.recv_timeout(Duration::from_secs(10))
+    rx.recv_timeout(MAIN_THREAD_TIMEOUT)
         .map_err(|e| e.to_string())?
 }
 
@@ -347,6 +360,11 @@ fn click<R: Runtime>(app: &AppHandle<R>, x: f64, y: f64) -> Result<(), String> {
                 let pointer = seat.pointer().ok_or("no pointer")?;
                 for kind in [gdk::EventType::ButtonPress, gdk::EventType::ButtonRelease] {
                     let mut ev = gdk::Event::new(kind);
+                    // SAFETY: on the GTK main thread (`with_webview`). `ev`
+                    // was created as a button event, so its GdkEvent union
+                    // is a GdkEventButton. `to_glib_full` gives the event the
+                    // window reference it releases when freed; `pointer`
+                    // outlives `ev`, so the device it records stays valid.
                     unsafe {
                         let raw: *mut gdk::ffi::GdkEvent = ev.to_glib_none_mut().0;
                         let b = raw as *mut gdk::ffi::GdkEventButton;
@@ -367,7 +385,7 @@ fn click<R: Runtime>(app: &AppHandle<R>, x: f64, y: f64) -> Result<(), String> {
             let _ = tx.send(result);
         })
         .map_err(|e| e.to_string())?;
-    rx.recv_timeout(Duration::from_secs(10))
+    rx.recv_timeout(MAIN_THREAD_TIMEOUT)
         .map_err(|e| e.to_string())?
 }
 
@@ -411,8 +429,7 @@ fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
             );
         })
         .map_err(|e| e.to_string())?;
-    rx.recv_timeout(Duration::from_secs(20))
-        .map_err(|e| e.to_string())?
+    rx.recv_timeout(EVAL_TIMEOUT).map_err(|e| e.to_string())?
 }
 
 /// macOS: WKWebView's `evaluateJavaScript` completion path loses the result
@@ -446,7 +463,7 @@ fn eval<R: Runtime>(app: &AppHandle<R>, js: &str) -> Result<String, String> {
         eval_bus::unregister(id);
         return Err("evaluateJavaScript dispatch failed".into());
     }
-    let r = rx.recv_timeout(Duration::from_secs(25));
+    let r = rx.recv_timeout(EVAL_TIMEOUT);
     eval_bus::unregister(id);
     r.map_err(|e| format!("evaluateJavaScript completion never fired: {e}"))?
 }
@@ -479,15 +496,24 @@ mod eval_bus {
     }
 
     pub fn register(id: u64, tx: Tx) {
-        channels().lock().unwrap().insert(id, tx);
+        channels()
+            .lock()
+            .expect("no panics while held")
+            .insert(id, tx);
     }
 
     pub fn unregister(id: u64) {
-        channels().lock().unwrap().remove(&id);
+        channels().lock().expect("no panics while held").remove(&id);
     }
 
     pub fn resolve(id: u64, result: String) -> bool {
-        let tx = { channels().lock().unwrap().get(&id).cloned() };
+        let tx = {
+            channels()
+                .lock()
+                .expect("no panics while held")
+                .get(&id)
+                .cloned()
+        };
         match tx {
             Some(tx) => tx.send(Ok(result)).is_ok(),
             None => false,

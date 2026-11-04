@@ -2,9 +2,9 @@ import clsx from "clsx";
 import { Maximize2, Pause, Play, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { api } from "../lib/api";
+import { ROUTES } from "../lib/routes";
 import { useVideoViewport } from "../hooks/useVideoViewport";
-import { usePlayer } from "../stores/player";
+import { control, usePlayer } from "../stores/player";
 import { IconButton } from "./ui";
 
 // Picture-in-picture (T-034). The video renders *behind* the web view, so
@@ -39,7 +39,7 @@ export function usePipVisible(): boolean {
   const kind = usePlayer((s) => s.now?.kind);
   const { pathname } = useLocation();
   // the player itself is fullscreen; on Live TV the preview pane shows live channels
-  return pip && !!kind && pathname !== "/player" && !(pathname === "/live" && kind === "live");
+  return pip && !!kind && pathname !== ROUTES.player && !(pathname === ROUTES.live && kind === "live");
 }
 
 export function useViewportSize() {
@@ -83,7 +83,7 @@ export function PipPlayer() {
           </IconButton>
         </div>
         <div className="flex items-center justify-center gap-3">
-          <IconButton label={paused ? "Play" : "Pause"} variant="glass" onClick={() => void api.set("pause", !paused)}>
+          <IconButton label={paused ? "Play" : "Pause"} variant="glass" onClick={() => void control.setPause(!paused)}>
             {paused ? <Play className="size-5 fill-current" /> : <Pause className="size-5 fill-current" />}
           </IconButton>
           <IconButton
@@ -91,7 +91,7 @@ export function PipPlayer() {
             variant="glass"
             onClick={() => {
               usePlayer.getState().setPip(false);
-              navigate("/player");
+              navigate(ROUTES.player);
             }}
           >
             <Maximize2 className="size-5" />

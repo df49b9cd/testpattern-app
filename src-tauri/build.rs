@@ -21,7 +21,7 @@ fn main() {
 /// FFmpeg's headers. Built before the media engine is linked: static
 /// archives must come after the code that uses them.
 fn build_cast_remux() {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     let prefix = std::env::var("TP_MEDIA_PREFIX")
         .map(PathBuf::from)
         .unwrap_or_else(|_| manifest.join("../third_party/prefix"));
@@ -39,7 +39,7 @@ fn build_cast_remux() {
 /// dynamic tail differs: no pkg-config probe (macOS's static archives reference
 /// frameworks and libSystem), link the well-known set directly.
 fn link_media_engine_macos() {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     let prefix = std::env::var("TP_MEDIA_PREFIX")
         .map(PathBuf::from)
         .unwrap_or_else(|_| manifest.join("../third_party/prefix"));
@@ -222,7 +222,7 @@ fn link_swift_surface(manifest: &std::path::Path) {
 /// dynamically. The result is a single self-contained executable whose codec
 /// support does not depend on the distro's FFmpeg build.
 fn link_media_engine() {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     let prefix = std::env::var("TP_MEDIA_PREFIX")
         .map(PathBuf::from)
         .unwrap_or_else(|_| manifest.join("../third_party/prefix"));
@@ -264,7 +264,7 @@ fn link_media_engine() {
             );
         }
         String::from_utf8(out.stdout)
-            .unwrap()
+            .expect("pkg-config prints UTF-8")
             .split_whitespace()
             .map(str::to_owned)
             .collect()

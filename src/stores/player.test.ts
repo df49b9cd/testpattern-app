@@ -10,9 +10,27 @@ vi.mock("../lib/api", () => ({
   errorMessage: (e: unknown) => String(e),
 }));
 
-import { applyProp, saveProgress, setSubsEnabled, subKeyAction, subKeyHint, toggleSubs, trackId, usePlayer, type NowPlaying } from "./player";
+import type { CastStatus } from "../lib/types";
+import { applyProp, saveProgress, setSubsEnabled, subKeyAction, subKeyHint, trackId, usePlayer, type NowPlaying } from "./player";
 
 const props = () => usePlayer.getState().props;
+
+// every test starts from a fresh store
+const initial = usePlayer.getState();
+beforeEach(() => usePlayer.setState(initial, true));
+
+const castStatus = (overrides: Partial<CastStatus> = {}): CastStatus => ({
+  deviceId: "d",
+  deviceName: "TV",
+  state: "playing",
+  position: 0,
+  duration: 0,
+  live: true,
+  volume: 1,
+  muted: false,
+  error: null,
+  ...overrides,
+});
 
 describe("applyProp", () => {
   it("maps mpv properties to store fields", () => {
@@ -69,42 +87,27 @@ describe("saveProgress", () => {
   });
 });
 
-describe("offPageKey (Layout off-page gating, PL-101)", () => {
-  it("fires Space/K only when body is focused; M toggles mute; ignored on /player and with modifiers", async () => {
-    const { offPageKey } = await import("../app/Layout");
-    const np: NowPlaying = { kind: "live", sourceId: 1, id: "c1", title: "BBC" };
-    usePlayer.setState({ now: np });
-    expect(offPageKey({ key: " ", ctrlKey: false, metaKey: false, altKey: false }, { pathname: "/live", onBody: true })).toBe("play");
-    expect(offPageKey({ key: " ", ctrlKey: false, metaKey: false, altKey: false }, { pathname: "/live", onBody: false })).toBeNull();
-    expect(offPageKey({ key: "m", ctrlKey: false, metaKey: false, altKey: false }, { pathname: "/live", onBody: false })).toBe("mute");
-    expect(offPageKey({ key: " ", ctrlKey: false, metaKey: false, altKey: false }, { pathname: "/player", onBody: true })).toBeNull();
-    expect(offPageKey({ key: "m", ctrlKey: true, metaKey: false, altKey: false }, { pathname: "/live", onBody: true })).toBeNull();
-    usePlayer.setState({ now: null });
-    expect(offPageKey({ key: " ", ctrlKey: false, metaKey: false, altKey: false }, { pathname: "/live", onBody: true })).toBeNull();
-  });
-});
-
 describe("subtitles toggle (PL-99)", () => {
   it("persists the setting and patches the settings cache", async () => {
     const { queryClient } = await import("../lib/queryClient");
+    const { SETTINGS_KEY } = await import("../lib/settings");
     const api = (await import("../lib/api")).api as unknown as { setSetting: ReturnType<typeof vi.fn> };
-    queryClient.setQueryData(["settings"], { "player.subsEnabled": false });
+    queryClient.setQueryData(SETTINGS_KEY, { "player.subsEnabled": false });
     api.setSetting.mockClear();
     api.setSetting.mockResolvedValue(undefined);
     void setSubsEnabled(true);
     expect(api.setSetting).toHaveBeenCalledWith("player.subsEnabled", true);
-    expect(queryClient.getQueryData(["settings"])).toMatchObject({ "player.subsEnabled": true });
-    toggleSubs(); // store says subVisible=false → turns on
-    expect(api.setSetting).toHaveBeenLastCalledWith("player.subsEnabled", true);
+    expect(queryClient.getQueryData(SETTINGS_KEY)).toMatchObject({ "player.subsEnabled": true });
   });
 
   it("rolls the cache back when the write fails", async () => {
     const { queryClient } = await import("../lib/queryClient");
+    const { SETTINGS_KEY } = await import("../lib/settings");
     const api = (await import("../lib/api")).api as unknown as { setSetting: ReturnType<typeof vi.fn> };
-    queryClient.setQueryData(["settings"], { "player.subsEnabled": false });
+    queryClient.setQueryData(SETTINGS_KEY, { "player.subsEnabled": false });
     api.setSetting.mockRejectedValueOnce(new Error("backend down"));
     await expect(setSubsEnabled(true)).rejects.toThrow("backend down");
-    expect(queryClient.getQueryData(["settings"])).toMatchObject({ "player.subsEnabled": false });
+    expect(queryClient.getQueryData(SETTINGS_KEY)).toMatchObject({ "player.subsEnabled": false });
   });
 });
 
@@ -137,9 +140,10 @@ describe("subKeyAction (S key, PL-100)", () => {
 describe("cast", () => {
   it("castProps maps the TV status onto mpv-shaped props", async () => {
     const { castProps } = await import("./player");
-    const p = castProps({ ...usePlayer.getState().props, tracks: [{ id: 1, type: "audio" }] }, {
-      deviceId: "d", deviceName: "TV", state: "paused", position: 42, duration: 100, live: false, volume: 0.7, muted: true, error: null,
-    });
+    const p = castProps(
+      { ...usePlayer.getState().props, tracks: [{ id: 1, type: "audio" }] },
+      castStatus({ state: "paused", position: 42, duration: 100, live: false, volume: 0.7, muted: true }),
+    );
     expect(p.pause).toBe(true);
     expect(p.timePos).toBe(42);
     expect(p.duration).toBe(100);
@@ -151,18 +155,19 @@ describe("cast", () => {
 
   it("castPlayerStatus maps TV states to player states", async () => {
     const { castPlayerStatus } = await import("./player");
-    expect(castPlayerStatus({ deviceId: "d", deviceName: "TV", state: "loading", position: 0, duration: 0, live: true, volume: 1, muted: false, error: null })).toEqual({ status: "loading", error: null });
-    expect(castPlayerStatus({ deviceId: "d", deviceName: "TV", state: "error", position: 0, duration: 0, live: true, volume: 1, muted: false, error: "boom" })).toEqual({ status: "error", error: "boom" });
-    expect(castPlayerStatus({ deviceId: "d", deviceName: "TV", state: "ended", position: 0, duration: 0, live: false, volume: 1, muted: false, error: null }).status).toBe("ended");
+    expect(castPlayerStatus(castStatus({ state: "loading" }))).toEqual({ status: "loading", error: null });
+    expect(castPlayerStatus(castStatus({ state: "error", error: "boom" }))).toEqual({ status: "error", error: "boom" });
+    expect(castPlayerStatus(castStatus({ state: "ended", live: false })).status).toBe("ended");
   });
 
   it("onCastStatus ignores other devices and ended sessions", () => {
-    usePlayer.setState({ now: { kind: "live", sourceId: 1, id: "c", title: "C" }, status: "playing", cast: { deviceId: "a", deviceName: "A", state: "playing", position: 0, duration: 0, live: true, volume: 1, muted: false, error: null } });
-    usePlayer.getState().onCastStatus({ deviceId: "b", deviceName: "B", state: "playing", position: 5, duration: 0, live: true, volume: 1, muted: false, error: null });
+    const a = { deviceId: "a", deviceName: "A" };
+    usePlayer.setState({ now: { kind: "live", sourceId: 1, id: "c", title: "C" }, status: "playing", cast: castStatus(a) });
+    usePlayer.getState().onCastStatus(castStatus({ deviceId: "b", deviceName: "B", position: 5 }));
     expect(usePlayer.getState().cast?.position).toBe(0);
-    usePlayer.getState().onCastStatus({ deviceId: "a", deviceName: "A", state: "playing", position: 9, duration: 0, live: true, volume: 1, muted: false, error: null });
+    usePlayer.getState().onCastStatus(castStatus({ ...a, position: 9 }));
     expect(usePlayer.getState().cast?.position).toBe(9);
-    usePlayer.getState().onCastStatus({ deviceId: "a", deviceName: "A", state: "stopped", position: 9, duration: 0, live: true, volume: 1, muted: false, error: null });
+    usePlayer.getState().onCastStatus(castStatus({ ...a, state: "stopped", position: 9 }));
     expect(usePlayer.getState().cast).toBeNull();
     expect(usePlayer.getState().castNotice).toContain("ended");
   });

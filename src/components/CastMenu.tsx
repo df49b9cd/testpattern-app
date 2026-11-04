@@ -8,7 +8,7 @@ import { usePlayer } from "../stores/player";
 import { Button, IconButton } from "./ui";
 
 /** Chromecasts on the network, kept current while a picker is open. */
-export function useCastDevices(active: boolean) {
+function useCastDevices(active: boolean) {
   const [list, setList] = useState<CastDevices | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {

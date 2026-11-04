@@ -20,7 +20,6 @@ use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_int};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use gtk::prelude::*;
@@ -28,7 +27,16 @@ use tauri::{Runtime, WebviewWindow};
 use webkit2gtk::WebViewExt;
 
 use super::mpv::Mpv;
-use super::mpv_sys::*;
+use super::mpv_sys::{
+    MPV_RENDER_API_TYPE_OPENGL, MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_PARAM_DRM_DISPLAY_V2,
+    MPV_RENDER_PARAM_FLIP_Y, MPV_RENDER_PARAM_INVALID, MPV_RENDER_PARAM_OPENGL_FBO,
+    MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, MPV_RENDER_UPDATE_FRAME, mpv_error_string,
+    mpv_opengl_drm_params_v2, mpv_opengl_fbo, mpv_opengl_init_params, mpv_render_context,
+    mpv_render_context_create, mpv_render_context_free, mpv_render_context_render,
+    mpv_render_context_report_swap, mpv_render_context_set_update_callback,
+    mpv_render_context_update, mpv_render_param,
+};
+use super::render::{GL_FRAMEBUFFER_BINDING, RedrawFlag, gl_get_integerv};
 
 thread_local! {
     static SURFACE: RefCell<Option<Surface>> = const { RefCell::new(None) };
@@ -42,7 +50,7 @@ struct Surface {
     render_node: Option<File>,
 }
 
-static REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
+static REDRAW: RedrawFlag = RedrawFlag::new();
 
 /// Installs the video surface under the window's webview. Must be called
 /// from the setup hook; the actual widget surgery runs on the GTK thread.
@@ -161,9 +169,17 @@ fn on_realize(area: &gtk::GLArea) {
             data: ptr::null_mut(),
         });
         let mut ctx = ptr::null_mut();
+        // SAFETY: the mpv handle is alive (`surface.mpv` holds an Arc), the
+        // GLArea's context was made current above, and `params` is
+        // INVALID-terminated with every `data` pointing at a local
+        // (`init`, `drm`) or a static (the API name) that outlives the call;
+        // mpv copies what it keeps. `render_node` stays open in `surface`
+        // for as long as the context exists.
         let rc =
             unsafe { mpv_render_context_create(&mut ctx, surface.mpv.raw(), params.as_mut_ptr()) };
         if rc < 0 {
+            // SAFETY: mpv_error_string returns a static, NUL-terminated
+            // string for any code.
             let msg = unsafe { CStr::from_ptr(mpv_error_string(rc)) };
             log::error!("mpv_render_context_create failed: {msg:?}");
             return;
@@ -174,6 +190,9 @@ fn on_realize(area: &gtk::GLArea) {
     // Registering fires the callback right away, so do it with no borrow held.
     let ctx = SURFACE.with(|s| s.borrow().as_ref().map_or(ptr::null_mut(), |s| s.ctx));
     if !ctx.is_null() {
+        // SAFETY: `ctx` was just created on this thread and is only freed in
+        // `on_unrealize`, on this thread too. The callback ignores its
+        // argument, so a null context pointer is fine.
         unsafe {
             mpv_render_context_set_update_callback(ctx, Some(on_mpv_update), ptr::null_mut())
         };
@@ -187,6 +206,9 @@ fn on_unrealize(area: &gtk::GLArea) {
         if let Some(surface) = s.borrow_mut().as_mut()
             && !surface.ctx.is_null()
         {
+            // SAFETY: a live context created on this (the GTK) thread, with
+            // its GL context made current above; nulled right after, so it
+            // is freed once.
             unsafe { mpv_render_context_free(surface.ctx) };
             surface.ctx = ptr::null_mut();
             surface.render_node = None; // mpv's VA display is gone with the context
@@ -207,7 +229,10 @@ fn on_render(area: &gtk::GLArea, _ctx: &gdk::GLContext) -> glib::Propagation {
             area.allocated_height() * scale,
         );
         let mut fbo: c_int = 0;
-        unsafe { gl_get_integerv(GL_FRAMEBUFFER_BINDING, &mut fbo) };
+        // SAFETY: GTK makes the area's GL context current before emitting
+        // `render`; GL_FRAMEBUFFER_BINDING writes one GLint into `fbo`, and
+        // `get_proc_address` takes a null context.
+        unsafe { gl_get_integerv(get_proc_address, GL_FRAMEBUFFER_BINDING, &mut fbo) };
         let mut target = mpv_opengl_fbo {
             fbo,
             w,
@@ -229,6 +254,11 @@ fn on_render(area: &gtk::GLArea, _ctx: &gdk::GLContext) -> glib::Propagation {
                 data: ptr::null_mut(),
             },
         ];
+        // SAFETY: `surface.ctx` is non-null, so live (only `on_unrealize`
+        // frees it, on this thread, and nulls it); the GL context is current
+        // (GTK's `render` contract); `params` is INVALID-terminated and
+        // points at locals that outlive the call. This is the render thread:
+        // no other libmpv calls are made from it while rendering.
         unsafe {
             mpv_render_context_render(surface.ctx, params.as_mut_ptr());
             mpv_render_context_report_swap(surface.ctx);
@@ -239,19 +269,21 @@ fn on_render(area: &gtk::GLArea, _ctx: &gdk::GLContext) -> glib::Propagation {
 
 /// Called by mpv from arbitrary threads whenever a new frame is due.
 unsafe extern "C" fn on_mpv_update(_: *mut c_void) {
-    if REDRAW_PENDING.swap(true, Ordering::AcqRel) {
+    if !REDRAW.begin() {
         return; // a redraw is already queued on the GTK thread
     }
     // Always go through the main loop (never run inline), ahead of GTK's
     // redraw priority so the frame lands in the upcoming paint.
     glib::idle_add_full(glib::Priority::HIGH_IDLE, || {
-        REDRAW_PENDING.store(false, Ordering::Release);
+        REDRAW.end();
         SURFACE.with(|s| {
             let Ok(s) = s.try_borrow() else { return };
             if let Some(surface) = s.as_ref() {
                 if surface.ctx.is_null() {
                     return;
                 }
+                // SAFETY: on the GTK (render) thread, outside mpv's update
+                // callback; non-null means not yet freed by `on_unrealize`.
                 let flags = unsafe { mpv_render_context_update(surface.ctx) };
                 if flags & MPV_RENDER_UPDATE_FRAME != 0 {
                     surface.area.queue_render();
@@ -267,8 +299,6 @@ unsafe extern "C" fn on_mpv_update(_: *mut c_void) {
 // GTK3 uses EGL on Wayland and GLX on X11; resolve GL entry points through
 // whichever one owns the current context.
 
-const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
-
 struct GlLoader {
     egl_get_proc: Option<unsafe extern "C" fn(*const c_char) -> *mut c_void>,
     egl_current_ctx: Option<unsafe extern "C" fn() -> *mut c_void>,
@@ -279,6 +309,11 @@ struct GlLoader {
 
 fn loader() -> &'static GlLoader {
     static LOADER: OnceLock<GlLoader> = OnceLock::new();
+    // SAFETY: libEGL/libGL are system libraries whose initializers have no
+    // preconditions; each symbol is typed with its C prototype from the EGL
+    // and GLX headers, and the libraries are kept loaded in `_libs` for the
+    // process lifetime (the loader is a static), so the copied function
+    // pointers never dangle.
     LOADER.get_or_init(|| unsafe {
         let mut libs = Vec::new();
         let mut l = GlLoader {
@@ -318,6 +353,8 @@ fn loader() -> &'static GlLoader {
 fn using_egl() -> bool {
     let l = loader();
     match l.egl_current_ctx {
+        // SAFETY: eglGetCurrentContext takes no arguments and only reads
+        // thread-local EGL state.
         Some(f) => !unsafe { f() }.is_null(),
         None => false,
     }
@@ -327,8 +364,15 @@ fn gl_flavor() -> &'static str {
     if using_egl() { "EGL" } else { "GLX" }
 }
 
+/// mpv's GL loader callback (also used by `gl_get_integerv`).
+///
+/// # Safety
+///
+/// `name` must be a valid NUL-terminated string.
 unsafe extern "C" fn get_proc_address(_ctx: *mut c_void, name: *const c_char) -> *mut c_void {
     let l = loader();
+    // SAFETY: `name` is a C string (caller contract, mpv passes GL function
+    // names); eglGetProcAddress/glXGetProcAddressARB only look it up.
     unsafe {
         if using_egl()
             && let Some(f) = l.egl_get_proc
@@ -382,6 +426,12 @@ fn egl_render_node() -> Option<PathBuf> {
     type QueryDeviceString = unsafe extern "C" fn(*mut c_void, i32) -> *const c_char;
     let l = loader();
     let (current_display, get_proc) = (l.egl_current_display?, l.egl_get_proc?);
+    // SAFETY: called with the GLArea's EGL context current (from
+    // `on_realize`). The two extension functions are looked up by name and
+    // checked for null before being transmuted to their prototypes from
+    // EGL_EXT_device_query / EGL_EXT_device_drm_render_node; `device` is
+    // checked before use; the returned string is owned by EGL, NUL-terminated
+    // and copied before returning.
     unsafe {
         let display = current_display();
         let query_attrib = get_proc(c"eglQueryDisplayAttribEXT".as_ptr());
@@ -400,17 +450,5 @@ fn egl_render_node() -> Option<PathBuf> {
             return None;
         }
         Some(PathBuf::from(CStr::from_ptr(node).to_str().ok()?))
-    }
-}
-
-unsafe fn gl_get_integerv(pname: u32, out: *mut c_int) {
-    type GetIntegerv = unsafe extern "C" fn(u32, *mut c_int);
-    static FN: OnceLock<usize> = OnceLock::new();
-    let addr = *FN.get_or_init(|| unsafe {
-        get_proc_address(ptr::null_mut(), c"glGetIntegerv".as_ptr()) as usize
-    });
-    if addr != 0 {
-        let f: GetIntegerv = unsafe { std::mem::transmute(addr) };
-        unsafe { f(pname, out) };
     }
 }

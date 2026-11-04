@@ -8,47 +8,47 @@ use tauri::State;
 use crate::catalog::channel_by_id;
 use crate::db::now;
 use crate::error::{Error, Result};
-use crate::state::AppState;
+use crate::kind::ItemKind;
+use crate::state::{AppState, read_blocking, write_blocking};
 
 #[tauri::command]
 pub async fn favorite_toggle(
     state: State<'_, AppState>,
-    kind: String,
+    kind: ItemKind,
     source_id: i64,
     item_id: String,
 ) -> Result<bool> {
-    if !matches!(kind.as_str(), "live" | "movie" | "series") {
-        return Err(Error::msg(format!("cannot favorite {kind}")));
-    }
-    let conn = state.db.write();
-    toggle_favorite(&conn, &kind, source_id, &item_id)
+    write_blocking(state.inner(), move |conn| {
+        toggle_favorite(conn, kind, source_id, &item_id)
+    })
+    .await
 }
 
 /// Movies and series are favorites as a whole: a work counts as favorite when
 /// any of its copies is, and un-favoriting clears every copy.
 pub fn toggle_favorite(
     conn: &Connection,
-    kind: &str,
+    kind: ItemKind,
     source_id: i64,
     item_id: &str,
 ) -> Result<bool> {
-    let removed = if kind == "live" {
-        conn.execute(
+    let removed = match kind {
+        ItemKind::Live => conn.execute(
             "DELETE FROM favorite WHERE source_id = ?1 AND kind = ?2 AND item_id = ?3",
             params![source_id, kind, item_id],
-        )?
-    } else {
-        let table = if kind == "movie" { "movie" } else { "series" };
-        conn.execute(
+        )?,
+        ItemKind::Episode => return Err(Error::msg("cannot favorite an episode")),
+        ItemKind::Movie | ItemKind::Series => conn.execute(
             &format!(
                 "DELETE FROM favorite WHERE kind = ?2 AND (
                      (source_id = ?1 AND item_id = ?3)
                      OR (source_id, item_id) IN (
                          SELECT x.source_id, x.id FROM {table} x
-                          WHERE x.work_key = (SELECT work_key FROM {table} WHERE source_id = ?1 AND id = ?3)))"
+                          WHERE x.work_key = (SELECT work_key FROM {table} WHERE source_id = ?1 AND id = ?3)))",
+                table = kind.table()
             ),
             params![source_id, kind, item_id],
-        )?
+        )?,
     };
     if removed > 0 {
         return Ok(false);
@@ -90,7 +90,10 @@ pub async fn channel_prefer(
     source_id: i64,
     id: String,
 ) -> Result<()> {
-    prefer_channel(&state.db.write(), &key, source_id, &id)
+    write_blocking(state.inner(), move |conn| {
+        prefer_channel(conn, &key, source_id, &id)
+    })
+    .await
 }
 
 /// Heart on a channel row (all feeds of the channel): clears the favorite
@@ -121,13 +124,13 @@ pub fn toggle_group_favorite(conn: &Connection, key: &str) -> Result<bool> {
 
 #[tauri::command]
 pub async fn channel_group_favorite(state: State<'_, AppState>, key: String) -> Result<bool> {
-    toggle_group_favorite(&state.db.write(), &key)
+    write_blocking(state.inner(), move |conn| toggle_group_favorite(conn, &key)).await
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryInput {
-    pub kind: String,
+    pub kind: ItemKind,
     pub source_id: i64,
     pub item_id: String,
     pub series_id: Option<String>,
@@ -152,7 +155,7 @@ fn is_finished(position: f64, duration: f64) -> bool {
 
 #[tauri::command]
 pub async fn history_update(state: State<'_, AppState>, entry: HistoryInput) -> Result<()> {
-    update_history(&state.db.write(), &entry)
+    write_blocking(state.inner(), move |conn| update_history(conn, &entry)).await
 }
 
 pub fn update_history(conn: &Connection, entry: &HistoryInput) -> Result<()> {
@@ -225,31 +228,34 @@ pub struct WatchedMeta {
 #[tauri::command]
 pub async fn mark_watched(
     state: State<'_, AppState>,
-    kind: String,
+    kind: ItemKind,
     source_id: i64,
     item_id: String,
     watched: bool,
     meta: Option<WatchedMeta>,
 ) -> Result<()> {
-    set_watched(
-        &state.db.write(),
-        &kind,
-        source_id,
-        &item_id,
-        watched,
-        meta.unwrap_or_default(),
-    )
+    write_blocking(state.inner(), move |conn| {
+        set_watched(
+            conn,
+            kind,
+            source_id,
+            &item_id,
+            watched,
+            meta.unwrap_or_default(),
+        )
+    })
+    .await
 }
 
 pub fn set_watched(
     conn: &Connection,
-    kind: &str,
+    kind: ItemKind,
     source_id: i64,
     item_id: &str,
     watched: bool,
     meta: WatchedMeta,
 ) -> Result<()> {
-    if !matches!(kind, "movie" | "episode") {
+    if !matches!(kind, ItemKind::Movie | ItemKind::Episode) {
         return Err(Error::msg(format!("cannot mark {kind} as watched")));
     }
     let n = conn.execute(
@@ -262,7 +268,7 @@ pub fn set_watched(
     }
     let title = match meta.title {
         Some(t) => t,
-        None if kind == "movie" => conn
+        None if kind == ItemKind::Movie => conn
             .query_row(
                 "SELECT title FROM movie WHERE source_id = ?1 AND id = ?2",
                 params![source_id, item_id],
@@ -298,22 +304,24 @@ pub fn set_watched(
 #[tauri::command]
 pub async fn history_remove(
     state: State<'_, AppState>,
-    kind: String,
+    kind: ItemKind,
     source_id: i64,
     item_id: String,
 ) -> Result<()> {
-    let conn = state.db.write();
-    conn.execute(
-        "DELETE FROM history WHERE source_id = ?1 AND kind = ?2 AND item_id = ?3",
-        params![source_id, kind, item_id],
-    )?;
-    Ok(())
+    write_blocking(state.inner(), move |conn| {
+        conn.execute(
+            "DELETE FROM history WHERE source_id = ?1 AND kind = ?2 AND item_id = ?3",
+            params![source_id, kind, item_id],
+        )?;
+        Ok(())
+    })
+    .await
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
-    pub kind: String,
+    pub kind: ItemKind,
     pub source_id: i64,
     pub item_id: String,
     pub series_id: Option<String>,
@@ -334,7 +342,10 @@ pub async fn continue_watching(
     state: State<'_, AppState>,
     limit: Option<i64>,
 ) -> Result<Vec<HistoryItem>> {
-    let conn = state.db.read();
+    read_blocking(state.inner(), move |conn| continue_rows(conn, limit)).await
+}
+
+fn continue_rows(conn: &Connection, limit: Option<i64>) -> Result<Vec<HistoryItem>> {
     // One entry per title: the latest play of any copy (episode of any copy of
     // a show). A title whose latest play was finished is not "in progress".
     let mut stmt = conn.prepare_cached(
@@ -387,7 +398,10 @@ pub async fn recent_channels(
     state: State<'_, AppState>,
     limit: Option<i64>,
 ) -> Result<Vec<RecentChannel>> {
-    let conn = state.db.read();
+    read_blocking(state.inner(), move |conn| recent_rows(conn, limit)).await
+}
+
+fn recent_rows(conn: &Connection, limit: Option<i64>) -> Result<Vec<RecentChannel>> {
     // one entry per channel: the feed watched last
     let recent: Vec<(i64, String, i64)> = conn
         .prepare_cached(
@@ -405,7 +419,7 @@ pub async fn recent_channels(
     Ok(recent
         .into_iter()
         .filter_map(|(sid, id, at)| {
-            channel_by_id(&conn, sid, &id)
+            channel_by_id(conn, sid, &id)
                 .ok()
                 .map(|channel| RecentChannel {
                     channel,
@@ -438,7 +452,7 @@ mod tests {
 
     fn progress(position: f64, duration: f64) -> HistoryInput {
         HistoryInput {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             source_id: 1,
             item_id: "e1".into(),
             series_id: Some("s1".into()),
@@ -544,9 +558,9 @@ mod tests {
     fn favorites_belong_to_the_whole_work() {
         let c = crate::db::test_conn();
         two_copies(&c);
-        assert!(toggle_favorite(&c, "movie", 1, "m1").unwrap());
+        assert!(toggle_favorite(&c, ItemKind::Movie, 1, "m1").unwrap());
         // un-favoriting through the other copy clears the work
-        assert!(!toggle_favorite(&c, "movie", 1, "m2").unwrap());
+        assert!(!toggle_favorite(&c, ItemKind::Movie, 1, "m2").unwrap());
         let n: i64 = c
             .query_row("SELECT COUNT(*) FROM favorite", [], |r| r.get(0))
             .unwrap();
@@ -624,7 +638,7 @@ mod tests {
             duration: Some(2700.0),
             ..Default::default()
         };
-        set_watched(&c, "episode", 1, "e3", true, meta).unwrap();
+        set_watched(&c, ItemKind::Episode, 1, "e3", true, meta).unwrap();
         let row: (String, i64, String, bool) = c
             .query_row(
                 "SELECT series_id, episode, title, watched FROM history WHERE item_id = 'e3'",
@@ -633,10 +647,18 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row, ("s1".into(), 3, "Show".into(), true));
-        set_watched(&c, "episode", 1, "e3", false, WatchedMeta::default()).unwrap();
+        set_watched(
+            &c,
+            ItemKind::Episode,
+            1,
+            "e3",
+            false,
+            WatchedMeta::default(),
+        )
+        .unwrap();
         assert!(!watched(&c, "e3"));
         // unmarking something never played is a no-op, live TV can't be marked
-        set_watched(&c, "movie", 1, "m9", false, WatchedMeta::default()).unwrap();
+        set_watched(&c, ItemKind::Movie, 1, "m9", false, WatchedMeta::default()).unwrap();
         assert_eq!(
             c.query_row(
                 "SELECT COUNT(*) FROM history WHERE item_id = 'm9'",
@@ -646,6 +668,6 @@ mod tests {
             .unwrap(),
             0
         );
-        assert!(set_watched(&c, "live", 1, "c1", true, WatchedMeta::default()).is_err());
+        assert!(set_watched(&c, ItemKind::Live, 1, "c1", true, WatchedMeta::default()).is_err());
     }
 }

@@ -28,7 +28,6 @@ use std::cell::RefCell;
 use std::ffi::{CStr, c_void};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 // The Swift companion's static library is mostly ObjC metadata that nothing
 // else references; force it in so dyld registers the class.
@@ -48,7 +47,15 @@ use objc2_foundation::NSString;
 use tauri::{Runtime, WebviewWindow, WindowEvent};
 
 use super::mpv::Mpv;
-use super::mpv_sys::*;
+use super::mpv_sys::{
+    MPV_RENDER_API_TYPE_OPENGL, MPV_RENDER_PARAM_ADVANCED_CONTROL, MPV_RENDER_PARAM_API_TYPE,
+    MPV_RENDER_PARAM_FLIP_Y, MPV_RENDER_PARAM_INVALID, MPV_RENDER_PARAM_OPENGL_FBO,
+    MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, MPV_RENDER_UPDATE_FRAME, mpv_error_string, mpv_opengl_fbo,
+    mpv_opengl_init_params, mpv_render_context, mpv_render_context_create, mpv_render_context_free,
+    mpv_render_context_render, mpv_render_context_report_swap,
+    mpv_render_context_set_update_callback, mpv_render_context_update, mpv_render_param,
+};
+use super::render::{GL_FRAMEBUFFER_BINDING, RedrawFlag, gl_get_integerv};
 
 thread_local! {
     static SURFACE: RefCell<Option<Surface>> = const { RefCell::new(None) };
@@ -60,7 +67,7 @@ struct Surface {
     ctx: *mut mpv_render_context,
 }
 
-static REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
+static REDRAW: RedrawFlag = RedrawFlag::new();
 
 /// Installs the video surface under the window's webview. Must be called
 /// from the setup hook; `with_webview` runs on the main thread.
@@ -86,7 +93,9 @@ pub fn attach<R: Runtime>(window: &WebviewWindow<R>, mpv: Arc<Mpv>) -> tauri::Re
         }
     });
     window.with_webview(move |platform| {
-        // wry's `inner()` is a `*mut WKWebView`.
+        // SAFETY: wry's `inner()` is its live, retained `*mut WKWebView`;
+        // `with_webview` runs this closure on the main thread while wry keeps
+        // the view alive, and the reference does not escape the closure.
         let webview: &objc2_web_kit::WKWebView = unsafe { &*(platform.inner() as *const _) };
         if let Err(e) = install(webview, mpv) {
             log::error!("video surface: {e}");
@@ -95,12 +104,18 @@ pub fn attach<R: Runtime>(window: &WebviewWindow<R>, mpv: Arc<Mpv>) -> tauri::Re
 }
 
 fn install(webview: &objc2_web_kit::WKWebView, mpv: Arc<Mpv>) -> Result<(), String> {
+    // SAFETY: AppKit view-hierarchy call on the main thread (`with_webview`).
     let parent = unsafe { webview.superview() }.ok_or("WKWebView has no superview")?;
 
     // CGL/OpenGL view sized to the window, inserted *below* the webview.
     // Pixel format made on the Swift side — the objc2 binding of
     // initWithAttributes: goes through a calling convention that delivers nil.
     let frame = webview.frame();
+    // SAFETY: main thread. `tp_mpvPixelFormat` is a class method of the
+    // Swift class returning an autoreleased NSOpenGLPixelFormat (checked for
+    // nil); `alloc` + `initWithFrame:pixelFormat:` is NSOpenGLView's
+    // designated initializer with matching argument types; `Retained::retain`
+    // takes its own +1 reference on the (checked) result.
     let gl_view = unsafe {
         let cls = swift_view_class()?;
         let pf: *mut NSOpenGLPixelFormat = msg_send![cls, tp_mpvPixelFormat];
@@ -118,6 +133,8 @@ fn install(webview: &objc2_web_kit::WKWebView, mpv: Arc<Mpv>) -> Result<(), Stri
         objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable
             | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable,
     );
+    // SAFETY: NSView's `setWantsBestResolutionOpenGLSurface:` takes a BOOL
+    // and returns void; main thread, live view.
     unsafe {
         let _: () = msg_send![&*gl_view, setWantsBestResolutionOpenGLSurface: true];
     }
@@ -125,6 +142,9 @@ fn install(webview: &objc2_web_kit::WKWebView, mpv: Arc<Mpv>) -> Result<(), Stri
 
     // Let the GL view show through wherever the UI doesn't paint: the webview
     // stops drawing its background, the window below it goes clear.
+    // SAFETY: KVC `setValue:forKey:` with an NSNumber and NSString that live
+    // across the call; WKWebView has a `drawsBackground` key (otherwise KVC
+    // raises, it does not corrupt memory); main thread.
     unsafe {
         let key = NSString::from_str("drawsBackground");
         let value = bool_number(false);
@@ -172,10 +192,15 @@ fn init_mpv() {
         };
         // GL calls mpv makes while probing the context need a current CGL
         // context on this thread.
+        // SAFETY: NSOpenGLView's `openGLContext` returns an object pointer
+        // (possibly nil, checked) owned by the view, which `surface` keeps
+        // alive; main thread.
         let gl_ctx: *mut AnyObject = unsafe { msg_send![&*surface.gl_view, openGLContext] };
         if gl_ctx.is_null() {
             return ptr::null_mut();
         }
+        // SAFETY: `gl_ctx` is a non-nil NSOpenGLContext (above);
+        // `makeCurrentContext` takes no arguments and returns void.
         let _: () = unsafe { msg_send![gl_ctx, makeCurrentContext] };
 
         let mut init = mpv_opengl_init_params {
@@ -202,9 +227,15 @@ fn init_mpv() {
             },
         ];
         let mut ctx = ptr::null_mut();
+        // SAFETY: the mpv handle is alive (`surface.mpv` holds an Arc), the
+        // view's CGL context is current (above), and `params` is
+        // INVALID-terminated with every `data` pointing at a local or a
+        // static that outlives the call; mpv copies what it keeps.
         let rc =
             unsafe { mpv_render_context_create(&mut ctx, surface.mpv.raw(), params.as_mut_ptr()) };
         if rc < 0 {
+            // SAFETY: mpv_error_string returns a static, NUL-terminated
+            // string for any code.
             let msg = unsafe { CStr::from_ptr(mpv_error_string(rc)) };
             log::error!("mpv_render_context_create failed: {msg:?}");
             return ptr::null_mut();
@@ -215,6 +246,9 @@ fn init_mpv() {
     if ctx.is_null() {
         return;
     }
+    // SAFETY: `ctx` was just created on this (the main) thread and is only
+    // freed in `teardown`, also on the main thread. The callback ignores its
+    // argument, so a null context pointer is fine.
     unsafe { mpv_render_context_set_update_callback(ctx, Some(on_mpv_update), ptr::null_mut()) };
     // Hand Swift the frame renderer; `drawRect:` calls it with the CGL
     // context already locked and current.
@@ -234,6 +268,9 @@ fn teardown() {
     let surface = SURFACE.with(|s| s.borrow_mut().take());
     if let Some(mut surface) = surface {
         if !surface.ctx.is_null() {
+            // SAFETY: a live context created on this (the main) thread;
+            // the callback is cleared first so mpv stops calling into us,
+            // and the pointer is nulled right after so it is freed once.
             unsafe {
                 mpv_render_context_set_update_callback(surface.ctx, None, ptr::null_mut());
                 mpv_render_context_free(surface.ctx);
@@ -262,7 +299,10 @@ fn render(ctx: *mut mpv_render_context, gl_view: &NSOpenGLView) {
     let bounds = gl_view.bounds();
     let backing = gl_view.convertRectToBacking(bounds);
     let mut fbo: c_int = 0;
-    unsafe { gl_get_integerv(GL_FRAMEBUFFER_BINDING, &mut fbo) };
+    // SAFETY: `drawRect:` (Swift) made the view's CGL context current;
+    // GL_FRAMEBUFFER_BINDING writes one GLint into `fbo`, and
+    // `get_proc_address` ignores its context argument.
+    unsafe { gl_get_integerv(get_proc_address, GL_FRAMEBUFFER_BINDING, &mut fbo) };
     let mut target = mpv_opengl_fbo {
         fbo,
         w: backing.size.width as c_int,
@@ -284,6 +324,10 @@ fn render(ctx: *mut mpv_render_context, gl_view: &NSOpenGLView) {
             data: ptr::null_mut(),
         },
     ];
+    // SAFETY: `ctx` is non-null, so live (only `teardown` frees it, on this
+    // thread); the CGL context is current and locked (`drawRect:`);
+    // `params` is INVALID-terminated and points at locals that outlive the
+    // call.
     unsafe {
         mpv_render_context_render(ctx, params.as_mut_ptr());
         // drawRect: (Swift) flushes; report the swap straight away.
@@ -293,17 +337,19 @@ fn render(ctx: *mut mpv_render_context, gl_view: &NSOpenGLView) {
 
 /// Called by mpv from arbitrary threads whenever a new frame is due.
 unsafe extern "C" fn on_mpv_update(_: *mut c_void) {
-    if REDRAW_PENDING.swap(true, Ordering::AcqRel) {
+    if !REDRAW.begin() {
         return; // a redraw is already queued on the main queue
     }
     let block = RcBlock::new(|| {
-        REDRAW_PENDING.store(false, Ordering::Release);
+        REDRAW.end();
         SURFACE.with(|s| {
             let Ok(s) = s.try_borrow() else { return };
             let Some(surface) = s.as_ref() else { return };
             if surface.ctx.is_null() {
                 return;
             }
+            // SAFETY: on the main (render) thread, outside mpv's update
+            // callback; non-null means not yet freed by `teardown`.
             let flags = unsafe { mpv_render_context_update(surface.ctx) };
             if flags & MPV_RENDER_UPDATE_FRAME != 0 {
                 surface.gl_view.setNeedsDisplay(true);
@@ -311,6 +357,9 @@ unsafe extern "C" fn on_mpv_update(_: *mut c_void) {
         });
     });
     // Never render on mpv's thread; hop onto AppKit's display cycle.
+    // SAFETY: the main queue is a valid, never-released dispatch queue;
+    // `into_raw` hands the block's +1 reference to libdispatch, and
+    // `trampoline` takes it back exactly once when the work item runs.
     unsafe {
         dispatch_async_f(
             main_queue(),
@@ -320,7 +369,14 @@ unsafe extern "C" fn on_mpv_update(_: *mut c_void) {
     };
 }
 
+/// # Safety
+///
+/// `ctx` must come from `RcBlock::into_raw` of an `RcBlock<dyn Fn()>`, and
+/// be passed here once.
 unsafe extern "C" fn trampoline(ctx: *mut c_void) {
+    // SAFETY: `on_mpv_update` passes the block it leaked with `into_raw`;
+    // libdispatch runs each work item once, so the reference is reclaimed
+    // (and released on drop) once.
     let block = unsafe { RcBlock::<dyn Fn()>::from_raw(ctx.cast()) };
     if let Some(b) = block {
         b.call(());
@@ -340,6 +396,8 @@ unsafe extern "C" {
 }
 
 fn main_queue() -> *mut c_void {
+    // SAFETY: only takes the address of libdispatch's static main-queue
+    // object (what `dispatch_get_main_queue()` expands to); nothing is read.
     unsafe { &_dispatch_main_q as *const c_void as *mut c_void }
 }
 
@@ -348,6 +406,9 @@ fn main_queue() -> *mut c_void {
 /// `+[MpvOpenGLView setRenderCallback:]`; installed once at init.
 fn set_swift_render_callback(view: &NSOpenGLView, cb: extern "C" fn(*mut c_void)) {
     let cls = view.class();
+    // SAFETY: `+setRenderCallback:` takes a `@convention(c)` function pointer
+    // (`RenderFn`), which `cb` is (`extern "C" fn(*mut c_void)`, a `'static`
+    // fn item); main thread.
     unsafe {
         let _: () = msg_send![cls, setRenderCallback: cb as *const c_void];
     }
@@ -358,36 +419,37 @@ fn set_swift_render_callback(view: &NSOpenGLView, cb: extern "C" fn(*mut c_void)
 // macOS's OpenGL ABI is stable (3.2 Core / 4.1); CGL has no public
 // GetProcAddress, so mpv's entry points come from the framework via dlsym.
 
-const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
-
+/// mpv's GL loader callback (also used by `gl_get_integerv`).
+///
+/// # Safety
+///
+/// `name` must be a valid NUL-terminated string.
 unsafe extern "C" fn get_proc_address(_ctx: *mut c_void, name: *const c_char) -> *mut c_void {
     // OpenGL.framework never gets unloaded; dlopen it once and look symbols
     // up from the cached handle instead of a per-call dlopen + mem::forget.
     static LIB: OnceLock<Option<libloading::os::unix::Library>> = OnceLock::new();
     let Some(lib) = LIB
-        .get_or_init(|| unsafe {
-            libloading::os::unix::Library::new("/System/Library/Frameworks/OpenGL.framework/OpenGL")
+        .get_or_init(|| {
+            // SAFETY: OpenGL.framework is a system framework with no
+            // initializer preconditions; it stays loaded for the process (a
+            // static), so looked-up symbols never dangle.
+            unsafe {
+                libloading::os::unix::Library::new(
+                    "/System/Library/Frameworks/OpenGL.framework/OpenGL",
+                )
                 .ok()
+            }
         })
         .as_ref()
     else {
         return ptr::null_mut();
     };
+    // SAFETY: `name` is a C string (caller contract).
     let name = unsafe { CStr::from_ptr(name).to_bytes() };
+    // SAFETY: the symbol is read as an untyped address and handed back to
+    // mpv, which knows its real prototype.
     let Ok(sym) = (unsafe { lib.get::<*mut c_void>(name) }) else {
         return ptr::null_mut();
     };
     *sym
-}
-
-unsafe fn gl_get_integerv(pname: u32, out: *mut c_int) {
-    type GetIntegerv = unsafe extern "C" fn(u32, *mut c_int);
-    static FN: OnceLock<usize> = OnceLock::new();
-    let addr = *FN.get_or_init(|| unsafe {
-        get_proc_address(ptr::null_mut(), c"glGetIntegerv".as_ptr()) as usize
-    });
-    if addr != 0 {
-        let f: GetIntegerv = unsafe { std::mem::transmute(addr) };
-        unsafe { f(pname, out) };
-    }
 }

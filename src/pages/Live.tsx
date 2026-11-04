@@ -7,10 +7,14 @@ import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
 import { browserPreview } from "../lib/bridge";
 import { elapsed, hhmm, nowUnix } from "../lib/format";
+import { itemKey, sameItem } from "../lib/item";
 import { keyString, parseKey, queryFor, titleFor, type ListKey } from "../lib/liveLists";
 import { playChannel } from "../lib/play";
+import { ROUTES } from "../lib/routes";
+import { loadJson, saveJson } from "../lib/storage";
 import type { Category, Channel, LiveNav } from "../lib/types";
 import { usePlayer } from "../stores/player";
+import { useChannelEpg } from "../hooks/useChannelEpg";
 import { useVideoViewport } from "../hooks/useVideoViewport";
 import { ChannelLogo } from "../components/media";
 import { Badge, Button, EmptyState, IconButton, LiveDot, ProgressBar, Segmented, Spinner } from "../components/ui";
@@ -19,22 +23,6 @@ const PAGE = 1000;
 const ROW = 68;
 
 type Mode = "countries" | "genres" | "provider";
-
-function stored<T>(key: string, fallback: T): T {
-  try {
-    const v = localStorage.getItem(key);
-    return v === null ? fallback : (JSON.parse(v) as T);
-  } catch {
-    return fallback;
-  }
-}
-function store(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* per-viewer convenience only */
-  }
-}
 
 export function LivePage() {
   const [params, setParams] = useSearchParams();
@@ -85,17 +73,17 @@ function ListPane({
   active: ListKey;
   onSelect: (k: ListKey) => void;
 }) {
-  const [mode, setModeState] = useState<Mode>(() => (active.type === "cat" ? "provider" : stored<Mode>("live.mode", "countries")));
+  const [mode, setModeState] = useState<Mode>(() => (active.type === "cat" ? "provider" : loadJson<Mode>("live.mode", "countries")));
   const setMode = (m: Mode) => {
     setModeState(m);
-    store("live.mode", m);
+    saveJson("live.mode", m);
   };
   const [q, setQ] = useState("");
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => stored("live.collapsed", {}));
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadJson("live.collapsed", {}));
   const toggle = (name: string) =>
     setCollapsed((c) => {
       const next = { ...c, [name]: !(c[name] ?? defaultCollapsed(name)) };
-      store("live.collapsed", next);
+      saveJson("live.collapsed", next);
       return next;
     });
   // countries/genres start folded, except the first country and the open list's
@@ -384,7 +372,7 @@ function ChannelPane({
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { items, total, loading, fetchMore } = useChannelList(listKey, filter);
-  const playing = usePlayer((s) => (s.now?.kind === "live" ? `${s.now.sourceId}:${s.now.id}` : null));
+  const playing = usePlayer((s) => (s.now?.kind === "live" ? itemKey(s.now) : null));
   const scrollRef = useRef<HTMLDivElement>(null);
   const previewTimer = useRef<number>(0);
 
@@ -419,7 +407,7 @@ function ChannelPane({
       if (usePlayer.getState().cast) return;
       previewTimer.current = window.setTimeout(() => {
         const now = usePlayer.getState().now;
-        if (now?.kind === "live" && now.sourceId === c.sourceId && now.id === c.id) return;
+        if (now?.kind === "live" && sameItem(now, c)) return;
         void playChannel(c, undefined, items, false);
       }, 350);
     },
@@ -430,7 +418,7 @@ function ChannelPane({
     (c: Channel) => {
       window.clearTimeout(previewTimer.current);
       const now = usePlayer.getState().now;
-      if (now?.kind === "live" && now.sourceId === c.sourceId && now.id === c.id) navigate("/player");
+      if (now?.kind === "live" && sameItem(now, c)) navigate(ROUTES.player);
       else void playChannel(c, navigate, items);
     },
     [navigate, items],
@@ -440,7 +428,7 @@ function ChannelPane({
     async (c: Channel) => {
       // a channel row stands for all of its feeds
       const fav = grouped && c.group ? await api.toggleChannelFavorite(c.group.key) : await api.toggleFavorite("live", c.sourceId, c.id);
-      if (selected && selected.sourceId === c.sourceId && selected.id === c.id) onSelect({ ...selected, favorite: fav });
+      if (selected && sameItem(selected, c)) onSelect({ ...selected, favorite: fav });
       void qc.invalidateQueries({ queryKey: ["channels"] });
     },
     [qc, selected, onSelect, grouped],
@@ -448,7 +436,7 @@ function ChannelPane({
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!items.length) return;
-    const idx = selected ? items.findIndex((c) => c.sourceId === selected.sourceId && c.id === selected.id) : -1;
+    const idx = selected ? items.findIndex((c) => sameItem(c, selected)) : -1;
     const move = (to: number) => {
       const t = Math.max(0, Math.min(items.length - 1, to));
       select(items[t]);
@@ -501,8 +489,8 @@ function ChannelPane({
                       channel={c}
                       grouped={grouped}
                       index={v.index}
-                      selected={!!selected && selected.sourceId === c.sourceId && selected.id === c.id}
-                      playing={playing === `${c.sourceId}:${c.id}`}
+                      selected={sameItem(selected, c)}
+                      playing={playing === itemKey(c)}
                       onSelect={select}
                       onOpen={openFullscreen}
                       onFavorite={toggleFavorite}
@@ -616,10 +604,10 @@ function Feeds({ channel, playing, onChannel }: { channel: Channel; playing: boo
       <h4 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Feeds</h4>
       <div className="flex flex-wrap gap-1.5">
         {(variants.data ?? []).map((v) => {
-          const current = v.sourceId === channel.sourceId && v.id === channel.id;
+          const current = sameItem(v, channel);
           return (
             <button
-              key={`${v.sourceId}:${v.id}`}
+              key={itemKey(v)}
               onClick={() => void pick(v)}
               title={[v.category, v.selected ? "plays by default" : null].filter(Boolean).join(" · ")}
               aria-pressed={current}
@@ -651,15 +639,10 @@ function PreviewPane({ channel, onChannel }: { channel: Channel | null; onChanne
   useVideoViewport(holeRef, previewing && !browserPreview && !cast);
 
   const shown = channel ?? (previewing ? (now?.channel ?? null) : null);
-  const isPlaying = !!shown && previewing && now?.sourceId === shown.sourceId && now?.id === shown.id;
+  const isPlaying = previewing && sameItem(now, shown);
 
   const t = nowUnix();
-  const epg = useQuery({
-    queryKey: ["epg", shown?.sourceId, shown?.id],
-    queryFn: () => api.epg(shown!.sourceId, shown!.id, t - 3600, t + 12 * 3600),
-    enabled: !!shown,
-    refetchInterval: 5 * 60_000,
-  });
+  const epg = useChannelEpg(shown);
   const programmes = (epg.data ?? []).filter((p) => p.stop > t);
   const current = programmes.find((p) => p.start <= t);
   const upcoming = programmes.filter((p) => p.start > t).slice(0, 6);
@@ -722,7 +705,7 @@ function PreviewPane({ channel, onChannel }: { channel: Channel | null; onChanne
             <Button
               variant="primary"
               icon={<Maximize2 className="size-4" />}
-              onClick={() => (isPlaying ? navigate("/player") : void playChannel(shown, navigate))}
+              onClick={() => (isPlaying ? navigate(ROUTES.player) : void playChannel(shown, navigate))}
             >
               {cast && !isPlaying ? `Play on ${cast.deviceName}` : "Watch fullscreen"}
             </Button>

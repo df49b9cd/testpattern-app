@@ -1,8 +1,10 @@
 import clsx from "clsx";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { AudioLines, Check, ChevronDown, Captions, Layers, Loader2, ScanSearch } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
+import { itemKey } from "../lib/item";
+import { useSettings } from "../lib/settings";
 import { channelsLabel, duration, languageName, resolutionLabel, seasonsLabel } from "../lib/format";
 import type { VersionInfo } from "../lib/types";
 import { usePlayer } from "../stores/player";
@@ -25,8 +27,8 @@ export function languages(list: { lang?: string | null }[] | undefined, preferre
 
 /** The player's preferred audio + subtitle languages as names ("Danish"). */
 function usePreferredLanguages(): string[] {
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  const codes = ["player.subLang", "player.audioLang"].flatMap((k) => String(settings.data?.[k] ?? "").split(","));
+  const settings = useSettings();
+  const codes = (["player.subLang", "player.audioLang"] as const).flatMap((k) => (settings.data?.[k] ?? "").split(","));
   return [...new Set(codes.map((c) => languageName(c)).filter((n): n is string => !!n))];
 }
 
@@ -96,7 +98,7 @@ export function Versions({
   const checkAll = async () => {
     for (const v of unchecked) {
       if (usePlayer.getState().now) break;
-      setChecking(`${v.sourceId}:${v.id}`);
+      setChecking(itemKey(v));
       try {
         await api.versionProbe(kind, v.sourceId, v.id);
       } catch {
@@ -134,12 +136,12 @@ export function Versions({
       <div className="grid gap-2.5 xl:grid-cols-2">
         {versions.map((v) => (
           <VersionCard
-            key={`${v.sourceId}:${v.id}`}
+            key={itemKey(v)}
             kind={kind}
             v={v}
             partial={kind === "series" && v.episodes > 0 && v.episodes < mostEpisodes}
             busy={pick.isPending && pick.variables === v}
-            checking={checking === `${v.sourceId}:${v.id}`}
+            checking={checking === itemKey(v)}
             onPick={() => !v.selected && pick.mutate(v)}
           />
         ))}

@@ -1,11 +1,12 @@
 import type { NavigateFunction } from "react-router";
 import { usePlayer, type NowPlaying } from "../stores/player";
+import { ROUTES } from "./routes";
 import type { Channel, Episode, HistoryItem, Movie, MovieDetail, Programme, Series } from "./types";
 
 /** Starts playback and opens the fullscreen player. */
 async function start(np: NowPlaying, navigate?: NavigateFunction, open = true) {
   await usePlayer.getState().play(np);
-  if (open && navigate) navigate("/player");
+  if (open && navigate) navigate(ROUTES.player);
 }
 
 export function channelNowPlaying(ch: Channel, zapList?: Channel[]): NowPlaying {

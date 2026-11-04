@@ -19,7 +19,8 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::db::now;
 use crate::error::{Error, Result};
-use crate::state::{AppState, http_client};
+use crate::kind::WorkKind;
+use crate::state::{AppState, http_client, read_blocking, write_blocking};
 
 /// Setting holding the API key (v3) or read access token (v4). Kept out of
 /// `settings_get` and logs.
@@ -88,9 +89,9 @@ fn year_of(v: &Value) -> Option<i64> {
 }
 
 impl Info {
-    /// From `GET /movie/{id}` (kind "movie") or `GET /tv/{id}` ("tv").
-    pub fn from_details(kind: &str, v: &Value) -> Info {
-        let tv = kind == "tv";
+    /// From `GET /movie/{id}` or `GET /tv/{id}`.
+    pub fn from_details(kind: WorkKind, v: &Value) -> Info {
+        let tv = kind == WorkKind::Series;
         // both kinds have `origin_country` (ISO 3166-1 codes); older movie
         // records only `production_countries`
         let mut countries: Vec<String> = v["origin_country"]
@@ -125,22 +126,6 @@ impl Info {
 }
 
 // ------------------------------------------------------------------ client
-
-/// TMDB's two title types (our "series" are "tv").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Movie,
-    Tv,
-}
-
-impl Kind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Kind::Movie => "movie",
-            Kind::Tv => "tv",
-        }
-    }
-}
 
 enum Auth {
     /// v4 read access token (a JWT): `Authorization: Bearer …`
@@ -206,7 +191,7 @@ impl Client {
             let resp = self.get_with(path, extra).await?;
             match resp.status().as_u16() {
                 200 => return resp.json().await.map_err(|e| Error::from(e.without_url())),
-                401 | 403 => return Err(Error::msg(REJECTED)),
+                401 | 403 => return Err(Error::TmdbRejected),
                 404 => return Ok(Value::Null),
                 429 => {
                     let wait = resp
@@ -225,24 +210,22 @@ impl Client {
 
     /// Details of one title; 404 comes back as Fetched::Missing, and the
     /// shared 429/401/403 handling lives in json().
-    async fn details(&self, kind: Kind, id: &str) -> Result<Fetched> {
-        let v = self.json(&format!("/{}/{id}", kind.as_str()), &[]).await?;
+    async fn details(&self, kind: WorkKind, id: &str) -> Result<Fetched> {
+        let v = self.json(&format!("/{}/{id}", kind.tmdb()), &[]).await?;
         Ok(if v.is_null() {
             Fetched::Missing
         } else {
-            Fetched::Found(Box::new(Info::from_details(kind.as_str(), &v)))
+            Fetched::Found(Box::new(Info::from_details(kind, &v)))
         })
     }
 }
-
-const REJECTED: &str = "TMDB did not accept the API key";
 
 /// Checks a key with one request (`GET /3/authentication`, "validate key").
 pub async fn check_key(key: &str) -> Result<()> {
     let resp = Client::new(key).get("/authentication").await?;
     match resp.status().as_u16() {
         200 => Ok(()),
-        401 | 403 => Err(Error::msg(REJECTED)),
+        401 | 403 => Err(Error::TmdbRejected),
         code => Err(Error::Network(format!("TMDB answered {code}"))),
     }
 }
@@ -330,16 +313,31 @@ pub fn status(conn: &Connection) -> Result<Status> {
     })
 }
 
-fn emit<R: Runtime>(app: &AppHandle<R>, st: &AppState) {
-    if let Ok(s) = status(&st.db.read()) {
+async fn emit<R: Runtime>(app: &AppHandle<R>, st: &AppState) {
+    if let Ok(s) = read_blocking(st, status).await {
         let _ = app.emit(EVENT, s);
     }
+}
+
+async fn has_key(st: &AppState) -> bool {
+    read_blocking(st, |conn| Ok(key(conn).is_some()))
+        .await
+        .unwrap_or(false)
+}
+
+async fn save_map(st: &AppState, batch: &[(&'static str, String, String)]) -> Result<()> {
+    let batch = batch.to_vec();
+    write_blocking(st, move |conn| store_map(conn, &batch)).await
+}
+
+async fn save(st: &AppState, batch: Vec<(WorkKind, String, Option<Info>)>) -> Result<()> {
+    write_blocking(st, move |conn| store(conn, &batch)).await
 }
 
 // --------------------------------------------------------------------- job
 
 /// Titles to fetch: never fetched or older than `MAX_AGE`, newest first.
-fn todo(conn: &Connection) -> Result<Vec<(Kind, String)>> {
+fn todo(conn: &Connection) -> Result<Vec<(WorkKind, String)>> {
     let rows = conn
         .prepare(
             "SELECT CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END, substr(w.key, 6)
@@ -356,7 +354,16 @@ fn todo(conn: &Connection) -> Result<Vec<(Kind, String)>> {
         .filter(|(_, id)| {
             !id.is_empty() && id.len() < 12 && id.bytes().all(|b| b.is_ascii_digit()) && id != "0"
         })
-        .map(|(k, id)| (if k == "movie" { Kind::Movie } else { Kind::Tv }, id))
+        .map(|(k, id)| {
+            (
+                if k == "movie" {
+                    WorkKind::Movie
+                } else {
+                    WorkKind::Series
+                },
+                id,
+            )
+        })
         .collect())
 }
 
@@ -369,13 +376,13 @@ const CHANGES_MAX_DAYS: i64 = 14;
 
 /// Ids TMDB reported changed: fetch their details again (fetched_at = 0);
 /// only rows present are touched.
-pub fn mark_changed(conn: &Connection, kind: Kind, ids: &[String]) -> Result<usize> {
+pub fn mark_changed(conn: &Connection, kind: WorkKind, ids: &[String]) -> Result<usize> {
     let mut stmt =
         conn.prepare_cached("UPDATE tmdb SET fetched_at = 0 WHERE kind = ?1 AND id = ?2")?;
     let mut n = 0;
     for id in ids {
         if !id.is_empty() && id.len() < 12 && id.bytes().all(|b| b.is_ascii_digit()) {
-            n += stmt.execute(params![kind.as_str(), id])?;
+            n += stmt.execute(params![kind.tmdb(), id])?;
         }
     }
     Ok(n)
@@ -409,7 +416,7 @@ fn store_changes_since(conn: &Connection, d: chrono::NaiveDate) -> Result<()> {
 async fn changes(
     client: &Client,
     pace: &std::sync::Arc<tokio::sync::Mutex<tokio::time::Interval>>,
-    kind: Kind,
+    kind: WorkKind,
     since: chrono::NaiveDate,
 ) -> Result<Vec<String>> {
     let window = chrono::Utc::now().date_naive() - chrono::Duration::days(CHANGES_MAX_DAYS);
@@ -420,7 +427,7 @@ async fn changes(
         pace.lock().await.tick().await;
         let v = client
             .json(
-                &format!("/{}/changes", kind.as_str()),
+                &format!("/{}/changes", kind.tmdb()),
                 &[("start_date", start.as_str()), ("page", &page.to_string())],
             )
             .await?;
@@ -449,7 +456,7 @@ async fn changes(
 /// One unidentified work: its own key, a title line and the year to ask
 /// TMDB's search with.
 struct Candidate {
-    kind: Kind,
+    kind: WorkKind,
     source_key: String,
     title: String,
     year: Option<i64>,
@@ -482,9 +489,9 @@ fn search_todo(conn: &Connection) -> Result<Vec<Candidate>> {
         .filter(|(_, _, title, _)| !title.trim().is_empty())
         .map(|(kind, source_key, title, year)| Candidate {
             kind: if kind == "movie" {
-                Kind::Movie
+                WorkKind::Movie
             } else {
-                Kind::Tv
+                WorkKind::Series
             },
             source_key,
             title,
@@ -497,7 +504,7 @@ fn search_todo(conn: &Connection) -> Result<Vec<Candidate>> {
 /// year identifies the entry; several such candidates settle none.
 async fn search_id(
     client: &Client,
-    kind: Kind,
+    kind: WorkKind,
     title: &str,
     year: Option<i64>,
 ) -> Result<Option<String>> {
@@ -506,7 +513,7 @@ async fn search_id(
     if let Some(y) = year {
         year_param = y.to_string();
         extra.push((
-            if kind == Kind::Movie {
+            if kind == WorkKind::Movie {
                 "primary_release_year"
             } else {
                 "first_air_date_year"
@@ -515,12 +522,12 @@ async fn search_id(
         ));
     }
     let v = client
-        .json(&format!("/search/{}", kind.as_str()), &extra)
+        .json(&format!("/search/{}", kind.tmdb()), &extra)
         .await?;
     if v.is_null() {
         return Ok(None);
     }
-    let tv = kind == Kind::Tv;
+    let tv = kind == WorkKind::Series;
     let asked = crate::works::norm_title(title);
     let mut found: Option<String> = None;
     for r in v["results"].as_array().into_iter().flatten() {
@@ -564,10 +571,7 @@ async fn identify(
     st: &AppState,
     progress: usize,
 ) -> Result<usize> {
-    let candidates = {
-        let conn = st.db.read();
-        search_todo(&conn)?
-    };
+    let candidates = read_blocking(st, search_todo).await?;
     if candidates.is_empty() {
         return Ok(0);
     }
@@ -578,18 +582,18 @@ async fn identify(
     PROGRESS.lock().total += candidates.len() as i64;
     let mut found = 0;
     let mut failures = 0;
-    let mut batch: Vec<(&str, String, String)> = Vec::new();
+    let mut batch: Vec<(&'static str, String, String)> = Vec::new();
     for (i, c) in candidates.iter().enumerate() {
         pace.lock().await.tick().await;
-        if key(&st.db.read()).is_none() {
+        if !has_key(st).await {
             break; // the key was removed meanwhile (Settings)
         }
         PROGRESS.lock().done = (progress + i + 1) as i64;
         let id = match search_id(client, c.kind, &c.title, c.year).await {
             Ok(id) => id,
-            Err(e) if e.to_string() == REJECTED => {
+            Err(e @ Error::TmdbRejected) => {
                 // keep the matches already found: they are real work
-                store_map(&mut st.db.write(), &batch)?;
+                save_map(st, &batch).await?;
                 return Err(e);
             }
             Err(e) => {
@@ -599,7 +603,7 @@ async fn identify(
                 // is sequential so an outage would otherwise pace through the
                 // whole catalog at one slow request per title
                 if failures >= 25 && failures * 2 > found + batch.len() {
-                    store_map(&mut st.db.write(), &batch)?;
+                    save_map(st, &batch).await?;
                     return Err(Error::msg(format!("TMDB search is not reachable ({e})")));
                 }
                 continue;
@@ -608,17 +612,17 @@ async fn identify(
         let got = id.unwrap_or_default();
         if !got.is_empty() {
             found += 1;
-            log::debug!("tmdb: {} '{}' -> {got}", c.kind.as_str(), c.title);
+            log::debug!("tmdb: {} '{}' -> {got}", c.kind.tmdb(), c.title);
         }
-        batch.push((c.kind.as_str(), c.source_key.clone(), got));
+        batch.push((c.kind.tmdb(), c.source_key.clone(), got));
         if batch.len() >= 200 {
-            store_map(&mut st.db.write(), &batch)?;
+            save_map(st, &batch).await?;
             let done = (progress + i + 1) as i64;
             PROGRESS.lock().done = done;
             batch.clear();
         }
     }
-    store_map(&mut st.db.write(), &batch)?;
+    save_map(st, &batch).await?;
     Ok(found)
 }
 
@@ -635,7 +639,7 @@ fn store_map(conn: &mut Connection, rows: &[(&str, String, String)]) -> Result<(
     Ok(())
 }
 
-fn store(conn: &mut Connection, rows: &[(Kind, String, Option<Info>)]) -> Result<()> {
+fn store(conn: &mut Connection, rows: &[(WorkKind, String, Option<Info>)]) -> Result<()> {
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare_cached(
@@ -644,25 +648,35 @@ fn store(conn: &mut Connection, rows: &[(Kind, String, Option<Info>)]) -> Result
         let t = now();
         for (kind, id, info) in rows {
             let json = info.as_ref().map(serde_json::to_string).transpose()?;
-            stmt.execute(params![kind.as_str(), id, json, t])?;
+            stmt.execute(params![kind.tmdb(), id, json, t])?;
         }
     }
     tx.commit()?;
     Ok(())
 }
 
-fn regroup(st: &AppState) -> Result<()> {
-    let mut conn = st.db.write();
-    let tx = conn.transaction()?;
-    crate::works::rebuild(&tx)?;
-    tx.commit()?;
-    Ok(())
+async fn regroup(st: &AppState) -> Result<()> {
+    write_blocking(st, |conn| {
+        let tx = conn.transaction()?;
+        crate::works::rebuild(&tx)?;
+        tx.commit()?;
+        Ok(())
+    })
+    .await
 }
 
 /// Fetches missing TMDB details in the background (one run at a time;
 /// no-op without a key).
 pub fn spawn<R: Runtime>(app: AppHandle<R>, st: AppState) {
-    if key(&st.db.read()).is_none() || RUNNING.swap(true, Ordering::SeqCst) {
+    tauri::async_runtime::spawn(async move {
+        if has_key(&st).await {
+            start(app, st);
+        }
+    });
+}
+
+fn start<R: Runtime>(app: AppHandle<R>, st: AppState) {
+    if RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
     {
@@ -686,15 +700,12 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, st: AppState) {
             Ok(n) => log::info!("tmdb: {n} titles updated"),
             Err(e) => log::warn!("tmdb: {e}"),
         }
-        emit(&app, &st);
+        emit(&app, &st).await;
     });
 }
 
 async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
-    let api_key = {
-        let conn = st.db.read();
-        key(&conn)
-    };
+    let api_key = read_blocking(st, |conn| Ok(key(conn))).await?;
     let Some(api_key) = api_key else { return Ok(0) };
 
     let client = std::sync::Arc::new(Client::new(&api_key));
@@ -709,18 +720,21 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
     // the todo() query — with an up-to-date catalog, this phase alone may
     // make work. The first run ever has no last date: nothing to mark.
     {
-        let since = changes_since(&st.db.read());
+        let since = read_blocking(st, |conn| Ok(changes_since(conn))).await?;
         let mut covered = since.is_none(); // no prior date: nothing to cover
         if let Some(since) = since {
             let mut marked = 0;
             let mut fetched = true;
-            for kind in [Kind::Movie, Kind::Tv] {
+            for kind in [WorkKind::Movie, WorkKind::Series] {
                 match changes(&client, &pace, kind, since).await {
-                    Ok(ids) => marked += mark_changed(&st.db.write(), kind, &ids)?,
+                    Ok(ids) => {
+                        marked +=
+                            write_blocking(st, move |conn| mark_changed(conn, kind, &ids)).await?
+                    }
                     // TMDB down: keep going, the MAX_AGE fallback still works
                     Err(e) => {
                         fetched = false;
-                        log::debug!("tmdb {}/changes: {e}", kind.as_str());
+                        log::debug!("tmdb {}/changes: {e}", kind.tmdb());
                     }
                 }
             }
@@ -730,30 +744,28 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
         // Only advance the window when the changes phase actually covered
         // it — otherwise the failed span would never be marked for refetch.
         if covered {
-            store_changes_since(&st.db.write(), chrono::Utc::now().date_naive())?;
+            let today = chrono::Utc::now().date_naive();
+            write_blocking(st, move |conn| store_changes_since(conn, today)).await?;
         }
     }
 
-    let todo = {
-        let conn = st.db.read();
-        todo(&conn)?
-    };
+    let todo = read_blocking(st, todo).await?;
     if todo.is_empty() {
         // still: titles without a TMDB id may be searchable
         let found = identify(&client, &pace, st, 0).await?;
         if found > 0 {
-            regroup(st)?;
+            regroup(st).await?;
         }
         return Ok(found);
     }
     log::info!("tmdb: fetching {} titles", todo.len());
     PROGRESS.lock().total = todo.len() as i64;
-    emit(app, st);
+    emit(app, st).await;
 
     let mut results = futures_util::stream::iter(todo)
         .map({
             let (client, pace) = (client.clone(), pace.clone());
-            move |(kind, id): (Kind, String)| {
+            move |(kind, id): (WorkKind, String)| {
                 let (client, pace) = (client.clone(), pace.clone());
                 async move {
                     pace.lock().await.tick().await;
@@ -764,17 +776,17 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
         })
         .buffer_unordered(CONCURRENCY);
 
-    let mut batch: Vec<(Kind, String, Option<Info>)> = Vec::new();
+    let mut batch: Vec<(WorkKind, String, Option<Info>)> = Vec::new();
     let (mut stored, mut since_regroup, mut failures) = (0usize, 0usize, 0usize);
     while let Some((kind, id, r)) = results.next().await {
         PROGRESS.lock().done += 1;
         match r {
             Ok(Fetched::Found(info)) => batch.push((kind, id, Some(*info))),
             Ok(Fetched::Missing) => batch.push((kind, id, None)),
-            Err(e) if e.to_string() == REJECTED => return Err(e),
+            Err(e @ Error::TmdbRejected) => return Err(e),
             Err(e) => {
                 failures += 1;
-                log::debug!("tmdb {}/{id}: {e}", kind.as_str());
+                log::debug!("tmdb {}/{id}: {e}", kind.tmdb());
                 // offline or TMDB down: stop, the next run continues
                 if failures >= 25 && failures * 2 > stored + batch.len() {
                     return Err(Error::msg(format!("TMDB is not reachable ({e})")));
@@ -784,28 +796,27 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
         if batch.len() >= 100 {
             stored += batch.len();
             since_regroup += batch.len();
-            store(&mut st.db.write(), &batch)?;
-            batch.clear();
+            save(st, std::mem::take(&mut batch)).await?;
             // the key was removed meanwhile (Settings)
-            if key(&st.db.read()).is_none() {
-                regroup(st)?;
+            if !has_key(st).await {
+                regroup(st).await?;
                 return Ok(stored);
             }
             if since_regroup >= REGROUP_EVERY {
                 since_regroup = 0;
-                regroup(st)?;
+                regroup(st).await?;
             }
-            emit(app, st);
+            emit(app, st).await;
         }
     }
     stored += batch.len();
-    store(&mut st.db.write(), &batch)?;
+    save(st, batch).await?;
 
     // 2) unidentified titles: search TMDB, remember hits in tmdb_map, then
     // the regroup below folds them into the TMDB group (detail rows for
     // the newly mapped ids are this run's remaining `todo` of the next).
     let found = identify(&client, &pace, st, stored).await?;
-    regroup(st)?;
+    regroup(st).await?;
     Ok(stored + found)
 }
 
@@ -813,7 +824,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
 
 #[tauri::command]
 pub async fn tmdb_status(state: State<'_, AppState>) -> Result<Status> {
-    status(&state.db.read())
+    read_blocking(state.inner(), status).await
 }
 
 /// Saves (after checking it with TMDB) or, with an empty key, removes the
@@ -831,7 +842,7 @@ pub async fn tmdb_set_key<R: Runtime>(
     // the system keyring when there is one (it may ask to be unlocked: the
     // user just typed the key), else the database
     if key.is_empty() {
-        crate::secrets::forget_named(state.inner(), KEY_SETTING)?;
+        crate::secrets::forget_named(state.inner(), KEY_SETTING).await?;
     } else {
         crate::secrets::store_named(
             state.inner(),
@@ -843,7 +854,7 @@ pub async fn tmdb_set_key<R: Runtime>(
     }
     PROGRESS.lock().error = None;
     spawn(app, state.inner().clone());
-    status(&state.db.read())
+    read_blocking(state.inner(), status).await
 }
 
 #[tauri::command]
@@ -854,7 +865,7 @@ pub async fn tmdb_refresh<R: Runtime>(
     // the user asked: a keyring locked so far may prompt now
     crate::secrets::ensure_loaded(state.inner(), None, crate::secrets::Unlock::Prompt).await;
     spawn(app, state.inner().clone());
-    status(&state.db.read())
+    read_blocking(state.inner(), status).await
 }
 
 /// What the detail pages show from TMDB.
@@ -874,7 +885,7 @@ pub struct Facts {
 /// TMDB facts of a work, when its details are stored and fit its title.
 pub fn facts_for(
     conn: &Connection,
-    kind: &str,
+    kind: WorkKind,
     key: &str,
     title: &str,
     year: Option<i64>,
@@ -898,11 +909,11 @@ pub fn facts_for(
 }
 
 /// TMDB details stored for a work key ("tmdb:603"), if any.
-pub fn info_for(conn: &Connection, kind: &str, key: &str) -> Result<Option<Info>> {
+pub fn info_for(conn: &Connection, kind: WorkKind, key: &str) -> Result<Option<Info>> {
     let Some(id) = key.strip_prefix("tmdb:") else {
         return Ok(None);
     };
-    let kind = crate::works::tmdb_kind(kind);
+    let kind = kind.tmdb();
     Ok(conn
         .query_row(
             "SELECT json FROM tmdb WHERE kind = ?1 AND id = ?2",
@@ -927,7 +938,7 @@ mod tests {
             "production_countries": [{"iso_3166_1": "US", "name": "United States of America"}],
             "poster_path": "/p.jpg", "backdrop_path": "/b.jpg"
         });
-        let m = Info::from_details("movie", &movie);
+        let m = Info::from_details(WorkKind::Movie, &movie);
         assert_eq!(
             (m.year, m.collection.as_deref(), m.genres.len()),
             (Some(2022), Some("Top Gun Collection"), 2)
@@ -938,7 +949,7 @@ mod tests {
             "genres": [{"name": "Crime"}, {"name": "Mystery"}], "first_air_date": "2021-09-29",
             "networks": [{"name": "Netflix"}], "origin_country": ["DK"], "vote_average": 0
         });
-        let t = Info::from_details("tv", &tv);
+        let t = Info::from_details(WorkKind::Series, &tv);
         assert_eq!(
             (t.title.as_str(), t.language.as_deref(), t.rating),
             ("Kastanjemanden", Some("da"), None)
@@ -992,8 +1003,8 @@ mod tests {
         assert_eq!(
             todo(&c).unwrap(),
             vec![
-                (Kind::Movie, "22".to_owned()),
-                (Kind::Movie, "11".to_owned())
+                (WorkKind::Movie, "22".to_owned()),
+                (WorkKind::Movie, "11".to_owned())
             ]
         );
         c.execute(
@@ -1001,7 +1012,7 @@ mod tests {
             [now()],
         )
         .unwrap();
-        assert_eq!(todo(&c).unwrap(), vec![(Kind::Movie, "11".to_owned())]);
+        assert_eq!(todo(&c).unwrap(), vec![(WorkKind::Movie, "11".to_owned())]);
     }
 
     /// GET /3/movie/changes body: `{results:[{id, adult}], total_pages}`.
@@ -1038,9 +1049,14 @@ mod tests {
         )
         .unwrap();
         assert!(todo(&c).unwrap().is_empty());
-        let n = mark_changed(&c, Kind::Movie, &["11".into(), "999".into(), "tt13".into()]).unwrap();
+        let n = mark_changed(
+            &c,
+            WorkKind::Movie,
+            &["11".into(), "999".into(), "tt13".into()],
+        )
+        .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(todo(&c).unwrap(), vec![(Kind::Movie, "11".to_owned())]);
+        assert_eq!(todo(&c).unwrap(), vec![(WorkKind::Movie, "11".to_owned())]);
     }
 
     /// tmdb_map rows upsert; the '' sentinel counts as "searched, no match".

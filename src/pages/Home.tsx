@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Info, Play, Star } from "lucide-react";
 import { useNavigate } from "react-router";
 import { api } from "../lib/api";
+import { itemKey } from "../lib/item";
 import { elapsed, hhmm } from "../lib/format";
 import { playChannel, playEpisode, resumeHistory } from "../lib/play";
 import type { Channel, HistoryItem, Series } from "../lib/types";
@@ -75,7 +76,7 @@ export function HomePage() {
         {!!favs.data?.items.length && (
           <Shelf title="Favorite Channels" itemWidth={260}>
             {favs.data.items.map((c) => (
-              <ShelfItem key={`${c.sourceId}-${c.id}`} width={260}>
+              <ShelfItem key={itemKey(c)} width={260}>
                 <ChannelCard channel={c} onClick={() => void playChannel(c, navigate, favs.data.items)} />
               </ShelfItem>
             ))}
@@ -84,7 +85,7 @@ export function HomePage() {
         {!!recent.data?.length && (
           <Shelf title="Recently Watched Channels" itemWidth={260}>
             {recent.data.map((c) => (
-              <ShelfItem key={`${c.sourceId}-${c.id}`} width={260}>
+              <ShelfItem key={itemKey(c)} width={260}>
                 <ChannelCard channel={c} onClick={() => void playChannel(c, navigate, recent.data)} />
               </ShelfItem>
             ))}
@@ -96,7 +97,7 @@ export function HomePage() {
             action={<SeeAll onClick={() => navigate("/movies")} />}
           >
             {movies.data.items.map((m) => (
-              <ShelfItem key={`${m.sourceId}-${m.id}`} width={170}>
+              <ShelfItem key={itemKey(m)} width={170}>
                 <PosterCard
                   title={m.title}
                   subtitle={workSubtitle(m.year, m)}
@@ -116,7 +117,7 @@ export function HomePage() {
         {!!series.data?.items.length && (
           <Shelf title="Recently Updated Series" action={<SeeAll onClick={() => navigate("/series")} />}>
             {series.data.items.map((s) => (
-              <ShelfItem key={`${s.sourceId}-${s.id}`} width={170}>
+              <ShelfItem key={itemKey(s)} width={170}>
                 <PosterCard
                   title={s.title}
                   subtitle={workSubtitle(s.year, s)}
@@ -217,7 +218,7 @@ function ContinueCard({ item, onClick }: { item: HistoryItem; onClick: () => voi
   );
 }
 
-export function ChannelCard({ channel, onClick }: { channel: Channel; onClick: () => void }) {
+function ChannelCard({ channel, onClick }: { channel: Channel; onClick: () => void }) {
   const now = channel.now;
   return (
     <button onClick={onClick} className="group flex w-full flex-col gap-2 text-left">

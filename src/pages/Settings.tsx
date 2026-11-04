@@ -5,7 +5,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { api, errorMessage } from "../lib/api";
 import { ago, date } from "../lib/format";
-import type { Source } from "../lib/types";
+import { playerWrite } from "../lib/playerWrite";
+import { useSettings, writeSetting } from "../lib/settings";
+import type { Settings, Source } from "../lib/types";
 import { useSync } from "../stores/sync";
 import { SourceForm } from "../components/SourceForm";
 import type { StartPage } from "../app/Root";
@@ -178,14 +180,20 @@ function Stat({ label, value }: { label: string; value: ReactNode }) {
 
 function PlaybackSettings() {
   const qc = useQueryClient();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  const s = settings.data ?? {};
-  const set = async (key: string, value: unknown) => {
-    qc.setQueryData(["settings"], { ...s, [key]: value });
-    await api.setSetting(key, value);
-    if (key === "content.showAdult") void qc.invalidateQueries();
+  const settings = useSettings();
+  const s: Settings = settings.data ?? {};
+  const [error, setError] = useState<string | null>(null);
+  // optimistic; a failed write rolls the control back and says why
+  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    setError(null);
+    void playerWrite(writeSetting(qc, key, value), (e) => setError(`Couldn't save the setting: ${e}`)).then((ok) => {
+      if (ok && key === "content.showAdult") void qc.invalidateQueries();
+    });
   };
-  const str = (k: string) => (typeof s[k] === "string" ? (s[k] as string) : "");
+  const str = (k: keyof Settings) => {
+    const v = s[k];
+    return typeof v === "string" ? v : "";
+  };
 
   return (
     <>
@@ -203,10 +211,10 @@ function PlaybackSettings() {
                 { value: "live", label: "Live TV" },
                 { value: "guide", label: "TV Guide" },
               ]}
-              onChange={(v) => void set("ui.startPage", v)}
+              onChange={(v) => set("ui.startPage", v)}
             />
           </div>
-          <ArtworkCache limitMb={typeof s["cache.imagesMb"] === "number" ? (s["cache.imagesMb"] as number) : 1024} />
+          <ArtworkCache limitMb={s["cache.imagesMb"] ?? 1024} />
         </Card>
       </Section>
       <Section title="Playback">
@@ -215,7 +223,7 @@ function PlaybackSettings() {
             label="Hardware decoding"
             description="Uses the GPU when the driver supports the codec; falls back to software automatically."
             checked={s["player.hwdec"] !== "no"}
-            onChange={(v) => void set("player.hwdec", v ? "auto-safe" : "no")}
+            onChange={(v) => set("player.hwdec", v ? "auto-safe" : "no")}
           />
           <div className="flex items-center justify-between gap-6 px-1 py-2">
             <span>
@@ -228,19 +236,19 @@ function PlaybackSettings() {
                 { value: "ts", label: "MPEG-TS" },
                 { value: "m3u8", label: "HLS" },
               ]}
-              onChange={(v) => void set("player.liveFormat", v)}
+              onChange={(v) => set("player.liveFormat", v)}
             />
           </div>
           <Switch
             label="Show subtitles by default"
             description="Otherwise subtitles stay off until you pick a track."
             checked={s["player.subsEnabled"] === true}
-            onChange={(v) => void set("player.subsEnabled", v)}
+            onChange={(v) => set("player.subsEnabled", v)}
           />
           <div className="grid grid-cols-2 gap-4 px-1 pb-1 pt-2">
             {/* keyed so the fields pick up the stored value once settings load */}
-            <LanguageField key={`a:${str("player.audioLang")}`} label="Preferred audio languages" value={str("player.audioLang")} onSave={(v) => void set("player.audioLang", v)} />
-            <LanguageField key={`s:${str("player.subLang")}`} label="Preferred subtitle languages" value={str("player.subLang")} onSave={(v) => void set("player.subLang", v)} />
+            <LanguageField key={`a:${str("player.audioLang")}`} label="Preferred audio languages" value={str("player.audioLang")} onSave={(v) => set("player.audioLang", v)} />
+            <LanguageField key={`s:${str("player.subLang")}`} label="Preferred subtitle languages" value={str("player.subLang")} onSave={(v) => set("player.subLang", v)} />
           </div>
         </Card>
       </Section>
@@ -250,10 +258,16 @@ function PlaybackSettings() {
             label="Show adult content"
             description="Categories flagged as adult by the provider stay hidden unless this is on."
             checked={s["content.showAdult"] === true}
-            onChange={(v) => void set("content.showAdult", v)}
+            onChange={(v) => set("content.showAdult", v)}
           />
         </Card>
       </Section>
+      {error && (
+        <p className="-mt-6 mb-10 flex items-start gap-2 text-[13px] text-live">
+          <CircleAlert className="mt-px size-4 shrink-0" />
+          {error}
+        </p>
+      )}
       <Metadata />
     </>
   );
@@ -403,7 +417,7 @@ function About() {
   return (
     <Section title="About">
       <Card className="text-[13.5px] leading-relaxed text-dim">
-        <p className="text-fg">testpattern 0.1.0</p>
+        <p className="text-fg">testpattern {__APP_VERSION__}</p>
         <p>
           Playback engine: {versions.data?.mpv ?? "mpv"} · FFmpeg {versions.data?.ffmpeg ?? ""} (built in, statically linked).
         </p>

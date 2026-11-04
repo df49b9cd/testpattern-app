@@ -507,7 +507,24 @@ export type PlayerEvent =
   | { type: "reconnecting"; attempt: number }
   | { type: "log"; level: string; prefix: string; text: string };
 
-export type Settings = Record<string, unknown>;
+/**
+ * User settings (src-tauri/src/settings.rs `defaults()`; every key is filled
+ * in by the backend, but a cache patched before the first load may lack some).
+ */
+export interface Settings {
+  "player.hwdec"?: string;
+  "player.liveFormat"?: string;
+  "player.audioLang"?: string;
+  "player.subLang"?: string;
+  "player.subsEnabled"?: boolean;
+  "player.volume"?: number;
+  "content.showAdult"?: boolean;
+  "ui.startPage"?: string;
+  /** the one-shot "subtitles are off" hint was shown (PL-100) */
+  "ui.subHintSeen"?: boolean;
+  "cache.imagesMb"?: number;
+  "recording.dir"?: string;
+}
 
 /** Artwork cache usage (src-tauri/src/images.rs). */
 export interface CacheStats {
@@ -527,13 +544,13 @@ export interface CastDevice {
   model: string;
 }
 
-/** "ready": a TV is picked but nothing has been sent to it yet (frontend only). */
 /** The TV list and whether a search is still running (`cast://devices`). */
 export interface CastDevices {
   devices: CastDevice[];
   searching: boolean;
 }
 
+/** "ready": a TV is picked but nothing has been sent to it yet (frontend only). */
 export type CastState = "ready" | "connecting" | "loading" | "buffering" | "playing" | "paused" | "ended" | "error" | "stopped";
 
 /** The cast session (`cast://status`). "error": this item failed, the session goes on; "stopped": it is over. */

@@ -13,12 +13,14 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
 use tokio_rustls::rustls::crypto::{self, CryptoProvider};
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio_rustls::rustls::{self, ClientConfig, DigitallySignedStruct, SignatureScheme};
-use tokio_rustls::TlsConnector;
 
 pub const NS_CONNECTION: &str = "urn:x-cast:com.google.cast.tp.connection";
 pub const NS_HEARTBEAT: &str = "urn:x-cast:com.google.cast.tp.heartbeat";
@@ -42,7 +44,12 @@ pub struct Message {
 
 impl Message {
     pub fn new(destination: &str, namespace: &str, payload: String) -> Self {
-        Message { source: SENDER.into(), destination: destination.into(), namespace: namespace.into(), payload }
+        Message {
+            source: SENDER.into(),
+            destination: destination.into(),
+            namespace: namespace.into(),
+            payload,
+        }
     }
 }
 
@@ -92,7 +99,12 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
 /// Parses a `CastMessage`; `None` for malformed or binary-payload messages
 /// (device authentication, which this sender doesn't use).
 pub fn decode(buf: &[u8]) -> Option<Message> {
-    let mut m = Message { source: String::new(), destination: String::new(), namespace: String::new(), payload: String::new() };
+    let mut m = Message {
+        source: String::new(),
+        destination: String::new(),
+        namespace: String::new(),
+        payload: String::new(),
+    };
     let mut has_payload = false;
     let mut pos = 0;
     while pos < buf.len() {
@@ -127,6 +139,12 @@ pub fn decode(buf: &[u8]) -> Option<Message> {
 
 // --------------------------------------------------------------- TLS
 
+/// Accepts any server certificate. Deliberate: Chromecasts present a
+/// self-signed certificate (device authentication happens over the Cast
+/// channel, which this sender skips), and the address comes from mDNS or the
+/// user on the local network. Handshake signatures are still verified, so
+/// the session is encrypted — just not authenticated. Never reuse this for
+/// anything that talks to the internet.
 #[derive(Debug)]
 struct DeviceCert(Arc<CryptoProvider>);
 
@@ -148,7 +166,12 @@ impl ServerCertVerifier for DeviceCert {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        crypto::verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+        crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -157,7 +180,12 @@ impl ServerCertVerifier for DeviceCert {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        crypto::verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+        crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -166,6 +194,9 @@ impl ServerCertVerifier for DeviceCert {
 }
 
 type Tls = TlsStream<TcpStream>;
+
+/// For each of the TCP connect and the TLS handshake.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 
 pub struct Reader(ReadHalf<Tls>);
 pub struct Writer(WriteHalf<Tls>);
@@ -180,15 +211,18 @@ pub async fn connect(addr: SocketAddr) -> io::Result<(Reader, Writer, IpAddr)> {
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(DeviceCert(provider)))
         .with_no_client_auth();
-    let tcp = tokio::time::timeout(Duration::from_secs(6), TcpStream::connect(addr))
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the device did not answer"))??;
     tcp.set_nodelay(true)?;
     let local = tcp.local_addr()?.ip();
     let name = ServerName::IpAddress(addr.ip().into());
-    let tls = tokio::time::timeout(Duration::from_secs(6), TlsConnector::from(Arc::new(config)).connect(name, tcp))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the device did not answer"))??;
+    let tls = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        TlsConnector::from(Arc::new(config)).connect(name, tcp),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "the device did not answer"))??;
     let (r, w) = tokio::io::split(tls);
     Ok((Reader(r), Writer(w), local))
 }
@@ -199,7 +233,10 @@ impl Reader {
         loop {
             let len = self.0.read_u32().await? as usize;
             if len > MAX_FRAME {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "oversized cast frame"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "oversized cast frame",
+                ));
             }
             let mut buf = vec![0; len];
             self.0.read_exact(&mut buf).await?;
@@ -227,7 +264,11 @@ mod tests {
 
     #[test]
     fn round_trips_messages() {
-        let m = Message::new(RECEIVER, NS_RECEIVER, r#"{"type":"LAUNCH","appId":"CC1AD845","requestId":1}"#.into());
+        let m = Message::new(
+            RECEIVER,
+            NS_RECEIVER,
+            r#"{"type":"LAUNCH","appId":"CC1AD845","requestId":1}"#.into(),
+        );
         let bytes = encode(&m);
         // protocol 0, then source "sender-0"
         assert_eq!(&bytes[..4], &[0x08, 0x00, 0x12, 0x08]);
