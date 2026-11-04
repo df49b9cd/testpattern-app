@@ -4,9 +4,9 @@
 # plus the keychain round-trip test, PL-111). Version tags (v*), pushes to
 # main and manual runs also build the portable release bundles — Linux
 # (.deb/AppImage/.rpm, T-049; Flatpak, T-059) and macOS (.dmg, T-028) — as
-# run artifacts; tag builds publish them on a GitHub release: version-gated,
-# checksummed, draft, with release notes and Sigstore build-provenance
-# attestations.
+# run artifacts; tag builds publish them on the tag's GitHub release
+# (created, or updated when it already exists): version-gated, checksummed,
+# with release notes and Sigstore build-provenance attestations.
 # The end-to-end smoke test stays local: it needs the IPTV account, which
 # allows one stream at a time.
 #
@@ -302,7 +302,9 @@ jobs:
   # Tag builds only: gates the tag against the declared versions, collects
   # both platforms' bundles, checksums them, attests their build provenance
   # (Sigstore, verifiable via `gh attestation verify`) and publishes them
-  # on a DRAFT release with generated + manual notes — a human publishes.
+  # on the tag's release with generated + manual notes. A release that
+  # already exists for the tag (created by hand, or a re-run) is updated in
+  # place and its assets replaced, so there is only ever one per tag.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [bundle, bundle-macos, flatpak]
@@ -383,11 +385,13 @@ jobs:
         with:
           subject-checksums: release/SHA256SUMS
 
-      - name: Draft release
+      - name: Release
         uses: softprops/action-gh-release@v3
         with:
-          draft: true
+          draft: false
           prerelease: ${{ steps.pre.outputs.pre == 'true' }}
+          make_latest: ${{ steps.pre.outputs.pre == 'true' && 'false' || 'true' }}
+          overwrite_files: true
           generate_release_notes: true
           body_path: release-body.md
           files: |
