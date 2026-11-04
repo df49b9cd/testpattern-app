@@ -5,6 +5,9 @@ import { api } from "../lib/api";
 import { itemKey } from "../lib/item";
 import { elapsed, hhmm } from "../lib/format";
 import { playChannel, playEpisode, resumeHistory } from "../lib/play";
+import { useSeriesDetail } from "../lib/queries";
+import { queryKeys } from "../lib/queryKeys";
+import { ROUTES } from "../lib/routes";
 import type { Channel, HistoryItem, Series } from "../lib/types";
 import { Artwork, ChannelLogo, PosterCard, Shelf, ShelfItem } from "../components/media";
 import { QualityBadges, workSubtitle } from "../components/LibraryBrowser";
@@ -12,8 +15,8 @@ import { Button, LiveDot, ProgressBar } from "../components/ui";
 
 export function HomePage() {
   const navigate = useNavigate();
-  const cont = useQuery({ queryKey: ["continue"], queryFn: () => api.continueWatching(20) });
-  const upNext = useQuery({ queryKey: ["continue", "up-next"], queryFn: () => api.upNext(20) });
+  const cont = useQuery({ queryKey: queryKeys.continue, queryFn: () => api.continueWatching(20) });
+  const upNext = useQuery({ queryKey: [...queryKeys.continue, "up-next"], queryFn: () => api.upNext(20) });
   const favs = useQuery({ queryKey: ["channels", "favorites"], queryFn: () => api.channels({ grouped: true, favorites: true, limit: 50 }) });
   const recent = useQuery({ queryKey: ["recent-channels"], queryFn: () => api.recentChannels(20) });
   const movies = useQuery({ queryKey: ["movies", "home"], queryFn: () => api.movies({ sort: "added", limit: 24 }) });
@@ -22,8 +25,8 @@ export function HomePage() {
   const favMovies = useQuery({ queryKey: ["movies", "fav-home"], queryFn: () => api.movies({ favorites: true, limit: 30 }) });
   const favSeries = useQuery({ queryKey: ["series", "fav-home"], queryFn: () => api.series({ favorites: true, limit: 30 }) });
   const myList = [
-    ...(favMovies.data?.items ?? []).map((m) => ({ kind: "movie" as const, key: `m-${m.sourceId}-${m.id}`, title: m.title, sub: m.year, image: m.poster, rating: m.rating, href: `/movies/${m.sourceId}/${m.id}` })),
-    ...(favSeries.data?.items ?? []).map((s) => ({ kind: "series" as const, key: `s-${s.sourceId}-${s.id}`, title: s.title, sub: s.year, image: s.cover, rating: s.rating, href: `/series/${s.sourceId}/${s.id}` })),
+    ...(favMovies.data?.items ?? []).map((m) => ({ kind: "movie" as const, key: `movie:${itemKey(m)}`, title: m.title, sub: m.year, image: m.poster, rating: m.rating, href: ROUTES.movie(m) })),
+    ...(favSeries.data?.items ?? []).map((s) => ({ kind: "series" as const, key: `series:${itemKey(s)}`, title: s.title, sub: s.year, image: s.cover, rating: s.rating, href: ROUTES.series(s) })),
   ];
 
   const featured = series.data?.items.find((s) => s.backdrop) ?? null;
@@ -94,7 +97,7 @@ export function HomePage() {
         {!!movies.data?.items.length && (
           <Shelf
             title="Recently Added Movies"
-            action={<SeeAll onClick={() => navigate("/movies")} />}
+            action={<SeeAll onClick={() => navigate(ROUTES.movieList)} />}
           >
             {movies.data.items.map((m) => (
               <ShelfItem key={itemKey(m)} width={170}>
@@ -108,14 +111,14 @@ export function HomePage() {
                   favorite={m.favorite}
                   badge={<QualityBadges quality={m.quality} />}
                   width={170}
-                  onClick={() => navigate(`/movies/${m.sourceId}/${m.id}`)}
+                  onClick={() => navigate(ROUTES.movie(m))}
                 />
               </ShelfItem>
             ))}
           </Shelf>
         )}
         {!!series.data?.items.length && (
-          <Shelf title="Recently Updated Series" action={<SeeAll onClick={() => navigate("/series")} />}>
+          <Shelf title="Recently Updated Series" action={<SeeAll onClick={() => navigate(ROUTES.seriesList)} />}>
             {series.data.items.map((s) => (
               <ShelfItem key={itemKey(s)} width={170}>
                 <PosterCard
@@ -126,7 +129,7 @@ export function HomePage() {
                   favorite={s.favorite}
                   badge={<QualityBadges quality={s.quality} />}
                   width={170}
-                  onClick={() => navigate(`/series/${s.sourceId}/${s.id}`)}
+                  onClick={() => navigate(ROUTES.series(s))}
                 />
               </ShelfItem>
             ))}
@@ -147,12 +150,7 @@ function SeeAll({ onClick }: { onClick: () => void }) {
 
 function Hero({ series }: { series: Series | null }) {
   const navigate = useNavigate();
-  const detail = useQuery({
-    queryKey: ["series-detail", series?.sourceId, series?.id],
-    queryFn: () => api.seriesDetail(series!.sourceId, series!.id),
-    enabled: !!series,
-    staleTime: 10 * 60_000,
-  });
+  const detail = useSeriesDetail(series, { staleTime: 10 * 60_000 });
   if (!series) return <div className="h-40" />;
   const d = detail.data;
   return (
@@ -175,10 +173,10 @@ function Hero({ series }: { series: Series | null }) {
         </div>
         {d?.plot && <p className="line-clamp-3 max-w-xl text-[15px] leading-relaxed text-fg/80">{d.plot}</p>}
         <div className="mt-2 flex gap-3">
-          <Button variant="primary" size="lg" icon={<Play className="size-5 fill-current" />} onClick={() => navigate(`/series/${series.sourceId}/${series.id}`)}>
+          <Button variant="primary" size="lg" icon={<Play className="size-5 fill-current" />} onClick={() => navigate(ROUTES.series(series))}>
             {d?.resume?.started ? `Resume S${d.resume.season} E${d.resume.episode}` : "Watch now"}
           </Button>
-          <Button variant="glass" size="lg" icon={<Info className="size-5" />} onClick={() => navigate(`/series/${series.sourceId}/${series.id}`)}>
+          <Button variant="glass" size="lg" icon={<Info className="size-5" />} onClick={() => navigate(ROUTES.series(series))}>
             Details
           </Button>
         </div>

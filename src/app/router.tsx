@@ -23,20 +23,20 @@ export const router = createHashRouter([
   {
     element: <Root />,
     children: [
-      { path: "/onboarding", element: <OnboardingPage /> },
+      { path: ROUTES.onboarding, element: <OnboardingPage /> },
       { path: ROUTES.player, element: <PlayerPage />, handle: { transparent: true } satisfies RouteHandle },
       {
         element: <Layout />,
         children: [
           { index: true, element: <HomePage /> },
           { path: ROUTES.live, element: <LivePage />, handle: { transparent: true } satisfies RouteHandle },
-          { path: "/guide", element: <GuidePage /> },
-          { path: "/movies", element: <MoviesPage /> },
+          { path: ROUTES.guide, element: <GuidePage /> },
+          { path: ROUTES.movieList, element: <MoviesPage /> },
           { path: "/movies/:sourceId/:id", element: <MovieDetailPage /> },
-          { path: "/series", element: <SeriesPage /> },
+          { path: ROUTES.seriesList, element: <SeriesPage /> },
           { path: "/series/:sourceId/:id", element: <SeriesDetailPage /> },
-          { path: "/search", element: <SearchPage /> },
-          { path: "/settings", element: <SettingsPage /> },
+          { path: ROUTES.search, element: <SearchPage /> },
+          { path: ROUTES.settings, element: <SettingsPage /> },
         ],
       },
     ],

@@ -1,6 +1,20 @@
 //! Full-text search over channels, movies and series.
 
-use super::*;
+use std::time::Instant;
+
+use rusqlite::{OptionalExtension, params};
+use serde::Serialize;
+use tauri::State;
+
+use crate::error::Result;
+use crate::kind::{ItemKind, WorkKind};
+use crate::settings;
+use crate::state::{AppState, read_blocking};
+
+use super::{
+    ChannelItem, MovieItem, SeriesItem, channel_by_id, channel_group_by_key, movie_by_key,
+    series_by_key,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,22 +107,12 @@ pub async fn search(
             Ok(keys)
         };
         let mut movies = Vec::new();
-        {
-            let mut stmt = conn.prepare_cached(&format!("{} WHERE w.kind = 'movie' AND w.key = ?1", movie_work_select()))?;
-            for key in works(WorkKind::Movie)? {
-                if let Some(m) = stmt.query_row([key], row_to_movie).optional()? {
-                    movies.push(m);
-                }
-            }
+        for key in works(WorkKind::Movie)? {
+            movies.extend(movie_by_key(conn, &key)?);
         }
         let mut series = Vec::new();
-        {
-            let mut stmt = conn.prepare_cached(&format!("{SERIES_WORK_SELECT} WHERE w.kind = 'series' AND w.key = ?1"))?;
-            for key in works(WorkKind::Series)? {
-                if let Some(s) = stmt.query_row([key], row_to_series).optional()? {
-                    series.push(s);
-                }
-            }
+        for key in works(WorkKind::Series)? {
+            series.extend(series_by_key(conn, &key)?);
         }
         log::debug!("search {q:?}: {}/{}/{} in {:?}", channels.len(), movies.len(), series.len(), t.elapsed());
         Ok(SearchResults { channels, movies, series })

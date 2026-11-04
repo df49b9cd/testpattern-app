@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Loader2 } from "lucide-react";
+import { ChevronDown, Loader2, Search } from "lucide-react";
 import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "glass";
@@ -18,7 +18,7 @@ const sizes: Record<Size, string> = {
   lg: "h-12 px-6 text-[15px] gap-2.5 rounded-2xl",
 };
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: Size;
   icon?: ReactNode;
@@ -49,7 +49,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   );
 });
 
-export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   label: string;
   active?: boolean;
   size?: "sm" | "md" | "lg";
@@ -209,5 +209,71 @@ export function Segmented<T extends string>({ value, options, onChange, classNam
         </button>
       ))}
     </div>
+  );
+}
+
+/** Filter field with a search icon (side panels, list headers). */
+export function SearchInput({ value, onChange, placeholder, className }: { value: string; onChange: (v: string) => void; placeholder?: string; className?: string }) {
+  return (
+    <label className={clsx("relative flex items-center", className)}>
+      <Search className="pointer-events-none absolute left-3 size-4 text-faint" />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-9 w-full rounded-lg bg-white/[0.06] pl-9 pr-3 text-sm outline-none ring-1 ring-white/[0.06] placeholder:text-faint focus:ring-accent"
+      />
+    </label>
+  );
+}
+
+/** A side-panel list entry with an optional icon and count; `dense` for the tighter library panel. */
+export function NavRow({
+  active,
+  onClick,
+  count,
+  icon,
+  inset,
+  dense,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  count?: number;
+  icon?: ReactNode;
+  inset?: boolean;
+  dense?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={clsx(
+        "flex w-full items-center gap-2.5 rounded-lg px-3 text-left text-[13.5px] transition-colors",
+        dense ? "min-h-8 py-1" : "min-h-9 py-1.5",
+        inset && (dense ? "pl-5" : "pl-8"),
+        active ? "bg-accent/15 font-semibold text-fg" : "text-dim hover:bg-white/[0.04] hover:text-fg",
+      )}
+    >
+      {icon && <span className={clsx("shrink-0", active ? "text-accent-strong" : "text-faint")}>{icon}</span>}
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {count != null && <span className={clsx("shrink-0 text-[11px] tabular-nums text-faint", !dense && "font-normal")}>{count.toLocaleString()}</span>}
+    </button>
+  );
+}
+
+/** Small-caps section title that folds its section. */
+export function FoldHeader({ open, onToggle, count, children }: { open: boolean; onToggle: () => void; count: number; children: ReactNode }) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={open}
+      className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-faint hover:text-dim"
+    >
+      <ChevronDown className={clsx("size-3.5 transition-transform", !open && "-rotate-90")} />
+      {children}
+      <span className="ml-auto font-medium normal-case tracking-normal">{count}</span>
+    </button>
   );
 }

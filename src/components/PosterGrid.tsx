@@ -1,7 +1,7 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Page } from "../lib/types";
+import { usePagedQuery } from "../hooks/usePagedQuery";
 import { EmptyState, Spinner } from "./ui";
 
 const PAGE = 120;
@@ -51,17 +51,8 @@ export function PosterGrid<T>({
     return () => ro.disconnect();
   }, []);
 
-  const q = useInfiniteQuery({
-    queryKey,
-    initialPageParam: 0,
-    queryFn: ({ pageParam }) => fetchPage(pageParam, PAGE),
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, p) => n + p.items.length, 0);
-      return loaded < last.total ? loaded : undefined;
-    },
-  });
-  const items = q.data?.pages.flatMap((p) => p.items) ?? [];
-  const total = q.data?.pages[0]?.total ?? 0;
+  const q = usePagedQuery({ queryKey, fetchPage, pageSize: PAGE });
+  const { items, total, fetchMoreNear } = q;
 
   const { cols, itemWidth, rowHeight } = gridLayout(width, minItemWidth);
   const rows = Math.ceil(total / cols);
@@ -78,9 +69,8 @@ export function PosterGrid<T>({
 
   const virtualRows = virtualizer.getVirtualItems();
   const lastRow = virtualRows.length ? virtualRows[virtualRows.length - 1].index : 0;
-  useEffect(() => {
-    if ((lastRow + 3) * cols >= items.length && q.hasNextPage && !q.isFetchingNextPage) void q.fetchNextPage();
-  }, [lastRow, cols, items.length, q]);
+  // three rows ahead of the last one on screen
+  useEffect(() => fetchMoreNear((lastRow + 3) * cols, 0), [lastRow, cols, fetchMoreNear]);
 
   // new filter → back to top
   const keyStr = JSON.stringify(queryKey);

@@ -68,7 +68,7 @@ function Monogram({ title }: { title: string }) {
   );
 }
 
-export interface PosterCardProps {
+interface PosterCardProps {
   title: string;
   subtitle?: ReactNode;
   image?: string | null;

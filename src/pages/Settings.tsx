@@ -1,21 +1,26 @@
 import clsx from "clsx";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarSync, CircleAlert, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { api, errorMessage } from "../lib/api";
 import { ago, date } from "../lib/format";
-import { playerWrite } from "../lib/playerWrite";
+import { backgroundWrite } from "../lib/backgroundWrite";
+import { useSources } from "../lib/queries";
+import { queryKeys } from "../lib/queryKeys";
+import { ROUTES, type StartPage } from "../lib/routes";
 import { useSettings, writeSetting } from "../lib/settings";
 import type { Settings, Source } from "../lib/types";
 import { useSync } from "../stores/sync";
 import { SourceForm } from "../components/SourceForm";
-import type { StartPage } from "../app/Root";
 import { Badge, Button, IconButton, ProgressBar, Segmented, Spinner, Switch, TextField } from "../components/ui";
+
+/** Sync counts and states change in the background (ms). */
+const SOURCES_REFRESH = 5000;
 
 export function SettingsPage() {
   const navigate = useNavigate();
-  const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 5000 });
+  const sources = useSources({ refetchInterval: SOURCES_REFRESH });
   return (
     <div className="mx-auto max-w-4xl px-10 pb-20 pt-8">
       <h1 className="mb-8 text-3xl font-bold tracking-tight">Settings</h1>
@@ -23,7 +28,7 @@ export function SettingsPage() {
       <Section
         title="Sources"
         action={
-          <Button size="sm" variant="secondary" icon={<Plus className="size-4" />} onClick={() => navigate("/onboarding?add=1")}>
+          <Button size="sm" variant="secondary" icon={<Plus className="size-4" />} onClick={() => navigate(ROUTES.addSource)}>
             Add source
           </Button>
         }
@@ -70,7 +75,12 @@ function SourceCard({ source: s }: { source: Source }) {
       return s.url;
     }
   })();
-  const refresh = () => void qc.invalidateQueries({ queryKey: ["sources"] });
+  const refresh = () => void qc.invalidateQueries({ queryKey: queryKeys.sources });
+  // a failed start is said on the card (progress and failures of a running sync come as events)
+  const startSync = (epgOnly: boolean) => {
+    setError(null);
+    void backgroundWrite(api.syncSource(s.id, epgOnly), (e) => setError(`Couldn't sync: ${e}`)).then(refresh);
+  };
 
   if (editing) {
     return (
@@ -107,10 +117,10 @@ function SourceCard({ source: s }: { source: Source }) {
           </p>
         </div>
         <div className="flex shrink-0 gap-1.5">
-          <Button size="sm" variant="ghost" icon={<RefreshCw className={clsx("size-4", busy && "animate-spin")} />} disabled={!!busy} onClick={() => void api.syncSource(s.id).then(refresh)}>
+          <Button size="sm" variant="ghost" icon={<RefreshCw className={clsx("size-4", busy && "animate-spin")} />} disabled={!!busy} onClick={() => startSync(false)}>
             Sync
           </Button>
-          <Button size="sm" variant="ghost" icon={<CalendarSync className="size-4" />} disabled={!!busy} onClick={() => void api.syncSource(s.id, true).then(refresh)}>
+          <Button size="sm" variant="ghost" icon={<CalendarSync className="size-4" />} disabled={!!busy} onClick={() => startSync(true)}>
             Guide
           </Button>
           <Button size="sm" variant="ghost" icon={<Pencil className="size-4" />} onClick={() => setEditing(true)}>
@@ -186,7 +196,7 @@ function PlaybackSettings() {
   // optimistic; a failed write rolls the control back and says why
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setError(null);
-    void playerWrite(writeSetting(qc, key, value), (e) => setError(`Couldn't save the setting: ${e}`)).then((ok) => {
+    void backgroundWrite(writeSetting(qc, key, value), (e) => setError(`Couldn't save the setting: ${e}`)).then((ok) => {
       if (ok && key === "content.showAdult") void qc.invalidateQueries();
     });
   };
@@ -205,7 +215,7 @@ function PlaybackSettings() {
               <span className="mt-0.5 block text-[13px] text-dim">Where testpattern opens.</span>
             </span>
             <Segmented<StartPage>
-              value={(str("ui.startPage") || "home") as StartPage}
+              value={s["ui.startPage"] || "home"}
               options={[
                 { value: "home", label: "Home" },
                 { value: "live", label: "Live TV" },
@@ -361,7 +371,10 @@ function Metadata() {
 function ArtworkCache({ limitMb }: { limitMb: number }) {
   const qc = useQueryClient();
   const usage = useQuery({ queryKey: ["image-cache"], queryFn: api.imageCache });
-  const [clearing, setClearing] = useState(false);
+  const clear = useMutation({
+    mutationFn: api.clearImageCache,
+    onSuccess: (stats) => qc.setQueryData(["image-cache"], stats),
+  });
   const mb = (bytes: number) => (bytes < 10 << 20 ? (bytes / (1 << 20)).toFixed(1) : Math.round(bytes / (1 << 20)));
   return (
     <div className="flex items-center justify-between gap-6 px-1 py-2">
@@ -372,21 +385,12 @@ function ArtworkCache({ limitMb }: { limitMb: number }) {
           least recently used first.
         </span>
       </span>
-      <Button
-        size="sm"
-        loading={clearing}
-        disabled={!usage.data?.files}
-        onClick={async () => {
-          setClearing(true);
-          try {
-            qc.setQueryData(["image-cache"], await api.clearImageCache());
-          } finally {
-            setClearing(false);
-          }
-        }}
-      >
-        Clear
-      </Button>
+      <span className="flex shrink-0 flex-col items-end gap-1">
+        <Button size="sm" loading={clear.isPending} disabled={!usage.data?.files} onClick={() => clear.mutate()}>
+          Clear
+        </Button>
+        {clear.isError && <span className="text-[12px] text-live">{errorMessage(clear.error)}</span>}
+      </span>
     </div>
   );
 }

@@ -75,6 +75,19 @@ impl From<WorkKind> for ItemKind {
     }
 }
 
+/// One catalog row: the source it came from and the provider's id there.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ItemRef {
+    pub source_id: i64,
+    pub id: String,
+}
+
+impl ItemRef {
+    pub fn new(source_id: i64, id: String) -> Self {
+        ItemRef { source_id, id }
+    }
+}
+
 /// What `play` opens: a catalog item, or a past programme of a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

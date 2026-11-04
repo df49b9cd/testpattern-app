@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { api } from "../lib/api";
 import { listen } from "../lib/bridge";
-import { playerWrite } from "../lib/playerWrite";
+import { backgroundWrite } from "../lib/backgroundWrite";
 import { useQueryClient } from "@tanstack/react-query";
 import type { CastStatus, PlayerEvent, SyncProgress, TmdbStatus } from "../lib/types";
 import { syncLocalVolume, usePlayer } from "../stores/player";
@@ -15,7 +15,7 @@ export function useBackendEvents() {
       listen<PlayerEvent>("player://event", (e) => usePlayer.getState().onEvent(e.payload)),
       listen<CastStatus>("cast://status", (e) => usePlayer.getState().onCastStatus(e.payload)),
       // a cast that outlived a reload of the UI: show it, so it can be stopped
-      playerWrite(
+      backgroundWrite(
         api.castStatus().then((s) => {
           if (s && !usePlayer.getState().cast) usePlayer.setState({ cast: s });
         }),

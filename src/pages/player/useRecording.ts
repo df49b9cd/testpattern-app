@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
-import { playerWrite } from "../../lib/playerWrite";
+import { backgroundWrite } from "../../lib/backgroundWrite";
 import { usePlayer } from "../../stores/player";
 
 /** Recording live TV (T-035): the file being written, since when, and a toggle. */
@@ -16,7 +16,7 @@ export function useRecording(say: (text: string) => void) {
   }, [recordingFile, say]);
   const toggleRecord = useCallback(() => {
     const on = !usePlayer.getState().props.recording;
-    void playerWrite(api.record(on), (e) => say(`Can't record: ${e}`));
+    void backgroundWrite(api.record(on), (e) => say(`Can't record: ${e}`));
   }, [say]);
   return { recordingFile, recordingSince, toggleRecord };
 }

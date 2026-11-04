@@ -1,26 +1,36 @@
 import clsx from "clsx";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Cast, ChevronDown, Clock, Heart, History, Layers, LayoutList, Maximize2, Search, Tv } from "lucide-react";
+import { Cast, ChevronDown, Clock, Heart, History, Layers, LayoutList, Maximize2, Tv } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
+import { backgroundWrite } from "../lib/backgroundWrite";
 import { browserPreview } from "../lib/bridge";
-import { elapsed, hhmm, nowUnix } from "../lib/format";
+import { currentAndUpcoming, elapsed, hhmm, nowUnix } from "../lib/format";
+import { groupBy } from "../lib/groupBy";
 import { itemKey, sameItem } from "../lib/item";
 import { keyString, parseKey, queryFor, titleFor, type ListKey } from "../lib/liveLists";
 import { playChannel } from "../lib/play";
+import { queryKeys } from "../lib/queryKeys";
 import { ROUTES } from "../lib/routes";
 import { loadJson, saveJson } from "../lib/storage";
 import type { Category, Channel, LiveNav } from "../lib/types";
 import { usePlayer } from "../stores/player";
 import { useChannelEpg } from "../hooks/useChannelEpg";
+import { useFolds } from "../hooks/useFolds";
+import { usePagedQuery } from "../hooks/usePagedQuery";
+import { useTimeout } from "../hooks/useTimeout";
 import { useVideoViewport } from "../hooks/useVideoViewport";
 import { ChannelLogo } from "../components/media";
-import { Badge, Button, EmptyState, IconButton, LiveDot, ProgressBar, Segmented, Spinner } from "../components/ui";
+import { Badge, Button, EmptyState, FoldHeader, IconButton, LiveDot, NavRow, ProgressBar, SearchInput, Segmented, Spinner } from "../components/ui";
 
 const PAGE = 1000;
 const ROW = 68;
+/** Selecting a channel previews it once the selection rests this long (ms). */
+const PREVIEW_DELAY = 350;
+/** Channel lists refresh for the "now" line (ms). */
+const LIST_REFRESH = 60_000;
 
 type Mode = "countries" | "genres" | "provider";
 
@@ -79,24 +89,19 @@ function ListPane({
     saveJson("live.mode", m);
   };
   const [q, setQ] = useState("");
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => loadJson("live.collapsed", {}));
-  const toggle = (name: string) =>
-    setCollapsed((c) => {
-      const next = { ...c, [name]: !(c[name] ?? defaultCollapsed(name)) };
-      saveJson("live.collapsed", next);
-      return next;
-    });
   // countries/genres start folded, except the first country and the open list's
   const firstCountry = nav?.countries[0]?.code ?? "";
   const openCountry = active.type === "nav" && active.country !== undefined ? `country:${active.country}` : null;
   const openGenre = active.type === "nav" && active.genre ? `genre:${active.genre}` : null;
-  const defaultCollapsed = (name: string) =>
+  const folds = useFolds("live.collapsed", (name) =>
     name === openCountry || name === openGenre
       ? false
       : name.startsWith("country:")
         ? name !== `country:${firstCountry}`
-        : name.startsWith("genre:");
-  const isCollapsed = (name: string) => !q && (collapsed[name] ?? defaultCollapsed(name));
+        : name.startsWith("genre:"),
+  );
+  // a filter shows every match unfolded
+  const isCollapsed = (name: string) => !q && folds.isCollapsed(name);
 
   const needle = q.trim().toLowerCase();
   const matches = (...texts: (string | null | undefined)[]) => !needle || texts.some((t) => t?.toLowerCase().includes(needle));
@@ -108,20 +113,15 @@ function ListPane({
     { key: { type: "all" }, label: "All channels", icon: LayoutList, count: nav?.cells.reduce((n, c) => n + c.count, 0) },
   ];
 
-  const providerGroups = useMemo(() => {
-    const map = new Map<string, Category[]>();
-    for (const c of categories) {
-      if (needle && !`${c.region ?? ""} ${c.title}`.toLowerCase().includes(needle)) continue;
-      const g = c.region ?? "Other";
-      if (!map.has(g)) map.set(g, []);
-      map.get(g)!.push(c);
-    }
-    return [...map.entries()];
-  }, [categories, needle]);
+  const providerGroups = useMemo(
+    () => [...groupBy(categories.filter((c) => !needle || `${c.region ?? ""} ${c.title}`.toLowerCase().includes(needle)), (c) => c.region ?? "Other")],
+    [categories, needle],
+  );
 
   const cell = (country: string, genre: string) =>
     nav?.cells.find((c) => (c.country ?? "") === country && c.genre === genre)?.count ?? 0;
   const genreTotal = (genre: string) => nav?.cells.filter((c) => c.genre === genre).reduce((n, c) => n + c.count, 0) ?? 0;
+  const tree = { isCollapsed, toggle: folds.toggle, isActive, onSelect, cell };
 
   return (
     <div className="flex w-[268px] shrink-0 flex-col border-r border-line bg-panel">
@@ -137,108 +137,66 @@ function ListPane({
             { value: "provider", label: "Provider" },
           ]}
         />
-        <label className="relative flex items-center">
-          <Search className="pointer-events-none absolute left-3 size-4 text-faint" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder={mode === "provider" ? "Filter categories" : mode === "genres" ? "Filter genres" : "Filter countries"}
-            className="h-9 w-full rounded-lg bg-white/[0.06] pl-9 pr-3 text-sm outline-none ring-1 ring-white/[0.06] placeholder:text-faint focus:ring-accent"
-          />
-        </label>
+        <SearchInput
+          value={q}
+          onChange={setQ}
+          placeholder={mode === "provider" ? "Filter categories" : mode === "genres" ? "Filter genres" : "Filter countries"}
+        />
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-6">
         {special.map(({ key, label, icon: Icon, count }) => (
-          <ListRow key={label} active={isActive(key)} onClick={() => onSelect(key)} count={count}>
-            <Icon className={clsx("size-4 shrink-0", isActive(key) ? "text-accent-strong" : "text-faint")} />
-            <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-          </ListRow>
+          <NavRow key={label} active={isActive(key)} onClick={() => onSelect(key)} count={count} icon={<Icon className="size-4" />}>
+            <span className="font-medium">{label}</span>
+          </NavRow>
         ))}
         {loading && <Spinner className="px-3 py-4" />}
 
+        {/* countries → their genres, or genres → their countries */}
         {mode === "countries" &&
           nav?.countries
             .filter((c) => matches(c.name, c.code))
-            .map((c) => {
-              const code = c.code ?? "";
-              const fold = `country:${code}`;
-              return (
-                <div key={fold} className="mt-2">
-                  <TreeHeader
-                    open={!isCollapsed(fold)}
-                    onToggle={() => toggle(fold)}
-                    active={isActive({ type: "nav", country: code })}
-                    onClick={() => onSelect({ type: "nav", country: code })}
-                    count={c.count}
-                  >
-                    {c.name}
-                  </TreeHeader>
-                  {!isCollapsed(fold) &&
-                    nav.genres
-                      .filter((g) => cell(code, g) > 0)
-                      .map((g) => {
-                        const k: ListKey = { type: "nav", country: code, genre: g };
-                        return (
-                          <ListRow key={g} inset active={isActive(k)} onClick={() => onSelect(k)} count={cell(code, g)}>
-                            <span className="min-w-0 flex-1 truncate">{g}</span>
-                          </ListRow>
-                        );
-                      })}
-                </div>
-              );
-            })}
+            .map((c) => (
+              <TreeSection
+                key={`country:${c.code ?? ""}`}
+                {...tree}
+                fold={`country:${c.code ?? ""}`}
+                title={c.name}
+                count={c.count}
+                list={{ type: "nav", country: c.code ?? "" }}
+                items={nav.genres.map((g) => ({ key: g, label: g, list: { type: "nav", country: c.code ?? "", genre: g } }))}
+              />
+            ))}
 
         {mode === "genres" &&
           nav?.genres
             .filter((g) => matches(g))
-            .map((g) => {
-              const fold = `genre:${g}`;
-              return (
-                <div key={fold} className="mt-2">
-                  <TreeHeader
-                    open={!isCollapsed(fold)}
-                    onToggle={() => toggle(fold)}
-                    active={isActive({ type: "nav", genre: g })}
-                    onClick={() => onSelect({ type: "nav", genre: g })}
-                    count={genreTotal(g)}
-                  >
-                    {g}
-                  </TreeHeader>
-                  {!isCollapsed(fold) &&
-                    nav.countries
-                      .filter((c) => cell(c.code ?? "", g) > 0)
-                      .map((c) => {
-                        const k: ListKey = { type: "nav", country: c.code ?? "", genre: g };
-                        return (
-                          <ListRow key={c.code ?? "-"} inset active={isActive(k)} onClick={() => onSelect(k)} count={cell(c.code ?? "", g)}>
-                            <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                          </ListRow>
-                        );
-                      })}
-                </div>
-              );
-            })}
+            .map((g) => (
+              <TreeSection
+                key={`genre:${g}`}
+                {...tree}
+                fold={`genre:${g}`}
+                title={g}
+                count={genreTotal(g)}
+                list={{ type: "nav", genre: g }}
+                items={nav.countries.map((c) => ({ key: c.code ?? "-", label: c.name, list: { type: "nav", country: c.code ?? "", genre: g } }))}
+              />
+            ))}
 
         {mode === "provider" &&
           providerGroups.map(([region, cats]) => {
             const fold = `region:${region}`;
             return (
               <div key={region} className="mt-3">
-                <button
-                  onClick={() => toggle(fold)}
-                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-faint hover:text-dim"
-                >
-                  <ChevronDown className={clsx("size-3.5 transition-transform", isCollapsed(fold) && "-rotate-90")} />
+                <FoldHeader open={!isCollapsed(fold)} onToggle={() => folds.toggle(fold)} count={cats.length}>
                   {region}
-                  <span className="ml-auto font-medium normal-case tracking-normal">{cats.length}</span>
-                </button>
+                </FoldHeader>
                 {!isCollapsed(fold) &&
                   cats.map((c) => {
                     const k: ListKey = { type: "cat", sourceId: c.sourceId, id: c.id };
                     return (
-                      <ListRow key={keyString(k)} active={isActive(k)} onClick={() => onSelect(k)} count={c.count}>
-                        <span className="min-w-0 flex-1 truncate">{c.title}</span>
-                      </ListRow>
+                      <NavRow key={keyString(k)} active={isActive(k)} onClick={() => onSelect(k)} count={c.count}>
+                        {c.title}
+                      </NavRow>
                     );
                   })}
               </div>
@@ -249,32 +207,46 @@ function ListPane({
   );
 }
 
-function ListRow({
-  active,
-  onClick,
+/** One country (or genre) with its genres (or countries) that have channels. */
+function TreeSection({
+  fold,
+  title,
   count,
-  inset,
-  children,
+  list,
+  items,
+  isCollapsed,
+  toggle,
+  isActive,
+  onSelect,
+  cell,
 }: {
-  active: boolean;
-  onClick: () => void;
-  count?: number;
-  inset?: boolean;
-  children: React.ReactNode;
+  fold: string;
+  title: string;
+  count: number;
+  list: ListKey;
+  items: { key: string; label: string; list: ListKey & { type: "nav" } }[];
+  isCollapsed: (fold: string) => boolean;
+  toggle: (fold: string) => void;
+  isActive: (k: ListKey) => boolean;
+  onSelect: (k: ListKey) => void;
+  cell: (country: string, genre: string) => number;
 }) {
+  const open = !isCollapsed(fold);
+  const countOf = (k: ListKey & { type: "nav" }) => cell(k.country ?? "", k.genre ?? "");
   return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={clsx(
-        "flex min-h-9 w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13.5px] transition-colors",
-        inset && "pl-8",
-        active ? "bg-accent/15 font-semibold text-fg" : "text-dim hover:bg-white/[0.04] hover:text-fg",
-      )}
-    >
-      {children}
-      {count != null && <span className="shrink-0 text-[11px] font-normal tabular-nums text-faint">{count.toLocaleString()}</span>}
-    </button>
+    <div className="mt-2">
+      <TreeHeader open={open} onToggle={() => toggle(fold)} active={isActive(list)} onClick={() => onSelect(list)} count={count}>
+        {title}
+      </TreeHeader>
+      {open &&
+        items
+          .filter((c) => countOf(c.list) > 0)
+          .map((c) => (
+            <NavRow key={c.key} inset active={isActive(c.list)} onClick={() => onSelect(c.list)} count={countOf(c.list)}>
+              {c.label}
+            </NavRow>
+          ))}
+    </div>
   );
 }
 
@@ -319,39 +291,29 @@ function TreeHeader({
 
 // -------------------------------------------------------------- channels
 
+/** "Recently watched" comes in one piece. */
+const noMore = () => {};
+
 function useChannelList(key: ListKey, filter: string) {
   const q = filter.trim() || undefined;
-  const infinite = useInfiniteQuery({
+  const paged = usePagedQuery({
     queryKey: ["channels", "list", keyString(key), q],
     enabled: key.type !== "recent",
-    initialPageParam: 0,
-    refetchInterval: 60_000,
-    queryFn: ({ pageParam }) => api.channels({ ...queryFor(key), q, offset: pageParam, limit: PAGE }),
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, p) => n + p.items.length, 0);
-      return loaded < last.total ? loaded : undefined;
-    },
+    refetchInterval: LIST_REFRESH,
+    pageSize: PAGE,
+    fetchPage: (offset, limit) => api.channels({ ...queryFor(key), q, offset, limit }),
   });
   const recent = useQuery({
     queryKey: ["recent-channels", "live-page"],
     queryFn: () => api.recentChannels(60),
     enabled: key.type === "recent",
-    refetchInterval: 60_000,
+    refetchInterval: LIST_REFRESH,
   });
   if (key.type === "recent") {
     const items = (recent.data ?? []).filter((c) => !q || c.title.toLowerCase().includes(q.toLowerCase()));
-    return { items, total: items.length, loading: recent.isLoading, fetchMore: () => {}, hasMore: false };
+    return { items, total: items.length, loading: recent.isLoading, fetchMoreNear: noMore };
   }
-  const items = infinite.data?.pages.flatMap((p) => p.items) ?? [];
-  return {
-    items,
-    total: infinite.data?.pages[0]?.total ?? 0,
-    loading: infinite.isLoading,
-    fetchMore: () => {
-      if (infinite.hasNextPage && !infinite.isFetchingNextPage) void infinite.fetchNextPage();
-    },
-    hasMore: !!infinite.hasNextPage,
-  };
+  return { items: paged.items, total: paged.total, loading: paged.isLoading, fetchMoreNear: paged.fetchMoreNear };
 }
 
 function ChannelPane({
@@ -371,10 +333,11 @@ function ChannelPane({
 }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { items, total, loading, fetchMore } = useChannelList(listKey, filter);
+  const { items, total, loading, fetchMoreNear } = useChannelList(listKey, filter);
   const playing = usePlayer((s) => (s.now?.kind === "live" ? itemKey(s.now) : null));
   const scrollRef = useRef<HTMLDivElement>(null);
-  const previewTimer = useRef<number>(0);
+  // cleared on unmount: a pending preview must not start after leaving /live
+  const previewTimer = useTimeout();
 
   // channel rows (one per channel) vs. the provider's own feeds
   const grouped = listKey.type !== "cat";
@@ -389,9 +352,7 @@ function ChannelPane({
   // lazy-load further pages as the user scrolls ("All channels")
   const virtualItems = virtualizer.getVirtualItems();
   const lastIndex = virtualItems.length ? virtualItems[virtualItems.length - 1].index : 0;
-  useEffect(() => {
-    if (lastIndex >= items.length - 20) fetchMore();
-  }, [lastIndex, items.length, fetchMore]);
+  useEffect(() => fetchMoreNear(lastIndex, 20), [lastIndex, fetchMoreNear]);
 
   // a new list starts at the top
   useEffect(() => {
@@ -401,35 +362,39 @@ function ChannelPane({
   const select = useCallback(
     (c: Channel, preview = true) => {
       onSelect(c);
-      window.clearTimeout(previewTimer.current);
+      previewTimer.clear();
       if (!preview) return;
       // while casting, browsing the list must not zap the TV (Enter does)
       if (usePlayer.getState().cast) return;
-      previewTimer.current = window.setTimeout(() => {
+      previewTimer.start(() => {
         const now = usePlayer.getState().now;
         if (now?.kind === "live" && sameItem(now, c)) return;
         void playChannel(c, undefined, items, false);
-      }, 350);
+      }, PREVIEW_DELAY);
     },
-    [onSelect, items],
+    [onSelect, items, previewTimer],
   );
 
   const openFullscreen = useCallback(
     (c: Channel) => {
-      window.clearTimeout(previewTimer.current);
+      previewTimer.clear();
       const now = usePlayer.getState().now;
       if (now?.kind === "live" && sameItem(now, c)) navigate(ROUTES.player);
       else void playChannel(c, navigate, items);
     },
-    [navigate, items],
+    [navigate, items, previewTimer],
   );
 
   const toggleFavorite = useCallback(
-    async (c: Channel) => {
+    (c: Channel) => {
       // a channel row stands for all of its feeds
-      const fav = grouped && c.group ? await api.toggleChannelFavorite(c.group.key) : await api.toggleFavorite("live", c.sourceId, c.id);
-      if (selected && sameItem(selected, c)) onSelect({ ...selected, favorite: fav });
-      void qc.invalidateQueries({ queryKey: ["channels"] });
+      const toggled = grouped && c.group ? api.toggleChannelFavorite(c.group.key) : api.toggleFavorite("live", c.sourceId, c.id);
+      void backgroundWrite(
+        toggled.then((fav) => {
+          if (selected && sameItem(selected, c)) onSelect({ ...selected, favorite: fav });
+          void qc.invalidateQueries({ queryKey: queryKeys.channels });
+        }),
+      );
     },
     [qc, selected, onSelect, grouped],
   );
@@ -448,7 +413,7 @@ function ChannelPane({
     else if (e.key === "PageDown") move(idx + 10);
     else if (e.key === "PageUp") move(idx - 10);
     else if (e.key === "Enter" && selected) openFullscreen(selected);
-    else if ((e.key === "f" || e.key === "F") && selected) void toggleFavorite(selected);
+    else if ((e.key === "f" || e.key === "F") && selected) toggleFavorite(selected);
   };
 
   return (
@@ -461,15 +426,7 @@ function ChannelPane({
           </h2>
           <p className="shrink-0 text-[13px] tabular-nums text-dim">{loading ? "Loading…" : `${total.toLocaleString()} channels`}</p>
         </div>
-        <label className="relative flex items-center">
-          <Search className="pointer-events-none absolute left-3 size-4 text-faint" />
-          <input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Find channel"
-            className="h-9 w-full rounded-lg bg-white/[0.06] pl-9 pr-3 text-sm outline-none ring-1 ring-white/[0.06] placeholder:text-faint focus:ring-accent"
-          />
-        </label>
+        <SearchInput value={filter} onChange={setFilter} placeholder="Find channel" />
       </div>
       <div ref={scrollRef} tabIndex={0} onKeyDown={onKeyDown} className="flex-1 overflow-y-auto px-3 pb-6 outline-none">
         {!loading && total === 0 ? (
@@ -591,14 +548,16 @@ function Feeds({ channel, playing, onChannel }: { channel: Channel; playing: boo
   const qc = useQueryClient();
   const key = channel.group!.key;
   const variants = useQuery({ queryKey: ["channels", "variants", key], queryFn: () => api.channelVariants(key) });
-  const pick = async (v: Channel & { label: string }) => {
-    await api.channelPrefer(key, v.sourceId, v.id);
-    // keep the channel's name; play the feed if the channel is on
-    const next: Channel = { ...v, title: channel.title, group: channel.group };
-    onChannel(next);
-    if (playing) void playChannel(next, undefined, usePlayer.getState().now?.zapList, false);
-    void qc.invalidateQueries({ queryKey: ["channels"] });
-  };
+  const pick = (v: Channel & { label: string }) =>
+    backgroundWrite(
+      api.channelPrefer(key, v.sourceId, v.id).then(() => {
+        // keep the channel's name; play the feed if the channel is on
+        const next: Channel = { ...v, title: channel.title, group: channel.group };
+        onChannel(next);
+        if (playing) void playChannel(next, undefined, usePlayer.getState().now?.zapList, false);
+        void qc.invalidateQueries({ queryKey: queryKeys.channels });
+      }),
+    );
   return (
     <div>
       <h4 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Feeds</h4>
@@ -641,11 +600,9 @@ function PreviewPane({ channel, onChannel }: { channel: Channel | null; onChanne
   const shown = channel ?? (previewing ? (now?.channel ?? null) : null);
   const isPlaying = previewing && sameItem(now, shown);
 
-  const t = nowUnix();
   const epg = useChannelEpg(shown);
-  const programmes = (epg.data ?? []).filter((p) => p.stop > t);
-  const current = programmes.find((p) => p.start <= t);
-  const upcoming = programmes.filter((p) => p.start > t).slice(0, 6);
+  const { current, upcoming: next } = currentAndUpcoming(epg.data ?? [], nowUnix());
+  const upcoming = next.slice(0, 6);
 
   return (
     // The hole's giant box-shadow paints this column's background, leaving
