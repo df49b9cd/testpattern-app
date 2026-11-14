@@ -3,7 +3,7 @@ import { api, errorMessage } from "../lib/api";
 import { backgroundWrite } from "../lib/backgroundWrite";
 import { invalidateWatchState, queryClient } from "../lib/queryClient";
 import { writeSetting } from "../lib/settings";
-import type { CastDevice, CastMeta, CastStatus, Channel, PlayKind, PlayRequest, PlayerEvent, Track } from "../lib/types";
+import type { CastDevice, CastMeta, CastStatus, CastTrack, CastTracks, Channel, PlayKind, PlayRequest, PlayerEvent, Track } from "../lib/types";
 
 /** What is (or is about to be) playing, with enough context for the UI. */
 export interface NowPlaying {
@@ -220,6 +220,38 @@ function castMeta(np: NowPlaying): CastMeta {
   return { title: np.title, subtitle: np.subtitle ?? null, image: np.backdrop ?? np.image ?? null };
 }
 
+/**
+ * The tracks playing here, for the TV to start with: their stream indexes
+ * (mpv `ff-index`, the relay's numbering). Subtitles that are hidden go as
+ * "off"; external ones (no index) are left to the language settings.
+ */
+export function castTracksFrom(p: PlaybackProps): CastTracks {
+  const out: CastTracks = {};
+  const audio = p.tracks.find((t) => t.type === "audio" && t.id === p.aid);
+  if (typeof audio?.["ff-index"] === "number") out.audio = audio["ff-index"];
+  const sub = p.tracks.find((t) => t.type === "sub" && t.id === p.sid);
+  if (!sub || !p.subVisible) {
+    if (p.tracks.length > 0) out.subtitle = -1;
+  } else if (typeof sub["ff-index"] === "number" && !sub.external) {
+    out.subtitle = sub["ff-index"];
+  }
+  return out;
+}
+
+function castTrack(t: CastTrack, type: "audio" | "sub"): Track {
+  return {
+    id: t.id,
+    type,
+    lang: t.lang ?? undefined,
+    title: t.title ?? undefined,
+    codec: t.codec,
+    default: t.default,
+    castable: t.castable,
+    "ff-index": t.id,
+    ...(t.channels ? { "demux-channel-count": t.channels } : {}),
+  };
+}
+
 /** Cast status → the player status the UI shows. */
 export function castPlayerStatus(s: CastStatus): { status: PlayerStatus; error: string | null } {
   switch (s.state) {
@@ -251,7 +283,13 @@ export function castProps(p: PlaybackProps, s: CastStatus): PlaybackProps {
     volume: Math.round(s.volume * 100),
     mute: s.muted,
     speed: 1,
-    tracks: [],
+    // the item's streams as the TV's relay found them (ids = stream indexes)
+    tracks: [...(s.audioTracks ?? []).map((t) => castTrack(t, "audio")), ...(s.subtitleTracks ?? []).map((t) => castTrack(t, "sub"))],
+    // null until the TV said which it plays (an early "Off" must still be sent)
+    aid: s.tracksKnown ? (s.audio ?? false) : null,
+    sid: s.tracksKnown ? (s.subtitle ?? false) : null,
+    // on the TV a picked subtitle is a shown one
+    subVisible: s.subtitle != null,
     chapters: [],
     recording: "",
   };
@@ -304,6 +342,8 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     // VOD continues where it is; live starts at "now"
     const np = now && now.kind !== "live" ? { ...now, start: props.timePos || now.start, paused: false } : now;
     if (now && (await saveProgress(now, props))) invalidateWatchState();
+    // the TV starts with the audio and subtitles playing here (or on the TV left)
+    const tracks = np ? castTracksFrom(props) : undefined;
     set({
       cast: {
         deviceId: device.id,
@@ -322,7 +362,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     });
     if (!np) return;
     try {
-      await api.castPlay(playRequest(np), castMeta(np), device.id);
+      await api.castPlay(playRequest(np), castMeta(np), device.id, tracks);
     } catch (e) {
       set({ cast: null, castNotice: errorMessage(e), status: "error", error: errorMessage(e) });
     }
@@ -444,19 +484,37 @@ export const control = {
     return backgroundWrite(api.set("mute", mute), onError);
   },
 
-  // The rest exist only here: the TV picks its own tracks, picture and speed,
-  // so while casting they refuse (resolve false) without touching mpv.
-
-  /** Selects an audio or subtitle track ("no" / false: none). */
+  /**
+   * Selects an audio or subtitle track ("no" / false: none). On the TV the
+   * item reloads where it is with the new track (ids are the cast status's
+   * stream ids; subtitles it can't show refuse).
+   */
   setTrack(type: "audio" | "sub", id: number | "no" | false, onError?: (message: string) => void) {
-    if (usePlayer.getState().cast) return Promise.resolve(false);
-    return backgroundWrite(api.set(type === "audio" ? "aid" : "sid", id), onError);
+    const { cast, props } = usePlayer.getState();
+    if (!cast) return backgroundWrite(api.set(type === "audio" ? "aid" : "sid", id), onError);
+    if (type === "audio") {
+      if (typeof id !== "number" || id === props.aid) return Promise.resolve(false);
+      usePlayer.setState({ props: { ...props, aid: id } });
+      return backgroundWrite(api.castControl("audio", id), onError);
+    }
+    if (typeof id === "number" && !props.tracks.some((t) => t.type === "sub" && t.id === id && t.castable !== false)) return Promise.resolve(false);
+    const sid = typeof id === "number" ? id : false;
+    if (sid === props.sid) return Promise.resolve(true);
+    usePlayer.setState({ props: { ...props, sid, subVisible: sid !== false } });
+    return backgroundWrite(api.castControl("subtitle", sid === false ? -1 : sid), onError);
   },
   /** Next audio track, like mpv's `cycle audio`. */
   cycleAudio(onError?: (message: string) => void) {
-    if (usePlayer.getState().cast) return Promise.resolve(false);
-    return backgroundWrite(api.command("cycle", "audio"), onError);
+    const { cast, props } = usePlayer.getState();
+    if (!cast) return backgroundWrite(api.command("cycle", "audio"), onError);
+    const audio = props.tracks.filter((t) => t.type === "audio");
+    if (audio.length < 2) return Promise.resolve(false);
+    const i = audio.findIndex((t) => t.id === props.aid);
+    return control.setTrack("audio", audio[(i + 1) % audio.length].id, onError);
   },
+
+  // The rest exist only here: the TV picks its own picture and speed, so
+  // while casting they refuse (resolve false) without touching mpv.
   /** Aspect override ("no" = the video's own, "16:9", …) and pan-and-scan crop (0…1). */
   setAspect(aspect: string, panscan: number, onError?: (message: string) => void) {
     if (usePlayer.getState().cast) return Promise.resolve(false);
@@ -493,7 +551,8 @@ export function setSubsEnabled(v: boolean): Promise<void> {
  * Returns null when there is nothing to switch (no tracks at all).
  */
 export function subKeyAction(props: PlaybackProps): { cycle: number | false } | { toggle: boolean } | null {
-  const tracks = props.tracks.filter((t) => t.type === "sub");
+  // while casting, only those the TV can show
+  const tracks = props.tracks.filter((t) => t.type === "sub" && t.castable !== false);
   if (tracks.length > 1) {
     const cur = typeof props.sid === "number" ? tracks.findIndex((t) => t.id === props.sid) : -1;
     // off / unknown selects the first track; past the last wraps to "no"

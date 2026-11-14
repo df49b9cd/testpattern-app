@@ -86,6 +86,46 @@ pub enum CastState {
     Stopped,
 }
 
+/// An audio or subtitle stream of the item being cast; `id` is its index in
+/// the input (stable for the item, the same as mpv's `ff-index`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CastTrack {
+    pub id: u32,
+    pub lang: Option<String>,
+    pub title: Option<String>,
+    pub codec: String,
+    /// audio only
+    pub channels: u32,
+    pub default: bool,
+    /// subtitles: false for picture subtitles (PGS, DVD), which can't become
+    /// WebVTT, and on live channels
+    pub castable: bool,
+}
+
+/// The tracks to start an item with (`cast_play`), e.g. those playing here
+/// when casting starts: input stream indexes; a negative subtitle is "off",
+/// a missing one "by the settings".
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct TrackRequest {
+    pub audio: Option<i64>,
+    pub subtitle: Option<i64>,
+}
+
+impl TrackRequest {
+    /// The audio stream and the subtitle request; "by the settings" is off
+    /// when `player.subsEnabled` is.
+    pub(super) fn picks(self, subs_enabled: bool) -> (Option<u32>, relay::Subtitle) {
+        let audio = self.audio.and_then(|i| u32::try_from(i).ok());
+        let subtitle = match self.subtitle {
+            Some(i) => u32::try_from(i).map_or(relay::Subtitle::Off, relay::Subtitle::Stream),
+            None if subs_enabled => relay::Subtitle::Auto,
+            None => relay::Subtitle::Off,
+        };
+        (audio, subtitle)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -101,6 +141,15 @@ pub struct Status {
     pub volume: f64,
     pub muted: bool,
     pub error: Option<String>,
+    /// the item's streams are known (`audio_tracks`, `subtitle_tracks`)
+    pub tracks_known: bool,
+    /// the item's audio streams (known once the relay opened it)
+    pub audio_tracks: Vec<CastTrack>,
+    pub subtitle_tracks: Vec<CastTrack>,
+    /// the audio stream the TV plays
+    pub audio: Option<u32>,
+    /// the subtitle stream the TV shows; None: off
+    pub subtitle: Option<u32>,
 }
 
 impl Status {
@@ -116,6 +165,10 @@ pub(super) enum Cmd {
     Seek(f64),
     Volume(f64),
     Mute(bool),
+    /// play this audio stream (reloads at the current position)
+    Audio(u32),
+    /// show this subtitle stream, or none (reloads at the current position)
+    Subtitle(Option<u32>),
     Stop,
     /// the relay's first packet of item `generation`, URL `n`
     Started(u64, u32, relay::Started),
@@ -125,6 +178,9 @@ pub(super) struct Item {
     pub(super) source: relay::Source,
     pub(super) meta: Meta,
     pub(super) start: f64,
+    /// the audio stream to start with (None: by `player.audioLang`)
+    pub(super) audio: Option<u32>,
+    pub(super) subtitle: relay::Subtitle,
 }
 
 pub(super) struct Session {

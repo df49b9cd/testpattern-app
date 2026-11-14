@@ -14,9 +14,12 @@ use crate::state::AppState;
 
 use super::castv2::{Message, NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER, RECEIVER};
 use super::{
-    Cast, CastState, Cmd, DEFAULT_RECEIVER, Device, Item, LIVE_PAUSE_LIMIT, Meta, STATUS_EVENT,
-    Status, UNREACHABLE_AFTER, castv2, relay, remember,
+    Cast, CastState, CastTrack, Cmd, DEFAULT_RECEIVER, Device, Item, LIVE_PAUSE_LIMIT, Meta,
+    STATUS_EVENT, Status, UNREACHABLE_AFTER, castv2, relay, remember,
 };
+
+/// The id of the one text track every non-live LOAD offers: `<n>.vtt`.
+const SUBTITLE_TRACK: i64 = 1;
 
 struct Current {
     generation: u64,
@@ -34,6 +37,30 @@ struct Current {
     paused_at: Option<Instant>,
     /// live streams that ended are reloaded a few times
     reloads: u32,
+    /// the audio stream to stream (None: by the language settings, until
+    /// the relay said which it picked)
+    audio: Option<u32>,
+    /// the subtitle stream to cue: Auto until the relay said which it picked
+    subtitle: relay::Subtitle,
+    /// URL `n` offers the subtitle track and it still has to be switched on
+    /// (EDIT_TRACKS_INFO once the TV plays it: switched on at LOAD, a track
+    /// that never finishes loading can hold up playback)
+    subtitle_pending: bool,
+    /// the media session that played the previous URL: a late status of it
+    /// must not switch on the subtitles of this one
+    old_media: Option<i64>,
+}
+
+fn cast_track(s: &relay::StreamInfo) -> CastTrack {
+    CastTrack {
+        id: s.index,
+        lang: s.lang.clone(),
+        title: s.title.clone(),
+        codec: s.codec.clone(),
+        channels: s.channels,
+        default: s.default,
+        castable: s.castable,
+    }
 }
 
 struct Conn<R: Runtime> {
@@ -139,17 +166,27 @@ impl<R: Runtime> Conn<R> {
             started: false,
             paused_at: None,
             reloads: 0,
+            audio: item.audio,
+            subtitle: item.subtitle,
+            subtitle_pending: false,
+            old_media: None,
         });
         self.update(|s| {
             s.live = live;
             s.duration = 0.0;
             s.error = None;
+            s.tracks_known = false;
+            s.audio_tracks.clear();
+            s.subtitle_tracks.clear();
+            s.audio = None;
+            s.subtitle = None;
         });
-        self.load_at(item.start).await
+        self.load_at(item.start, true).await
     }
 
-    /// (Re)loads the current item from `start` seconds under a new URL.
-    async fn load_at(&mut self, start: f64) -> std::io::Result<()> {
+    /// (Re)loads the current item from `start` seconds under a new URL,
+    /// playing or (`autoplay` false) paused there.
+    async fn load_at(&mut self, start: f64, autoplay: bool) -> std::io::Result<()> {
         let Some(transport) = self.transport.clone() else {
             return Ok(());
         };
@@ -165,8 +202,17 @@ impl<R: Runtime> Conn<R> {
         };
         cur.n += 1;
         let start = if cur.live { 0.0 } else { start.max(0.0) };
-        relay.position(&cur.token, cur.n, start);
+        let request = relay::Request {
+            start,
+            audio: cur.audio,
+            subtitle: cur.subtitle,
+        };
+        relay.position(&cur.token, cur.n, request);
         let url = relay.url(self.local, &cur.token, cur.n);
+        // live channels have no subtitles; "off" needs no track
+        let offer_subtitles = !cur.live && cur.subtitle != relay::Subtitle::Off;
+        cur.subtitle_pending = offer_subtitles;
+        cur.old_media = self.media_session;
         cur.offset = start;
         cur.loaded_at = Instant::now();
         cur.started = false;
@@ -184,10 +230,10 @@ impl<R: Runtime> Conn<R> {
         {
             metadata["images"] = json!([{ "url": img }]);
         }
-        let payload = json!({
+        let mut payload = json!({
             "type": "LOAD",
             "sessionId": self.app_session,
-            "autoplay": true,
+            "autoplay": autoplay,
             "currentTime": 0,
             "media": {
                 "contentId": url,
@@ -197,12 +243,75 @@ impl<R: Runtime> Conn<R> {
                 "metadata": metadata,
             },
         });
+        if offer_subtitles {
+            payload["media"]["tracks"] = json!([{
+                "trackId": SUBTITLE_TRACK,
+                "type": "TEXT",
+                "subtype": "SUBTITLES",
+                "trackContentId": relay.subtitle_url(self.local, &cur.token, cur.n),
+                "trackContentType": "text/vtt",
+                "name": "Subtitles",
+            }]);
+            payload["media"]["textTrackStyle"] = json!({
+                "backgroundColor": "#00000000",
+                "edgeType": "OUTLINE",
+                "edgeColor": "#000000FF",
+                "foregroundColor": "#FFFFFFFF",
+                "fontScale": 1.0,
+            });
+        }
         self.media_time = 0.0;
         self.update(|s| {
             s.state = CastState::Loading;
             s.position = start;
         });
         self.request(&transport, NS_MEDIA, payload).await
+    }
+
+    /// Reloads the current item where it is (another audio or subtitle
+    /// stream), paused if it was; a live channel restarts at "now".
+    async fn reload_here(&mut self, position: f64) -> std::io::Result<()> {
+        let Some(cur) = &self.current else {
+            return Ok(());
+        };
+        let end = if cur.duration > 0.0 {
+            (cur.duration - 1.0).max(0.0)
+        } else {
+            f64::MAX
+        };
+        let paused = self.status.lock().state == CastState::Paused;
+        self.load_at(position.clamp(0.0, end), !paused).await
+    }
+
+    /// Switches the subtitle track of the current URL on once the TV plays
+    /// it, when a stream is picked.
+    async fn enable_subtitles(&mut self) -> std::io::Result<()> {
+        let media = self.media_session;
+        // a late status of the previous URL's media session: not this one yet
+        let Some(cur) = self
+            .current
+            .as_mut()
+            .filter(|c| c.subtitle_pending && (c.old_media.is_none() || media != c.old_media))
+        else {
+            return Ok(());
+        };
+        // still settling (the relay hasn't said which): the next status tries again
+        let subtitle = match cur.subtitle {
+            relay::Subtitle::Auto => return Ok(()),
+            relay::Subtitle::Off => None,
+            relay::Subtitle::Stream(i) => Some(i),
+        };
+        cur.subtitle_pending = false;
+        let (Some(transport), Some(media)) = (self.transport.clone(), media) else {
+            return Ok(());
+        };
+        let active: Vec<i64> = subtitle.map(|_| SUBTITLE_TRACK).into_iter().collect();
+        self.request(
+            &transport,
+            NS_MEDIA,
+            json!({"type": "EDIT_TRACKS_INFO", "mediaSessionId": media, "activeTrackIds": active}),
+        )
+        .await
     }
 
     fn position(&self) -> f64 {
@@ -325,6 +434,7 @@ impl<R: Runtime> Conn<R> {
                 if let Some(c) = self.current.as_mut() {
                     c.paused_at = None;
                 }
+                self.enable_subtitles().await?;
                 self.update(|s| {
                     s.state = CastState::Playing;
                     s.position = position;
@@ -348,7 +458,7 @@ impl<R: Runtime> Conn<R> {
                 if let Some(c) = self.current.as_mut() {
                     c.reloads += 1;
                 }
-                self.load_at(0.0).await?;
+                self.load_at(0.0, true).await?;
             }
             Transition::LiveGaveUp => {
                 if let Some(c) = self.current.as_mut() {
@@ -401,7 +511,7 @@ impl<R: Runtime> Conn<R> {
                 let ended = self.status.lock().state == CastState::Ended;
                 if stale || ended {
                     // live: back to "now"; VOD at the end: from the start
-                    self.load_at(0.0).await?;
+                    self.load_at(0.0, true).await?;
                 } else {
                     self.media("PLAY").await?;
                 }
@@ -417,8 +527,34 @@ impl<R: Runtime> Conn<R> {
                     } else {
                         f64::MAX
                     };
-                    self.load_at(t.clamp(0.0, end)).await?;
+                    let paused = self.status.lock().state == CastState::Paused;
+                    self.load_at(t.clamp(0.0, end), !paused).await?;
                 }
+            }
+            Cmd::Audio(stream) => {
+                let position = self.position();
+                let Some(cur) = self.current.as_mut() else {
+                    return Ok(Flow::Continue);
+                };
+                if cur.audio == Some(stream) {
+                    return Ok(Flow::Continue);
+                }
+                cur.audio = Some(stream);
+                self.update(|s| s.audio = Some(stream));
+                self.reload_here(position).await?;
+            }
+            Cmd::Subtitle(stream) => {
+                let position = self.position();
+                let Some(cur) = self.current.as_mut() else {
+                    return Ok(Flow::Continue);
+                };
+                let want = stream.map_or(relay::Subtitle::Off, relay::Subtitle::Stream);
+                if cur.subtitle == want {
+                    return Ok(Flow::Continue);
+                }
+                cur.subtitle = want;
+                self.update(|s| s.subtitle = stream);
+                self.reload_here(position).await?;
             }
             Cmd::Volume(level) => {
                 self.request(
@@ -465,10 +601,42 @@ impl<R: Runtime> Conn<R> {
                     if started.duration > 0.0 {
                         cur.duration = started.duration;
                     }
+                    // what the relay really streams and cues (an asked stream
+                    // it couldn't use falls back to the languages)
+                    let picked = |audio: bool| {
+                        started
+                            .streams
+                            .iter()
+                            .find(|s| s.audio == audio && s.selected)
+                            .map(|s| s.index)
+                    };
+                    let (audio, subtitle) = (picked(true), picked(false));
+                    cur.audio = audio;
+                    if !cur.live {
+                        cur.subtitle =
+                            subtitle.map_or(relay::Subtitle::Off, relay::Subtitle::Stream);
+                    }
+                    let audio_tracks: Vec<CastTrack> = started
+                        .streams
+                        .iter()
+                        .filter(|s| s.audio)
+                        .map(cast_track)
+                        .collect();
+                    let subtitle_tracks: Vec<CastTrack> = started
+                        .streams
+                        .iter()
+                        .filter(|s| !s.audio)
+                        .map(cast_track)
+                        .collect();
                     let (duration, position) = (cur.duration, self.position());
                     self.update(|s| {
                         s.duration = duration;
                         s.position = position;
+                        s.tracks_known = true;
+                        s.audio_tracks = audio_tracks;
+                        s.subtitle_tracks = subtitle_tracks;
+                        s.audio = audio;
+                        s.subtitle = subtitle;
                     });
                 }
             }

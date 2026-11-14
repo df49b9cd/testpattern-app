@@ -14,7 +14,7 @@ import { api } from "../lib/api";
 import { queryClient } from "../lib/queryClient";
 import { SETTINGS_KEY } from "../lib/settings";
 import type { CastStatus } from "../lib/types";
-import { applyProp, castPlayerStatus, castProps, saveProgress, setSubsEnabled, subKeyAction, subKeyHint, trackId, usePlayer, type NowPlaying } from "./player";
+import { applyProp, castPlayerStatus, castProps, castTracksFrom, saveProgress, setSubsEnabled, subKeyAction, subKeyHint, trackId, usePlayer, type NowPlaying } from "./player";
 
 const props = () => usePlayer.getState().props;
 
@@ -141,8 +141,57 @@ describe("cast", () => {
       { ...usePlayer.getState().props, tracks: [{ id: 1, type: "audio" }] },
       castStatus({ state: "paused", position: 42, duration: 100, live: false, volume: 0.7, muted: true }),
     );
-    // volume as percent; no tracks: the TV picks its own
+    // volume as percent; mpv's tracks are gone until the TV reports the item's
     expect(p).toMatchObject({ pause: true, timePos: 42, duration: 100, seekable: true, volume: 70, mute: true, tracks: [] });
+  });
+
+  it("castProps shows the TV's streams and which it plays", () => {
+    const p = castProps(
+      usePlayer.getState().props,
+      castStatus({
+        audioTracks: [
+          { id: 1, lang: "eng", codec: "eac3", channels: 6, default: true, castable: true },
+          { id: 2, lang: "dan", codec: "aac", channels: 2, default: false, castable: true },
+        ],
+        subtitleTracks: [
+          { id: 3, lang: "dan", codec: "subrip", channels: 0, default: false, castable: true },
+          { id: 4, lang: "eng", codec: "hdmv_pgs_subtitle", channels: 0, default: false, castable: false },
+        ],
+        audio: 2,
+        subtitle: 3,
+        tracksKnown: true,
+      }),
+    );
+    expect(p.tracks.map((t) => [t.type, t.id, t.castable])).toEqual([
+      ["audio", 1, true],
+      ["audio", 2, true],
+      ["sub", 3, true],
+      ["sub", 4, false],
+    ]);
+    expect(p.tracks[0]["demux-channel-count"]).toBe(6);
+    expect(p).toMatchObject({ aid: 2, sid: 3, subVisible: true });
+    expect(castProps(p, castStatus({ subtitle: null, tracksKnown: true }))).toMatchObject({ sid: false, subVisible: false });
+    // not known yet: unknown, not "off" (picking Off then still reaches the TV)
+    expect(castProps(p, castStatus())).toMatchObject({ aid: null, sid: null });
+    // the S key only cycles through subtitles the TV can show
+    expect(subKeyAction(p)).toEqual({ toggle: false });
+  });
+
+  it("castTracksFrom hands the tracks playing here to the TV", () => {
+    const base = usePlayer.getState().props;
+    const tracks = [
+      { id: 1, type: "audio" as const, "ff-index": 1 },
+      { id: 2, type: "audio" as const, "ff-index": 2 },
+      { id: 1, type: "sub" as const, "ff-index": 3 },
+      { id: 2, type: "sub" as const, external: true },
+    ];
+    expect(castTracksFrom({ ...base, tracks, aid: 2, sid: 1, subVisible: true })).toEqual({ audio: 2, subtitle: 3 });
+    // hidden subtitles go as off
+    expect(castTracksFrom({ ...base, tracks, aid: 1, sid: 1, subVisible: false })).toEqual({ audio: 1, subtitle: -1 });
+    // an external file: the TV picks by the settings
+    expect(castTracksFrom({ ...base, tracks, aid: 1, sid: 2, subVisible: true })).toEqual({ audio: 1 });
+    // nothing loaded yet: all by the settings
+    expect(castTracksFrom({ ...base, tracks: [], aid: null, sid: null })).toEqual({});
   });
 
   it("castPlayerStatus maps TV states to player states", () => {

@@ -1154,6 +1154,21 @@ UHF/Infuse feature, **P2** = later.
 
 ## 6. Log
 
+- **2026-11-14** — v0.2.0. Cast track selection (user request: "select
+  which subtitles and audio" when chromecasting, PR #17): the relay's
+  remuxer streams the picked audio stream and decodes the picked text
+  subtitle stream (SubRip/ASS/mov_text/WebVTT) into cues that the relay
+  serves as `/cast/<token>/<n>.vtt` next to the MP4; each non-live LOAD
+  offers it as a text track, switched on with EDIT_TRACKS_INFO once the TV
+  plays. The Default Media Receiver can't switch in-band audio, so a track
+  change reloads the item where it is. The player's Audio/Subtitles menus
+  and A/S keys work while casting; casting starts with the tracks playing
+  here. Picture subtitles and live channels get none on the TV. Tests:
+  unit tests plus an ignored end-to-end relay test against MKV/SubRip and
+  MP4/mov_text files; not yet tried on a real Chromecast. Also in this
+  release: the second refactoring review (PR #16). Versions bumped to
+  0.2.0 (package.json, tauri.conf.json, Cargo.toml, Flatpak metainfo).
+
 - **2026-11-02** — T-058 Chromecast (user request: "support chromecasting").
   See the card. Tests: 3 Rust (protobuf framing, relay URL parsing), 3
   vitest (cast status → player state); `scripts/check.sh` green. Then, on
