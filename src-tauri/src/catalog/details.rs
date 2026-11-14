@@ -1,7 +1,27 @@
 //! Movie and series detail pages: every copy's provider details, the chosen
 //! version, episodes and where to resume; plus "up next".
 
-use super::*;
+use std::collections::{BTreeMap, HashMap};
+
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
+use serde_json::Value;
+use tauri::State;
+
+use crate::db::now;
+use crate::error::{Error, Result};
+use crate::kind::{ItemKind, ItemRef, WorkKind};
+use crate::sources;
+use crate::sources::SourceKind;
+use crate::state::{AppState, read_blocking, write_blocking};
+use crate::util::json::{f64_of, first_str, i64_of, str_of};
+use crate::works::versions;
+use crate::works::versions::VersionInfo;
+
+use super::{
+    MovieItem, SeriesItem, episode_history_filter, movie_by_item, movie_by_key, series_by_item,
+    series_by_key,
+};
 
 const MOVIE_DETAIL_TTL: i64 = 7 * 86400;
 const SERIES_DETAIL_TTL: i64 = 12 * 3600;
@@ -128,7 +148,7 @@ async fn provider_detail(
     {
         return Ok(Some(c.json.clone()));
     }
-    let fetched = match sources::xtream_for(&src, http_client(src.user_agent.as_deref())) {
+    let fetched = match sources::xtream_for(&src, st.client(src.user_agent.as_deref())) {
         Ok(x) => match kind {
             WorkKind::Movie => x.vod_info(id).await,
             WorkKind::Series => x.series_info(id).await,
@@ -167,16 +187,11 @@ const DETAIL_DEADLINE: std::time::Duration = std::time::Duration::from_millis(25
 /// what arrives within `DETAIL_DEADLINE` (or from the cache) is used, the rest
 /// keeps loading in the background (into the cache) and is reported as
 /// pending — the UI asks again. At least one copy is always waited for.
-async fn details_of(
-    st: &AppState,
-    kind: WorkKind,
-    copies: &[(i64, String)],
-    ttl: i64,
-) -> (Vec<Option<Value>>, bool) {
+async fn details_of(st: &AppState, kind: WorkKind, copies: &[ItemRef], ttl: i64) -> Details {
     let mut handles: Vec<Option<tokio::task::JoinHandle<Result<Option<Value>>>>> = copies
         .iter()
-        .map(|(sid, id)| {
-            let (st, sid, id) = (st.clone(), *sid, id.clone());
+        .map(|c| {
+            let (st, sid, id) = (st.clone(), c.source_id, c.id.clone());
             Some(tokio::spawn(async move {
                 match provider_detail(&st, sid, kind, &id, ttl).await {
                     // M3U series: episodes come from the playlist
@@ -198,8 +213,8 @@ async fn details_of(
             finished += 1;
             match joined {
                 Ok(Ok(v)) => out[i] = v,
-                Ok(Err(e)) => log::warn!("{kind} {}: no provider detail ({e})", copies[i].1),
-                Err(e) => log::warn!("{kind} {}: detail task failed ({e})", copies[i].1),
+                Ok(Err(e)) => log::warn!("{kind} {}: no provider detail ({e})", copies[i].id),
+                Err(e) => log::warn!("{kind} {}: detail task failed ({e})", copies[i].id),
             }
         }
     }
@@ -218,18 +233,37 @@ async fn details_of(
             }
             // the others keep filling the cache in the background
             drop(rest);
-            return (out, idx.len() > 1);
+            return Details {
+                per_copy: out,
+                pending: idx.len() > 1,
+            };
         }
     }
-    let pending = handles.iter().any(Option::is_some);
-    (out, pending)
+    Details {
+        pending: handles.iter().any(Option::is_some),
+        per_copy: out,
+    }
+}
+
+/// What `details_of` got: one provider payload per copy (None: none yet).
+struct Details {
+    per_copy: Vec<Option<Value>>,
+    /// some copies are still loading in the background
+    pending: bool,
+}
+
+fn copies_of(members: &[versions::Member]) -> Vec<ItemRef> {
+    members
+        .iter()
+        .map(|m| ItemRef::new(m.source_id, m.id.clone()))
+        .collect()
 }
 
 /// What both detail pages start from: every copy of the work, the copy the
 /// user picked, the language preferences and the work's key.
 struct WorkContext {
     members: Vec<versions::Member>,
-    pref: Option<(i64, String)>,
+    pref: Option<ItemRef>,
     langs: Vec<&'static str>,
     key: Option<String>,
 }
@@ -279,13 +313,7 @@ pub async fn movie_detail(
         read_blocking(&st, move |conn| {
             let ctx = work_context(conn, WorkKind::Movie, source_id, &id)?;
             let work = match &ctx.key {
-                Some(k) => conn
-                    .prepare_cached(&format!(
-                        "{} WHERE w.kind = 'movie' AND w.key = ?1",
-                        movie_work_select()
-                    ))?
-                    .query_row([k], row_to_movie)
-                    .optional()?,
+                Some(k) => movie_by_key(conn, k)?,
                 None => None,
             };
             let facts = match (&ctx.key, &work) {
@@ -304,44 +332,24 @@ pub async fn movie_detail(
         .await?
     };
     // provider details of every copy at once (cached for a week)
-    let copies: Vec<(i64, String)> = members
+    let details = details_of(&st, WorkKind::Movie, &copies_of(&members), MOVIE_DETAIL_TTL).await;
+    let infos: Vec<Value> = details
+        .per_copy
         .iter()
-        .map(|m| (m.source_id, m.id.clone()))
+        .map(|d| d.as_ref().map_or(Value::Null, |d| d["info"].clone()))
         .collect();
-    let (details, pending) = details_of(&st, WorkKind::Movie, &copies, MOVIE_DETAIL_TTL).await;
-    let info_of = |i: usize| {
-        details[i]
-            .as_ref()
-            .map(|d| d["info"].clone())
-            .unwrap_or(Value::Null)
-    };
-    // a copy much shorter than the others is a trailer or cut off
-    let durations: Vec<Option<i64>> = (0..members.len())
-        .map(|i| i64_of(&info_of(i)["duration_secs"]).filter(|d| *d > 0))
-        .collect();
-    let longest = durations.iter().flatten().copied().max().unwrap_or(0);
-    let sel = versions::choose(&members, pref.as_ref(), &langs, |i| match durations[i] {
-        _ if versions::unavailable(&tracks[i]) => versions::BROKEN,
-        Some(d) if longest > 0 => d as f64 / longest as f64,
-        _ => 1.0,
-    });
+    let sel = choose_movie_copy(&members, pref.as_ref(), &langs, &infos, &tracks);
     let chosen = members[sel].clone();
-    let info = info_of(sel);
+    let info = &infos[sel];
     // missing fields from the other copies' details
     let pick = |keys: &[&str]| -> Option<String> {
-        first_str(&info, keys)
-            .or_else(|| (0..members.len()).find_map(|i| first_str(&info_of(i), keys)))
+        first_str(info, keys).or_else(|| infos.iter().find_map(|i| first_str(i, keys)))
     };
 
     let mut item = {
         let (sid, mid) = (chosen.source_id, chosen.id.clone());
         read_blocking(&st, move |conn| {
-            conn.prepare_cached(&format!(
-                "{MOVIE_SELECT} WHERE m.source_id = ?1 AND m.id = ?2"
-            ))?
-            .query_row(params![sid, mid], row_to_movie)
-            .optional()?
-            .ok_or_else(|| Error::NotFound(format!("movie {mid}")))
+            movie_by_item(conn, sid, &mid)?.ok_or_else(|| Error::NotFound(format!("movie {mid}")))
         })
         .await?
     };
@@ -359,30 +367,18 @@ pub async fn movie_detail(
     if item.rating.is_none() {
         item.rating = f64_of(&info["rating"]).filter(|r| *r > 0.0);
     }
-    // resume where any copy was left off (versions are the same film)
-    let latest = members
-        .iter()
-        .filter(|m| m.played_at > 0)
-        .max_by_key(|m| m.played_at);
-    let position = if chosen.position > 0.0 {
-        chosen.position
-    } else {
-        latest
-            .filter(|m| !m.watched)
-            .map(|m| m.position)
-            .unwrap_or(0.0)
-    };
     let multi_source = members.iter().any(|m| m.source_id != members[0].source_id);
     let versions = members
         .iter()
+        .zip(&infos)
+        .zip(&tracks)
         .enumerate()
-        .map(|(i, m)| {
+        .map(|(i, ((m, inf), tracks))| {
             let mut v = m.info(multi_source, i == sel);
-            let inf = info_of(i);
             v.video = tech(&inf["video"]);
             v.audio = tech(&inf["audio"]);
-            v.duration = i64_of(&inf["duration_secs"]).filter(|d| *d > 0);
-            v.tracks = tracks[i].clone();
+            v.duration = duration_of(inf);
+            v.tracks = tracks.clone();
             v
         })
         .collect();
@@ -404,25 +400,63 @@ pub async fn movie_detail(
         }
     };
     Ok(MovieDetail {
-        versions_pending: pending,
+        versions_pending: details.pending,
         plot: pick(&["plot", "description"]),
         cast: pick(&["cast", "actors"]),
         director: pick(&["director"]),
         genre: pick(&["genre"]),
         country: pick(&["country"]),
         release_date: pick(&["releasedate", "release_date"]),
-        duration: i64_of(&info["duration_secs"]).filter(|d| *d > 0),
+        duration: duration_of(info),
         backdrop: first_url(&info["backdrop_path"])
-            .or_else(|| (0..members.len()).find_map(|i| first_url(&info_of(i)["backdrop_path"]))),
+            .or_else(|| infos.iter().find_map(|i| first_url(&i["backdrop_path"]))),
         trailer,
         age_rating: pick(&["mpaa_rating", "age"]),
         video: tech(&info["video"]),
         audio: tech(&info["audio"]),
-        position,
+        position: movie_resume_position(&members, &chosen),
         versions,
         tmdb: facts,
         item,
     })
+}
+
+/// A copy's running time from its provider `info`, when it has one.
+fn duration_of(info: &Value) -> Option<i64> {
+    i64_of(&info["duration_secs"]).filter(|d| *d > 0)
+}
+
+/// Which copy of a movie plays: the user's pick, else the best fit. A copy
+/// much shorter than the others is a trailer or cut off, and one that failed
+/// to play is ruled out.
+fn choose_movie_copy(
+    members: &[versions::Member],
+    pref: Option<&ItemRef>,
+    langs: &[&'static str],
+    infos: &[Value],
+    tracks: &[Option<Value>],
+) -> usize {
+    let durations: Vec<Option<i64>> = infos.iter().map(duration_of).collect();
+    let longest = durations.iter().flatten().copied().max().unwrap_or(0);
+    versions::choose(members, pref, langs, |i| match durations[i] {
+        _ if versions::unavailable(tracks[i].as_ref()) => versions::BROKEN,
+        Some(d) if longest > 0 => d as f64 / longest as f64,
+        _ => 1.0,
+    })
+}
+
+/// Where a movie resumes: the chosen copy's own position, else where any
+/// copy was left off unfinished (versions are the same film).
+fn movie_resume_position(members: &[versions::Member], chosen: &versions::Member) -> f64 {
+    if chosen.position > 0.0 {
+        return chosen.position;
+    }
+    members
+        .iter()
+        .filter(|m| m.played_at > 0)
+        .max_by_key(|m| m.played_at)
+        .filter(|m| !m.watched)
+        .map_or(0.0, |m| m.position)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -687,18 +721,8 @@ fn up_next_rows(conn: &Connection, limit: usize) -> Result<Vec<UpNext>> {
         }
         let key = versions::work_key(conn, WorkKind::Series, sid, &series_id)?;
         let series = match &key {
-            Some(k) => conn
-                .prepare_cached(&format!(
-                    "{SERIES_WORK_SELECT} WHERE w.kind = 'series' AND w.key = ?1"
-                ))?
-                .query_row([k], row_to_series)
-                .optional()?,
-            None => conn
-                .prepare_cached(&format!(
-                    "{SERIES_SELECT} WHERE s.source_id = ?1 AND s.id = ?2"
-                ))?
-                .query_row(params![sid, series_id], row_to_series)
-                .optional()?,
+            Some(k) => series_by_key(conn, k)?,
+            None => series_by_item(conn, sid, &series_id)?,
         };
         let Some(series) = series else { continue };
         let per_copy: Vec<_> = members
@@ -745,10 +769,12 @@ fn up_next_rows(conn: &Connection, limit: usize) -> Result<Vec<UpNext>> {
         }
         let seen: bool = conn
             .query_row(
-                "SELECT MAX(h.watched) FROM history h
-                   LEFT JOIN series s ON s.source_id = h.source_id AND s.id = h.series_id
-                  WHERE h.kind = 'episode' AND h.season = ?1 AND h.episode = ?2
-                    AND ((?3 IS NOT NULL AND s.work_key = ?3) OR (h.source_id = ?4 AND h.series_id = ?5))",
+                &format!(
+                    "SELECT MAX(h.watched) FROM history h
+                       LEFT JOIN series s ON s.source_id = h.source_id AND s.id = h.series_id
+                      WHERE h.kind = 'episode' AND h.season = ?1 AND h.episode = ?2 AND {}",
+                    episode_history_filter(3, 4, 5)
+                ),
                 params![next.season, next.episode, key, sid, series_id],
                 |r| r.get::<_, Option<bool>>(0),
             )?
@@ -842,62 +868,20 @@ pub async fn series_detail(
             let ctx = work_context(conn, WorkKind::Series, source_id, &id)?;
             let key = ctx.key.clone();
             let work = match &key {
-                Some(k) => conn
-                    .prepare_cached(&format!("{SERIES_WORK_SELECT} WHERE w.kind = 'series' AND w.key = ?1"))?
-                    .query_row([k], row_to_series)
-                    .optional()?,
+                Some(k) => series_by_key(conn, k)?,
                 None => None,
             };
             let work = match work {
                 Some(w) => w,
-                None => conn
-                    .prepare_cached(&format!("{SERIES_SELECT} WHERE s.source_id = ?1 AND s.id = ?2"))?
-                    .query_row(params![source_id, id], row_to_series)
-                    .optional()?
+                None => series_by_item(conn, source_id, &id)?
                     .ok_or_else(|| Error::NotFound(format!("series {id}")))?,
             };
-            // long texts: the requested copy, else any copy that has them
-            let text = conn.query_row(
-                "SELECT (SELECT plot FROM series x WHERE x.work_key IS s.work_key AND x.plot IS NOT NULL
-                          ORDER BY x.source_id = s.source_id AND x.id = s.id DESC LIMIT 1),
-                        COALESCE(s.cast_list, (SELECT cast_list FROM series x WHERE x.work_key = s.work_key AND x.cast_list IS NOT NULL LIMIT 1)),
-                        COALESCE(s.director, (SELECT director FROM series x WHERE x.work_key = s.work_key AND x.director IS NOT NULL LIMIT 1)),
-                        COALESCE(s.release_date, (SELECT release_date FROM series x WHERE x.work_key = s.work_key AND x.release_date IS NOT NULL LIMIT 1)),
-                        COALESCE(s.trailer, (SELECT trailer FROM series x WHERE x.work_key = s.work_key AND x.trailer IS NOT NULL LIMIT 1))
-                   FROM series s WHERE s.source_id = ?1 AND s.id = ?2",
-                params![source_id, id],
-                |r| {
-                    Ok(SeriesText {
-                        plot: r.get(0)?,
-                        cast: r.get(1)?,
-                        director: r.get(2)?,
-                        release: r.get(3)?,
-                        trailer: r.get(4)?,
-                    })
-                },
-            )?;
-            let history: Vec<Watched> = conn
-                .prepare_cached(
-                    "SELECT h.source_id, h.item_id, h.season, h.episode, h.position, h.watched, h.updated_at
-                       FROM history h
-                       LEFT JOIN series s ON s.source_id = h.source_id AND s.id = h.series_id
-                      WHERE h.kind = 'episode'
-                        AND ((?1 IS NOT NULL AND s.work_key = ?1) OR (h.source_id = ?2 AND h.series_id = ?3))",
-                )?
-                .query_map(params![key, source_id, id], |r| {
-                    Ok(Watched {
-                        source_id: r.get(0)?,
-                        id: r.get(1)?,
-                        season: r.get(2)?,
-                        episode: r.get(3)?,
-                        position: r.get(4)?,
-                        watched: r.get(5)?,
-                        at: r.get(6)?,
-                    })
-                })?
-                .collect::<Result<_, _>>()?;
+            let text = series_text(conn, source_id, &id)?;
+            let history = watch_history(conn, key.as_deref(), source_id, &id)?;
             let facts = match &key {
-                Some(k) => crate::tmdb::facts_for(conn, WorkKind::Series, k, &work.title, work.year)?,
+                Some(k) => {
+                    crate::tmdb::facts_for(conn, WorkKind::Series, k, &work.title, work.year)?
+                }
                 None => None,
             };
             Ok((ctx, work, text, history, facts))
@@ -906,12 +890,15 @@ pub async fn series_detail(
     };
 
     // every copy's episodes at once (cached for 12 h)
-    let copies: Vec<(i64, String)> = members
-        .iter()
-        .map(|m| (m.source_id, m.id.clone()))
-        .collect();
-    let (details, pending) = details_of(&st, WorkKind::Series, &copies, SERIES_DETAIL_TTL).await;
-    let details: Vec<Value> = details
+    let fetched = details_of(
+        &st,
+        WorkKind::Series,
+        &copies_of(&members),
+        SERIES_DETAIL_TTL,
+    )
+    .await;
+    let details: Vec<Value> = fetched
+        .per_copy
         .into_iter()
         .map(|d| d.unwrap_or(Value::Null))
         .collect();
@@ -922,47 +909,12 @@ pub async fn series_detail(
         .collect();
     let counts: Vec<usize> = per_copy
         .iter()
-        .map(|seasons| {
-            seasons
-                .iter()
-                .filter(|(n, _)| *n > 0)
-                .map(|(_, e)| e.len())
-                .sum()
-        })
+        .map(|seasons| episode_count(seasons))
         .collect();
+    let tracks = copy_tracks(&st, &members, &per_copy).await?;
     let most = counts.iter().copied().max().unwrap_or(0).max(1);
-    // tracks seen in each copy (the first of its episodes with any)
-    let tracks: Vec<Option<Value>> = {
-        let ids: Vec<(i64, Vec<String>)> = per_copy
-            .iter()
-            .zip(&members)
-            .map(|(seasons, m)| {
-                (
-                    m.source_id,
-                    seasons
-                        .iter()
-                        .flat_map(|(_, e)| e.iter().map(|e| e.id.clone()))
-                        .take(40)
-                        .collect(),
-                )
-            })
-            .collect();
-        read_blocking(&st, move |conn| {
-            ids.iter()
-                .map(|(sid, eps)| {
-                    for e in eps {
-                        if let Some(t) = versions::tracks(conn, *sid, ItemKind::Episode, e)? {
-                            return Ok(Some(t));
-                        }
-                    }
-                    Ok(None)
-                })
-                .collect::<Result<Vec<_>>>()
-        })
-        .await?
-    };
     let sel = versions::choose(&members, pref.as_ref(), &langs, |i| {
-        if versions::unavailable(&tracks[i]) {
+        if versions::unavailable(tracks[i].as_ref()) {
             versions::BROKEN
         } else {
             counts[i] as f64 / most as f64
@@ -980,112 +932,9 @@ pub async fn series_detail(
         )
     });
     let union = union_episodes(&per_copy, &order);
-
-    // history rows → (season, episode): by the episode id in its copy, else the stored numbers
-    let number_of = |w: &Watched| -> Option<(i64, i64)> {
-        per_copy
-            .iter()
-            .flatten()
-            .flat_map(|(_, eps)| eps)
-            .find(|e| e.source_id == w.source_id && e.id == w.id)
-            .map(|e| (e.season, e.episode))
-            .or(match (w.season, w.episode) {
-                (Some(s), Some(e)) => Some((s, e)),
-                _ => None,
-            })
-    };
-    let mut state_of: HashMap<(i64, i64), &Watched> = HashMap::new();
-    for w in &history {
-        if let Some(k) = number_of(w)
-            && state_of.get(&k).is_none_or(|prev| w.at > prev.at)
-        {
-            state_of.insert(k, w);
-        }
-    }
-
-    let mut seasons: Vec<Season> = Vec::new();
-    for ((s_no, _), (copy, e)) in &union {
-        let mut e = e.clone();
-        if let Some(w) = state_of.get(&(e.season, e.episode)) {
-            e.position = w.position;
-            e.watched = w.watched;
-        }
-        if *copy != sel {
-            e.version = Some(members[*copy].variant.label.clone());
-        }
-        match seasons.last_mut() {
-            Some(last) if last.season == *s_no => last.episodes.push(e),
-            _ => {
-                // season names/art from the selected copy, else any copy
-                let meta = order.iter().find_map(|&i| {
-                    details[i]["seasons"].as_array().and_then(|a| {
-                        a.iter()
-                            .find(|m| i64_of(&m["season_number"]) == Some(*s_no))
-                    })
-                });
-                seasons.push(Season {
-                    season: *s_no,
-                    name: meta.and_then(|m| str_of(&m["name"])).unwrap_or_else(|| {
-                        if *s_no == 0 {
-                            "Specials".into()
-                        } else {
-                            format!("Season {s_no}")
-                        }
-                    }),
-                    cover: meta.and_then(|m| first_str(m, &["cover_big", "cover"])),
-                    overview: meta.and_then(|m| str_of(&m["overview"])),
-                    air_date: meta.and_then(|m| str_of(&m["air_date"])),
-                    episodes: vec![e],
-                });
-            }
-        }
-    }
-
-    // Resume: the most recent unfinished episode, else the one after the
-    // most recently finished, else S1E1 — across all copies.
-    let flat: Vec<&Episode> = seasons
-        .iter()
-        .filter(|s| s.season > 0)
-        .flat_map(|s| &s.episodes)
-        .collect();
-    let latest = history
-        .iter()
-        .filter_map(|w| number_of(w).map(|k| (k, w)))
-        .max_by_key(|(_, w)| w.at);
-    let resume = match latest {
-        Some((k, w)) if !w.watched => {
-            flat.iter()
-                .find(|e| (e.season, e.episode) == k)
-                .map(|e| Resume {
-                    episode_id: e.id.clone(),
-                    season: e.season,
-                    episode: e.episode,
-                    position: w.position,
-                    started: true,
-                })
-        }
-        Some((k, _)) => flat
-            .iter()
-            .position(|e| (e.season, e.episode) == k)
-            .and_then(|i| flat.get(i + 1))
-            .map(|e| Resume {
-                episode_id: e.id.clone(),
-                season: e.season,
-                episode: e.episode,
-                position: 0.0,
-                started: true,
-            }),
-        None => None,
-    }
-    .or_else(|| {
-        flat.first().map(|e| Resume {
-            episode_id: e.id.clone(),
-            season: e.season,
-            episode: e.episode,
-            position: 0.0,
-            started: false,
-        })
-    });
+    let state_of = latest_watch_state(&history, &per_copy);
+    let seasons = build_seasons(&union, &state_of, &members, sel, &order, &details);
+    let resume = resume_point(&seasons, &history, &per_copy);
 
     let multi_source = members.iter().any(|m| m.source_id != members[0].source_id);
     let versions: Vec<VersionInfo> = members
@@ -1115,7 +964,7 @@ pub async fn series_detail(
     }
     let info = &details[sel]["info"];
     Ok(SeriesDetail {
-        versions_pending: pending,
+        versions_pending: fetched.pending,
         plot: text.plot.or_else(|| str_of(&info["plot"])),
         cast: text.cast.or_else(|| str_of(&info["cast"])),
         director: text.director.or_else(|| str_of(&info["director"])),
@@ -1129,6 +978,224 @@ pub async fn series_detail(
         tmdb: facts,
         item,
     })
+}
+
+/// Long texts of a series: the requested copy, else any copy that has them.
+fn series_text(conn: &Connection, source_id: i64, id: &str) -> Result<SeriesText> {
+    Ok(conn.query_row(
+        "SELECT (SELECT plot FROM series x WHERE x.work_key IS s.work_key AND x.plot IS NOT NULL
+                  ORDER BY x.source_id = s.source_id AND x.id = s.id DESC LIMIT 1),
+                COALESCE(s.cast_list, (SELECT cast_list FROM series x WHERE x.work_key = s.work_key AND x.cast_list IS NOT NULL LIMIT 1)),
+                COALESCE(s.director, (SELECT director FROM series x WHERE x.work_key = s.work_key AND x.director IS NOT NULL LIMIT 1)),
+                COALESCE(s.release_date, (SELECT release_date FROM series x WHERE x.work_key = s.work_key AND x.release_date IS NOT NULL LIMIT 1)),
+                COALESCE(s.trailer, (SELECT trailer FROM series x WHERE x.work_key = s.work_key AND x.trailer IS NOT NULL LIMIT 1))
+           FROM series s WHERE s.source_id = ?1 AND s.id = ?2",
+        params![source_id, id],
+        |r| {
+            Ok(SeriesText {
+                plot: r.get(0)?,
+                cast: r.get(1)?,
+                director: r.get(2)?,
+                release: r.get(3)?,
+                trailer: r.get(4)?,
+            })
+        },
+    )?)
+}
+
+/// Watch state of every episode of a show, across all its copies.
+fn watch_history(
+    conn: &Connection,
+    key: Option<&str>,
+    source_id: i64,
+    id: &str,
+) -> Result<Vec<Watched>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "SELECT h.source_id, h.item_id, h.season, h.episode, h.position, h.watched, h.updated_at
+               FROM history h
+               LEFT JOIN series s ON s.source_id = h.source_id AND s.id = h.series_id
+              WHERE h.kind = 'episode' AND {}",
+            episode_history_filter(1, 2, 3)
+        ))?
+        .query_map(params![key, source_id, id], |r| {
+            Ok(Watched {
+                source_id: r.get(0)?,
+                id: r.get(1)?,
+                season: r.get(2)?,
+                episode: r.get(3)?,
+                position: r.get(4)?,
+                watched: r.get(5)?,
+                at: r.get(6)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?)
+}
+
+/// Regular episodes of one copy (specials, season 0, don't count).
+fn episode_count(seasons: &[(i64, Vec<Episode>)]) -> usize {
+    seasons
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(_, e)| e.len())
+        .sum()
+}
+
+/// Episodes probed per copy when looking for its stored tracks.
+const TRACK_LOOKUP_EPISODES: usize = 40;
+
+/// Tracks seen in each copy (the first of its episodes with any).
+async fn copy_tracks(
+    st: &AppState,
+    members: &[versions::Member],
+    per_copy: &[Vec<(i64, Vec<Episode>)>],
+) -> Result<Vec<Option<Value>>> {
+    let ids: Vec<(i64, Vec<String>)> = per_copy
+        .iter()
+        .zip(members)
+        .map(|(seasons, m)| {
+            (
+                m.source_id,
+                seasons
+                    .iter()
+                    .flat_map(|(_, e)| e.iter().map(|e| e.id.clone()))
+                    .take(TRACK_LOOKUP_EPISODES)
+                    .collect(),
+            )
+        })
+        .collect();
+    read_blocking(st, move |conn| {
+        ids.iter()
+            .map(|(sid, eps)| {
+                for e in eps {
+                    if let Some(t) = versions::tracks(conn, *sid, ItemKind::Episode, e)? {
+                        return Ok(Some(t));
+                    }
+                }
+                Ok(None)
+            })
+            .collect::<Result<Vec<_>>>()
+    })
+    .await
+}
+
+/// A history row's (season, episode): by the episode id in its copy, else
+/// the numbers stored with it.
+fn number_of(w: &Watched, per_copy: &[Vec<(i64, Vec<Episode>)>]) -> Option<(i64, i64)> {
+    per_copy
+        .iter()
+        .flatten()
+        .flat_map(|(_, eps)| eps)
+        .find(|e| e.source_id == w.source_id && e.id == w.id)
+        .map(|e| (e.season, e.episode))
+        .or(match (w.season, w.episode) {
+            (Some(s), Some(e)) => Some((s, e)),
+            _ => None,
+        })
+}
+
+/// The newest history row per (season, episode).
+fn latest_watch_state<'h>(
+    history: &'h [Watched],
+    per_copy: &[Vec<(i64, Vec<Episode>)>],
+) -> HashMap<(i64, i64), &'h Watched> {
+    let mut state_of: HashMap<(i64, i64), &Watched> = HashMap::new();
+    for w in history {
+        if let Some(k) = number_of(w, per_copy)
+            && state_of.get(&k).is_none_or(|prev| w.at > prev.at)
+        {
+            state_of.insert(k, w);
+        }
+    }
+    state_of
+}
+
+/// The episode union as seasons, with watch state and, for episodes that
+/// play from another copy, that copy's label. Season names and art come
+/// from the selected copy, else any copy (in `order`).
+fn build_seasons(
+    union: &BTreeMap<(i64, i64), (usize, Episode)>,
+    state_of: &HashMap<(i64, i64), &Watched>,
+    members: &[versions::Member],
+    sel: usize,
+    order: &[usize],
+    details: &[Value],
+) -> Vec<Season> {
+    let mut seasons: Vec<Season> = Vec::new();
+    for ((s_no, _), (copy, e)) in union {
+        let mut e = e.clone();
+        if let Some(w) = state_of.get(&(e.season, e.episode)) {
+            e.position = w.position;
+            e.watched = w.watched;
+        }
+        if *copy != sel {
+            e.version = Some(members[*copy].variant.label.clone());
+        }
+        match seasons.last_mut() {
+            Some(last) if last.season == *s_no => last.episodes.push(e),
+            _ => {
+                let meta = order.iter().find_map(|&i| {
+                    details[i]["seasons"].as_array().and_then(|a| {
+                        a.iter()
+                            .find(|m| i64_of(&m["season_number"]) == Some(*s_no))
+                    })
+                });
+                seasons.push(Season {
+                    season: *s_no,
+                    name: meta.and_then(|m| str_of(&m["name"])).unwrap_or_else(|| {
+                        if *s_no == 0 {
+                            "Specials".into()
+                        } else {
+                            format!("Season {s_no}")
+                        }
+                    }),
+                    cover: meta.and_then(|m| first_str(m, &["cover_big", "cover"])),
+                    overview: meta.and_then(|m| str_of(&m["overview"])),
+                    air_date: meta.and_then(|m| str_of(&m["air_date"])),
+                    episodes: vec![e],
+                });
+            }
+        }
+    }
+    seasons
+}
+
+/// Resume: the most recent unfinished episode, else the one after the most
+/// recently finished, else S1E1 — across all copies.
+fn resume_point(
+    seasons: &[Season],
+    history: &[Watched],
+    per_copy: &[Vec<(i64, Vec<Episode>)>],
+) -> Option<Resume> {
+    let flat: Vec<&Episode> = seasons
+        .iter()
+        .filter(|s| s.season > 0)
+        .flat_map(|s| &s.episodes)
+        .collect();
+    let at = |e: &Episode, position: f64, started: bool| Resume {
+        episode_id: e.id.clone(),
+        season: e.season,
+        episode: e.episode,
+        position,
+        started,
+    };
+    let latest = history
+        .iter()
+        .filter_map(|w| number_of(w, per_copy).map(|k| (k, w)))
+        .max_by_key(|(_, w)| w.at);
+    match latest {
+        Some((k, w)) if !w.watched => flat
+            .iter()
+            .find(|e| (e.season, e.episode) == k)
+            .map(|e| at(e, w.position, true)),
+        Some((k, _)) => flat
+            .iter()
+            .position(|e| (e.season, e.episode) == k)
+            .and_then(|i| flat.get(i + 1))
+            .map(|e| at(e, 0.0, true)),
+        None => None,
+    }
+    .or_else(|| flat.first().map(|e| at(e, 0.0, false)))
 }
 
 #[cfg(test)]
@@ -1351,5 +1418,81 @@ pub(super) mod tests {
         // nothing after the last episode
         finish(5, 300);
         assert!(next(&c).is_empty());
+    }
+
+    fn ep(id: &str, season: i64, episode: i64) -> Episode {
+        Episode {
+            id: id.into(),
+            season,
+            episode,
+            title: String::new(),
+            plot: None,
+            duration: None,
+            image: None,
+            ext: None,
+            rating: None,
+            air_date: None,
+            video: None,
+            position: 0.0,
+            watched: false,
+            source_id: 1,
+            series_id: "s".into(),
+            version: None,
+        }
+    }
+
+    fn watched(id: &str, season: i64, episode: i64, position: f64, done: bool, at: i64) -> Watched {
+        Watched {
+            source_id: 1,
+            id: id.into(),
+            season: Some(season),
+            episode: Some(episode),
+            position,
+            watched: done,
+            at,
+        }
+    }
+
+    #[test]
+    fn resume_point_picks_unfinished_then_next_then_first() {
+        let season = |n: i64, eps: Vec<Episode>| Season {
+            season: n,
+            name: String::new(),
+            cover: None,
+            overview: None,
+            air_date: None,
+            episodes: eps,
+        };
+        // specials never count as "the first episode"
+        let seasons = vec![
+            season(0, vec![ep("sp", 0, 1)]),
+            season(1, vec![ep("a", 1, 1), ep("b", 1, 2), ep("c", 1, 3)]),
+        ];
+        let resume = |history: &[Watched]| {
+            resume_point(&seasons, history, &[]).map(|r| (r.episode_id, r.position, r.started))
+        };
+        assert_eq!(
+            resume(&[]),
+            Some(("a".into(), 0.0, false)),
+            "nothing watched: S1E1"
+        );
+        assert_eq!(
+            resume(&[watched("b", 1, 2, 42.0, false, 10)]),
+            Some(("b".into(), 42.0, true)),
+            "the latest episode is unfinished: resume it"
+        );
+        assert_eq!(
+            resume(&[
+                watched("b", 1, 2, 0.0, true, 10),
+                watched("a", 1, 1, 5.0, false, 5)
+            ]),
+            Some(("c".into(), 0.0, true)),
+            "the latest episode was finished: the one after it"
+        );
+        assert_eq!(
+            resume(&[watched("c", 1, 3, 0.0, true, 10)]),
+            Some(("a".into(), 0.0, false)),
+            "the last episode was finished: back to the start"
+        );
     }
 }

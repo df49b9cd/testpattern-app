@@ -10,8 +10,11 @@ vi.mock("../lib/api", () => ({
   errorMessage: (e: unknown) => String(e),
 }));
 
+import { api } from "../lib/api";
+import { queryClient } from "../lib/queryClient";
+import { SETTINGS_KEY } from "../lib/settings";
 import type { CastStatus } from "../lib/types";
-import { applyProp, saveProgress, setSubsEnabled, subKeyAction, subKeyHint, trackId, usePlayer, type NowPlaying } from "./player";
+import { applyProp, castPlayerStatus, castProps, saveProgress, setSubsEnabled, subKeyAction, subKeyHint, trackId, usePlayer, type NowPlaying } from "./player";
 
 const props = () => usePlayer.getState().props;
 
@@ -89,23 +92,18 @@ describe("saveProgress", () => {
 
 describe("subtitles toggle (PL-99)", () => {
   it("persists the setting and patches the settings cache", async () => {
-    const { queryClient } = await import("../lib/queryClient");
-    const { SETTINGS_KEY } = await import("../lib/settings");
-    const api = (await import("../lib/api")).api as unknown as { setSetting: ReturnType<typeof vi.fn> };
+    const setSetting = vi.mocked(api.setSetting);
     queryClient.setQueryData(SETTINGS_KEY, { "player.subsEnabled": false });
-    api.setSetting.mockClear();
-    api.setSetting.mockResolvedValue(undefined);
+    setSetting.mockClear();
+    setSetting.mockResolvedValue(undefined);
     void setSubsEnabled(true);
-    expect(api.setSetting).toHaveBeenCalledWith("player.subsEnabled", true);
+    expect(setSetting).toHaveBeenCalledWith("player.subsEnabled", true);
     expect(queryClient.getQueryData(SETTINGS_KEY)).toMatchObject({ "player.subsEnabled": true });
   });
 
   it("rolls the cache back when the write fails", async () => {
-    const { queryClient } = await import("../lib/queryClient");
-    const { SETTINGS_KEY } = await import("../lib/settings");
-    const api = (await import("../lib/api")).api as unknown as { setSetting: ReturnType<typeof vi.fn> };
     queryClient.setQueryData(SETTINGS_KEY, { "player.subsEnabled": false });
-    api.setSetting.mockRejectedValueOnce(new Error("backend down"));
+    vi.mocked(api.setSetting).mockRejectedValueOnce(new Error("backend down"));
     await expect(setSubsEnabled(true)).rejects.toThrow("backend down");
     expect(queryClient.getQueryData(SETTINGS_KEY)).toMatchObject({ "player.subsEnabled": false });
   });
@@ -138,23 +136,16 @@ describe("subKeyAction (S key, PL-100)", () => {
 });
 
 describe("cast", () => {
-  it("castProps maps the TV status onto mpv-shaped props", async () => {
-    const { castProps } = await import("./player");
+  it("castProps maps the TV status onto mpv-shaped props", () => {
     const p = castProps(
       { ...usePlayer.getState().props, tracks: [{ id: 1, type: "audio" }] },
       castStatus({ state: "paused", position: 42, duration: 100, live: false, volume: 0.7, muted: true }),
     );
-    expect(p.pause).toBe(true);
-    expect(p.timePos).toBe(42);
-    expect(p.duration).toBe(100);
-    expect(p.seekable).toBe(true);
-    expect(p.volume).toBe(70);
-    expect(p.mute).toBe(true);
-    expect(p.tracks).toEqual([]); // the TV picks its own tracks
+    // volume as percent; no tracks: the TV picks its own
+    expect(p).toMatchObject({ pause: true, timePos: 42, duration: 100, seekable: true, volume: 70, mute: true, tracks: [] });
   });
 
-  it("castPlayerStatus maps TV states to player states", async () => {
-    const { castPlayerStatus } = await import("./player");
+  it("castPlayerStatus maps TV states to player states", () => {
     expect(castPlayerStatus(castStatus({ state: "loading" }))).toEqual({ status: "loading", error: null });
     expect(castPlayerStatus(castStatus({ state: "error", error: "boom" }))).toEqual({ status: "error", error: "boom" });
     expect(castPlayerStatus(castStatus({ state: "ended", live: false })).status).toBe("ended");
@@ -170,5 +161,43 @@ describe("cast", () => {
     usePlayer.getState().onCastStatus(castStatus({ ...a, state: "stopped", position: 9 }));
     expect(usePlayer.getState().cast).toBeNull();
     expect(usePlayer.getState().castNotice).toContain("ended");
+  });
+});
+
+describe("onEvent", () => {
+  const movie: NowPlaying = { kind: "movie", sourceId: 1, id: "m1", title: "Heat" };
+  const onEvent = (e: Parameters<ReturnType<typeof usePlayer.getState>["onEvent"]>[0]) => usePlayer.getState().onEvent(e);
+
+  it("ends on eof and fails on errors, with mpv's reason", () => {
+    usePlayer.setState({ now: movie, status: "playing" });
+    onEvent({ type: "end-file", reason: "eof" });
+    expect(usePlayer.getState().status).toBe("ended");
+    onEvent({ type: "end-file", reason: "error", error: "no such file" });
+    expect(usePlayer.getState()).toMatchObject({ status: "error", error: "Playback failed: no such file" });
+    onEvent({ type: "end-file", reason: "error" });
+    expect(usePlayer.getState().error).toBe("Playback failed");
+  });
+
+  it("ignores ends while nothing plays, and stops other than eof/error", () => {
+    usePlayer.setState({ now: movie, status: "playing" });
+    onEvent({ type: "end-file", reason: "stop" });
+    expect(usePlayer.getState().status).toBe("playing");
+    usePlayer.setState({ now: null, status: "idle" });
+    onEvent({ type: "end-file", reason: "error", error: "x" });
+    expect(usePlayer.getState()).toMatchObject({ status: "idle", error: null });
+  });
+
+  it("counts reconnect attempts until the stream is back", () => {
+    usePlayer.setState({ now: movie, status: "playing" });
+    onEvent({ type: "reconnecting", attempt: 2 });
+    expect(usePlayer.getState()).toMatchObject({ status: "reconnecting", reconnectAttempt: 2 });
+    onEvent({ type: "file-loaded" });
+    expect(usePlayer.getState()).toMatchObject({ status: "playing", reconnectAttempt: 0 });
+  });
+
+  it("leaves the TV's state alone while casting", () => {
+    usePlayer.setState({ now: movie, status: "playing", cast: castStatus() });
+    onEvent({ type: "end-file", reason: "error", error: "mpv stopped" });
+    expect(usePlayer.getState().status).toBe("playing");
   });
 });

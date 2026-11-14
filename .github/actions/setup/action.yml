@@ -1,0 +1,56 @@
+name: Build environment
+description: >
+  System build tools, the pinned Rust toolchain and Bun, and the static media
+  engine (FFmpeg/mpv & co., scripts/build-media.sh) restored from cache or
+  built — everything the check and bundle jobs share. Runs on the Ubuntu
+  24.04 and macOS 26 runners.
+
+runs:
+  using: composite
+  steps:
+    - name: System packages
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        mapfile -t pkgs < <(sed -e 's/#.*//' packaging/ubuntu/packages.txt)
+        sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
+
+    # build-media.sh needs bash 4+ (assoc arrays); macOS ships 3.2 as
+    # /bin/bash. meson, nasm and pkg-config are not on the runner image.
+    - name: Build tools (Homebrew bash 5, meson, nasm, pkg-config)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install bash meson nasm pkg-config
+
+    - name: Rust (rust-toolchain.toml)
+      shell: bash
+      run: rustup toolchain install
+
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: package.json
+
+    # FFmpeg/mpv & co. sources and static build, redone only when
+    # build-media.sh (tags, options) or the system packages change
+    - name: Media engine cache
+      uses: actions/cache@v6
+      with:
+        path: |
+          third_party/src
+          third_party/prefix
+        key: ${{ runner.os == 'Linux' && format('media-ubuntu24.04-{0}', hashFiles('.github/workflows/ci.yml.bump', 'scripts/build-media.sh', 'packaging/ubuntu/packages.txt')) || format('media-macos-{0}-{1}', runner.arch, hashFiles('.github/workflows/ci.yml.bump', 'scripts/build-media.sh')) }}
+
+    - name: Media engine
+      if: runner.os == 'Linux'
+      shell: bash
+      run: scripts/build-media.sh
+
+    - name: Media engine (incl. the macOS static tail)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: '"$(brew --prefix)/bin/bash" scripts/build-media.sh'
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src-tauri

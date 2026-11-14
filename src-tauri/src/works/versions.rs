@@ -9,7 +9,7 @@ use tauri::State;
 use super::variant::{self, Origin, Variant};
 use crate::db::now;
 use crate::error::{Error, Result};
-use crate::kind::{ItemKind, WorkKind};
+use crate::kind::{ItemKind, ItemRef, WorkKind};
 use crate::settings;
 use crate::state::{AppState, write_blocking};
 
@@ -166,12 +166,12 @@ pub fn members(conn: &Connection, kind: WorkKind, source_id: i64, id: &str) -> R
     Ok(rows)
 }
 
-pub fn preference(conn: &Connection, kind: WorkKind, key: &str) -> Result<Option<(i64, String)>> {
+pub fn preference(conn: &Connection, kind: WorkKind, key: &str) -> Result<Option<ItemRef>> {
     Ok(conn
         .query_row(
             "SELECT source_id, item_id FROM work_pref WHERE kind = ?1 AND key = ?2",
             params![kind, key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok(ItemRef::new(r.get(0)?, r.get(1)?)),
         )
         .optional()?)
 }
@@ -188,10 +188,8 @@ pub fn language_prefs(conn: &Connection) -> Vec<&'static str> {
 pub const BROKEN: f64 = -50.0;
 
 /// Tracks entry of a copy whose check failed.
-pub fn unavailable(tracks: &Option<Value>) -> bool {
-    tracks
-        .as_ref()
-        .is_some_and(|t| t["unavailable"] == Value::Bool(true))
+pub fn unavailable(tracks: Option<&Value>) -> bool {
+    tracks.is_some_and(|t| t["unavailable"] == Value::Bool(true))
 }
 
 /// Which copy plays: the one the user picked, else the one they were last
@@ -200,14 +198,14 @@ pub fn unavailable(tracks: &Option<Value>) -> bool {
 /// open — then picture quality; never CAM).
 pub fn choose(
     members: &[Member],
-    pref: Option<&(i64, String)>,
+    pref: Option<&ItemRef>,
     langs: &[&str],
     completeness: impl Fn(usize) -> f64,
 ) -> usize {
-    if let Some((sid, id)) = pref
+    if let Some(pref) = pref
         && let Some(i) = members
             .iter()
-            .position(|m| m.source_id == *sid && m.id == *id)
+            .position(|m| m.source_id == pref.source_id && m.id == pref.id)
     {
         return i;
     }
@@ -419,14 +417,14 @@ mod tests {
         watching[2].played_at = 100;
         assert_eq!(choose(&watching, None, &danish, full), 2);
         // an explicit choice wins over everything
-        let pick = (1, v[0].id.clone());
+        let pick = ItemRef::new(1, v[0].id.clone());
         assert_eq!(choose(&watching, Some(&pick), &danish, full), 0);
         // a copy the server can't open loses to anything else
         assert_eq!(
             choose(&v, None, &danish, |i| if i == 1 { BROKEN } else { 1.0 }),
             3
         );
-        assert!(unavailable(&Some(serde_json::json!({"unavailable": true}))));
-        assert!(!unavailable(&None));
+        assert!(unavailable(Some(&serde_json::json!({"unavailable": true}))));
+        assert!(!unavailable(None));
     }
 }

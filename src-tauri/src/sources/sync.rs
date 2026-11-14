@@ -1,7 +1,20 @@
 //! Syncing a source: download its lists (or playlist) into the catalog,
 //! then its guide; and the periodic refresh of stale sources.
 
-use super::*;
+use std::collections::HashSet;
+use std::time::Duration;
+
+use rusqlite::params;
+use tauri::{AppHandle, Emitter, Runtime};
+
+use crate::db::now;
+use crate::error::{Error, Result};
+use crate::state::{AppState, read_blocking, run_blocking, write_blocking};
+use crate::util::json::str_of;
+
+use super::store::{XtreamLists, write_m3u, write_xtream};
+use super::xtream::Xtream;
+use super::{Counts, SYNC_EVENT, SourceKind, SourceRow, SyncProgress, counts, load, load_all, m3u};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncScope {
@@ -95,7 +108,7 @@ async fn run_sync<R: Runtime>(
     scope: SyncScope,
 ) -> Result<Counts> {
     let src = read_blocking(st, move |conn| load(conn, id)).await?;
-    let client = http_client(src.user_agent.as_deref());
+    let client = st.client(src.user_agent.as_deref());
     let mut epg_urls: Vec<String> = src.epg_url.iter().cloned().collect();
 
     if scope == SyncScope::Full {
@@ -157,7 +170,9 @@ async fn run_sync<R: Runtime>(
                 let text = download_text(&client, &src.url).await?;
                 let pl = m3u::parse(&text);
                 if pl.entries.is_empty() {
-                    return Err(Error::msg("The playlist is empty or not an M3U file"));
+                    return Err(Error::msg(
+                        "The playlist is empty or not an M3U file".into(),
+                    ));
                 }
                 step(app, id, &format!("Saving {} entries…", pl.entries.len()));
                 if epg_urls.is_empty() {
@@ -203,9 +218,17 @@ async fn run_sync<R: Runtime>(
     read_blocking(st, move |conn| counts(conn, id)).await
 }
 
+/// An `Xtream` that only builds stream URLs (playback), never fetches:
+/// shares one idle client instead of building one per play.
+pub fn xtream_url_builder(src: &SourceRow) -> Result<Xtream> {
+    static IDLE: std::sync::LazyLock<reqwest::Client> =
+        std::sync::LazyLock::new(reqwest::Client::new);
+    xtream_for(src, IDLE.clone())
+}
+
 pub fn xtream_for(src: &SourceRow, client: reqwest::Client) -> Result<Xtream> {
     if src.password_in_keyring && src.password.is_none() {
-        return Err(Error::msg(crate::secrets::UNAVAILABLE));
+        return Err(Error::msg(crate::secrets::UNAVAILABLE.into()));
     }
     // prefer the mirror that answered last time
     let preferred = src.account.as_ref().and_then(|a| str_of(&a["baseUrl"]));
@@ -279,7 +302,7 @@ async fn sync_epg(
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| Error::msg("no guide url")))
+    Err(last_err.unwrap_or_else(|| Error::msg("no guide url".into())))
 }
 
 /// Streams a download into `path` (constant memory).

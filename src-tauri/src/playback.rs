@@ -12,7 +12,7 @@ use crate::kind::PlayKind;
 use crate::player::{LoadOptions, MediaRef, Player};
 use crate::probe::Probe;
 use crate::sources::{self, SourceKind, m3u};
-use crate::state::{AppState, http_client, read_blocking, write_blocking};
+use crate::state::{AppState, read_blocking, write_blocking};
 use crate::util::json::i64_of;
 use crate::{library, settings};
 
@@ -74,7 +74,7 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
     let live_format = settings::get_str(conn, "player.liveFormat");
     let fmt = if live_format == "m3u8" { "m3u8" } else { "ts" };
     let x = match src.kind {
-        SourceKind::Xtream => Some(sources::xtream_for(&src, http_client(None))?),
+        SourceKind::Xtream => Some(sources::xtream_url_builder(&src)?),
         SourceKind::M3u => None,
     };
 
@@ -99,7 +99,7 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
             let url = match (&x, row.url.clone()) {
                 (_, Some(u)) => u,
                 (Some(x), None) => x.live_url(&req.id, fmt),
-                (None, None) => return Err(Error::msg("channel has no stream url")),
+                (None, None) => return Err(Error::msg("channel has no stream url".into())),
             };
             (url, row)
         }
@@ -121,7 +121,7 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
             let url = match (&x, row.url.clone()) {
                 (_, Some(u)) => u,
                 (Some(x), None) => x.movie_url(&req.id, ext.as_deref().unwrap_or("mp4")),
-                (None, None) => return Err(Error::msg("movie has no stream url")),
+                (None, None) => return Err(Error::msg("movie has no stream url".into())),
             };
             (url, row)
         }
@@ -141,14 +141,14 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
                 let url = row
                     .url
                     .clone()
-                    .ok_or_else(|| Error::msg("episode has no stream url"))?;
+                    .ok_or_else(|| Error::msg("episode has no stream url".into()))?;
                 (url, row)
             }
         },
         PlayKind::Catchup => {
             let start = req
                 .catchup_start
-                .ok_or_else(|| Error::msg("missing catch-up start"))?;
+                .ok_or_else(|| Error::msg("missing catch-up start".into()))?;
             let minutes = req.catchup_minutes.unwrap_or(60).max(1);
             match &x {
                 Some(x) => {
@@ -161,7 +161,7 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
                         start + offset + src.catchup_shift_minutes * 60,
                         0,
                     )
-                    .ok_or_else(|| Error::msg("bad catch-up time"))?
+                    .ok_or_else(|| Error::msg("bad catch-up time".into()))?
                     .naive_utc();
                     (x.timeshift_url(&req.id, local, minutes), ItemRow::default())
                 }
@@ -196,7 +196,7 @@ pub fn resolve(conn: &Connection, req: &PlayRequest) -> Result<Stream> {
                                 src.catchup_shift_minutes * 60,
                             )
                         })
-                        .ok_or_else(|| Error::msg("This channel does not offer catch-up"))?;
+                        .ok_or_else(|| Error::msg("This channel does not offer catch-up".into()))?;
                     (url, row)
                 }
             }

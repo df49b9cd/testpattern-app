@@ -1,4 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
+import { queryKeys } from "./queryKeys";
 
 /** The app's TanStack Query cache (also used by stores outside React). */
 export const queryClient = new QueryClient({
@@ -14,7 +15,7 @@ export const queryClient = new QueryClient({
 
 /** Views that show watch progress: refetch after it changed. */
 export function invalidateWatchState() {
-  for (const queryKey of [["continue"], ["movie-detail"], ["series-detail"], ["movies"]]) {
+  for (const queryKey of [queryKeys.continue, queryKeys.workDetail("movie"), queryKeys.workDetail("series"), queryKeys.works("movie")]) {
     void queryClient.invalidateQueries({ queryKey });
   }
 }

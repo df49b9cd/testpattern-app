@@ -6,8 +6,6 @@
 //!
 //! "This product uses the TMDB API but is not endorsed or certified by TMDB."
 
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -20,7 +18,7 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 use crate::db::now;
 use crate::error::{Error, Result};
 use crate::kind::WorkKind;
-use crate::state::{AppState, http_client, read_blocking, write_blocking};
+use crate::state::{AppState, read_blocking, write_blocking};
 
 /// Setting holding the API key (v3) or read access token (v4). Kept out of
 /// `settings_get` and logs.
@@ -155,9 +153,9 @@ struct Client {
 }
 
 impl Client {
-    fn new(key: &str) -> Self {
+    fn new(http: reqwest::Client, key: &str) -> Self {
         Client {
-            http: http_client(None),
+            http,
             auth: auth(key),
         }
     }
@@ -221,8 +219,8 @@ impl Client {
 }
 
 /// Checks a key with one request (`GET /3/authentication`, "validate key").
-pub async fn check_key(key: &str) -> Result<()> {
-    let resp = Client::new(key).get("/authentication").await?;
+pub async fn check_key(http: reqwest::Client, key: &str) -> Result<()> {
+    let resp = Client::new(http, key).get("/authentication").await?;
     match resp.status().as_u16() {
         200 => Ok(()),
         401 | 403 => Err(Error::TmdbRejected),
@@ -260,8 +258,14 @@ pub struct Status {
     pub last_run: Option<i64>,
 }
 
+/// The background run's progress (`App::tmdb`): one run at a time, and
+/// `running` is only set and cleared under the lock, so two starts can't
+/// both win.
 #[derive(Default)]
-struct Progress {
+pub struct Progress(Mutex<RunState>);
+
+#[derive(Default)]
+struct RunState {
     running: bool,
     done: i64,
     total: i64,
@@ -269,34 +273,47 @@ struct Progress {
     last_run: Option<i64>,
 }
 
-static PROGRESS: LazyLock<Mutex<Progress>> = LazyLock::new(Default::default);
-static RUNNING: AtomicBool = AtomicBool::new(false);
+impl Progress {
+    fn with<T>(&self, f: impl FnOnce(&mut RunState) -> T) -> T {
+        f(&mut self.0.lock())
+    }
+}
 
-pub fn status(conn: &Connection) -> Result<Status> {
+/// Status from the database plus the run's progress.
+async fn status_of(st: &AppState) -> Result<Status> {
+    let st2 = st.clone();
+    read_blocking(st, move |conn| status(conn, &st2.tmdb)).await
+}
+
+pub fn status(conn: &Connection, progress: &Progress) -> Result<Status> {
     let (titles, known): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COUNT(t.id) FROM work w
-           LEFT JOIN tmdb t ON t.kind = CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END
+        &format!(
+            "SELECT COUNT(*), COUNT(t.id) FROM work w
+           LEFT JOIN tmdb t ON t.kind = {TMDB_KIND}
                            AND t.id = substr(w.key, 6) AND t.json IS NOT NULL
-          WHERE w.key LIKE 'tmdb:%'",
+          WHERE w.key LIKE 'tmdb:%'"
+        ),
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     // unidentified titles, minus the ones search matching already folded
     // into a TMDB group (their mapped key) or the searches ruled out
     let unmapped: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM work w
+        &format!(
+            "SELECT COUNT(*) FROM work w
           WHERE (w.key LIKE 'title:%' OR w.key LIKE 'item:%')
             AND w.kind IN ('movie', 'series')
             AND trim(w.title) != ''
             AND COALESCE(NULLIF((SELECT tmdb_id FROM tmdb_map m
-                                  WHERE m.kind = CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END
-                                    AND m.source_key = w.key), ''), 'x') = 'x'",
+                                  WHERE m.kind = {TMDB_KIND}
+                                    AND m.source_key = w.key), ''), 'x') = 'x'"
+        ),
         [],
         |r| r.get(0),
     )?;
     let configured = crate::secrets::named_configured(conn, KEY_SETTING);
     let locked = configured && key(conn).is_none();
-    let p = PROGRESS.lock();
+    let p = progress.0.lock();
     Ok(Status {
         configured,
         running: p.running,
@@ -314,7 +331,7 @@ pub fn status(conn: &Connection) -> Result<Status> {
 }
 
 async fn emit<R: Runtime>(app: &AppHandle<R>, st: &AppState) {
-    if let Ok(s) = read_blocking(st, status).await {
+    if let Ok(s) = status_of(st).await {
         let _ = app.emit(EVENT, s);
     }
 }
@@ -334,19 +351,25 @@ async fn save(st: &AppState, batch: Vec<(WorkKind, String, Option<Info>)>) -> Re
     write_blocking(st, move |conn| store(conn, &batch)).await
 }
 
+/// SQL: the tmdb table's kind for `work w` (our "series" are TMDB's "tv",
+/// as `WorkKind::tmdb`).
+const TMDB_KIND: &str = "CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END";
+
 // --------------------------------------------------------------------- job
 
 /// Titles to fetch: never fetched or older than `MAX_AGE`, newest first.
 fn todo(conn: &Connection) -> Result<Vec<(WorkKind, String)>> {
     let rows = conn
-        .prepare(
-            "SELECT CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END, substr(w.key, 6)
+        .prepare(&format!(
+            "SELECT {TMDB_KIND}, substr(w.key, 6)
                FROM work w
-               LEFT JOIN tmdb t ON t.kind = CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END AND t.id = substr(w.key, 6)
+               LEFT JOIN tmdb t ON t.kind = {TMDB_KIND} AND t.id = substr(w.key, 6)
               WHERE w.key LIKE 'tmdb:%' AND (t.id IS NULL OR t.fetched_at < ?1)
-              ORDER BY w.added IS NULL, w.added DESC",
-        )?
-        .query_map([now() - MAX_AGE], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+              ORDER BY w.added IS NULL, w.added DESC"
+        ))?
+        .query_map([now() - MAX_AGE], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows
         .into_iter()
@@ -466,15 +489,15 @@ struct Candidate {
 /// year-less 'item:*' entries, not searched again within `MAX_AGE`.
 fn search_todo(conn: &Connection) -> Result<Vec<Candidate>> {
     let rows = conn
-        .prepare(
-            "SELECT CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END, w.key, w.title, w.year
+        .prepare(&format!(
+            "SELECT {TMDB_KIND}, w.key, w.title, w.year
                FROM work w
-               LEFT JOIN tmdb_map m ON m.kind = CASE w.kind WHEN 'movie' THEN 'movie' ELSE 'tv' END
+               LEFT JOIN tmdb_map m ON m.kind = {TMDB_KIND}
                                    AND m.source_key = w.key
               WHERE (w.key LIKE 'title:%' OR w.key LIKE 'item:%')
                 AND w.kind IN ('movie', 'series')
-                AND (m.searched_at IS NULL OR m.searched_at < ?1)",
-        )?
+                AND (m.searched_at IS NULL OR m.searched_at < ?1)"
+        ))?
         .query_map([now() - MAX_AGE], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -579,7 +602,7 @@ async fn identify(
         "tmdb: searching for {} unidentified titles",
         candidates.len()
     );
-    PROGRESS.lock().total += candidates.len() as i64;
+    st.tmdb.with(|p| p.total += candidates.len() as i64);
     let mut found = 0;
     let mut failures = 0;
     let mut batch: Vec<(&'static str, String, String)> = Vec::new();
@@ -588,7 +611,7 @@ async fn identify(
         if !has_key(st).await {
             break; // the key was removed meanwhile (Settings)
         }
-        PROGRESS.lock().done = (progress + i + 1) as i64;
+        st.tmdb.with(|p| p.done = (progress + i + 1) as i64);
         let id = match search_id(client, c.kind, &c.title, c.year).await {
             Ok(id) => id,
             Err(e @ Error::TmdbRejected) => {
@@ -618,7 +641,7 @@ async fn identify(
         if batch.len() >= 200 {
             save_map(st, &batch).await?;
             let done = (progress + i + 1) as i64;
-            PROGRESS.lock().done = done;
+            st.tmdb.with(|p| p.done = done);
             batch.clear();
         }
     }
@@ -676,26 +699,27 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, st: AppState) {
 }
 
 fn start<R: Runtime>(app: AppHandle<R>, st: AppState) {
-    if RUNNING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    {
-        let mut p = PROGRESS.lock();
-        *p = Progress {
+    let started = st.tmdb.with(|p| {
+        if p.running {
+            return false;
+        }
+        *p = RunState {
             running: true,
             last_run: p.last_run,
             ..Default::default()
         };
+        true
+    });
+    if !started {
+        return;
     }
     tauri::async_runtime::spawn(async move {
         let result = run(&app, &st).await;
-        {
-            let mut p = PROGRESS.lock();
+        st.tmdb.with(|p| {
             p.running = false;
             p.last_run = Some(now());
             p.error = result.as_ref().err().map(|e| e.to_string());
-        }
-        RUNNING.store(false, Ordering::SeqCst);
+        });
         match &result {
             Ok(n) => log::info!("tmdb: {n} titles updated"),
             Err(e) => log::warn!("tmdb: {e}"),
@@ -708,7 +732,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
     let api_key = read_blocking(st, |conn| Ok(key(conn))).await?;
     let Some(api_key) = api_key else { return Ok(0) };
 
-    let client = std::sync::Arc::new(Client::new(&api_key));
+    let client = std::sync::Arc::new(Client::new(st.http.clone(), &api_key));
     let pace = std::sync::Arc::new(tokio::sync::Mutex::new({
         let mut i = tokio::time::interval(Duration::from_millis(1000 / RATE));
         i.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -759,7 +783,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
         return Ok(found);
     }
     log::info!("tmdb: fetching {} titles", todo.len());
-    PROGRESS.lock().total = todo.len() as i64;
+    st.tmdb.with(|p| p.total = todo.len() as i64);
     emit(app, st).await;
 
     let mut results = futures_util::stream::iter(todo)
@@ -779,7 +803,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
     let mut batch: Vec<(WorkKind, String, Option<Info>)> = Vec::new();
     let (mut stored, mut since_regroup, mut failures) = (0usize, 0usize, 0usize);
     while let Some((kind, id, r)) = results.next().await {
-        PROGRESS.lock().done += 1;
+        st.tmdb.with(|p| p.done += 1);
         match r {
             Ok(Fetched::Found(info)) => batch.push((kind, id, Some(*info))),
             Ok(Fetched::Missing) => batch.push((kind, id, None)),
@@ -824,7 +848,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, st: &AppState) -> Result<usize> {
 
 #[tauri::command]
 pub async fn tmdb_status(state: State<'_, AppState>) -> Result<Status> {
-    read_blocking(state.inner(), status).await
+    status_of(state.inner()).await
 }
 
 /// Saves (after checking it with TMDB) or, with an empty key, removes the
@@ -837,7 +861,7 @@ pub async fn tmdb_set_key<R: Runtime>(
 ) -> Result<Status> {
     let key = key.trim().to_owned();
     if !key.is_empty() {
-        check_key(&key).await?;
+        check_key(state.http.clone(), &key).await?;
     }
     // the system keyring when there is one (it may ask to be unlocked: the
     // user just typed the key), else the database
@@ -852,9 +876,9 @@ pub async fn tmdb_set_key<R: Runtime>(
         )
         .await?;
     }
-    PROGRESS.lock().error = None;
+    state.tmdb.with(|p| p.error = None);
     spawn(app, state.inner().clone());
-    read_blocking(state.inner(), status).await
+    status_of(state.inner()).await
 }
 
 #[tauri::command]
@@ -865,7 +889,7 @@ pub async fn tmdb_refresh<R: Runtime>(
     // the user asked: a keyring locked so far may prompt now
     crate::secrets::ensure_loaded(state.inner(), None, crate::secrets::Unlock::Prompt).await;
     spawn(app, state.inner().clone());
-    read_blocking(state.inner(), status).await
+    status_of(state.inner()).await
 }
 
 /// What the detail pages show from TMDB.
@@ -965,13 +989,13 @@ mod tests {
     #[test]
     fn a_key_in_a_locked_keyring_is_reported() {
         let c = crate::db::test_conn();
-        assert!(!status(&c).unwrap().configured);
+        assert!(!status(&c, &Progress::default()).unwrap().configured);
         c.execute(
             "INSERT INTO setting (key, value) VALUES ('tmdb.key.inKeyring', 'true')",
             [],
         )
         .unwrap();
-        let s = status(&c).unwrap();
+        let s = status(&c, &Progress::default()).unwrap();
         assert!(s.configured);
         assert_eq!(s.error.as_deref(), Some(KEY_LOCKED));
         assert_eq!(key(&c), None);
@@ -1150,7 +1174,7 @@ mod tests {
             .collect();
         assert_eq!(keys, ["item:1:no-year".to_string()]);
         // unmapped count matches: both still without an accepted match
-        assert_eq!(status(&c).unwrap().unmapped, 2);
+        assert_eq!(status(&c, &Progress::default()).unwrap().unmapped, 2);
     }
 
     /// Status reports the still-unmatched works: mapped and miss-sentinel
@@ -1167,7 +1191,7 @@ mod tests {
                 .unwrap();
         }
         crate::works::rebuild(&c).unwrap();
-        assert_eq!(status(&c).unwrap().unmapped, 3);
+        assert_eq!(status(&c, &Progress::default()).unwrap().unmapped, 3);
         c.execute(
             "INSERT INTO tmdb_map (kind, source_key, tmdb_id, searched_at) VALUES ('movie', 'title:film a|2001', '10', 1)",
             [],
@@ -1177,6 +1201,6 @@ mod tests {
         crate::works::rebuild(&c).unwrap();
         // Film A joined a TMDB group; B (never searched) and C (searched,
         // no match) are both still without a TMDB id
-        assert_eq!(status(&c).unwrap().unmapped, 2);
+        assert_eq!(status(&c, &Progress::default()).unwrap().unmapped, 2);
     }
 }

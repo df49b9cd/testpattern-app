@@ -1,6 +1,14 @@
 //! Movies and series: copies folded into works, with their browse facets.
 
-use super::*;
+use std::collections::{BTreeSet, HashMap};
+
+use rusqlite::{Connection, params};
+
+use crate::error::Result;
+use crate::kind::WorkKind;
+
+use super::variant::Variant;
+use super::{genre, lang, load_tmdb_map, most_common, norm_title, valid_tmdb, variant};
 
 /// One catalog row as far as grouping cares.
 struct Member {
@@ -140,44 +148,12 @@ pub fn tmdb_fits(info: &crate::tmdb::Info, titles: &[&str], year: Option<i64>) -
 /// Recomputes `work` / `work_facet` and the members' `work_key` for one kind.
 pub(super) fn rebuild_works(conn: &Connection, kind: WorkKind) -> Result<usize> {
     let members = load_members(conn, kind)?;
-    let mut keys = assign_keys(&members);
-    let table = kind.table();
     let tmdb = load_tmdb(conn, kind)?;
-    // titles identified by search (tmdb.rs) join the TMDB group the search
-    // found — but only when TMDB's stored data actually fits the members, or
-    // a wrong match would infect the whole group assign_keys merged, and a
-    // NULL-json row ("not on TMDB") would hide the provider metadata; tmdb is
-    // pre-filtered to json IS NOT NULL, so a miss means: don't remap
-    let search = kind.tmdb();
-    let mapped = load_tmdb_map(conn)?;
-    let remap: HashMap<String, String> = {
-        let mut by_key: HashMap<&str, Vec<&Member>> = HashMap::new();
-        for (m, k) in members.iter().zip(&keys) {
-            by_key.entry(k.as_str()).or_default().push(m);
-        }
-        let mut remap = HashMap::new();
-        for (k, ms) in by_key {
-            if !(k.starts_with("title:") || k.starts_with("item:")) {
-                continue;
-            }
-            let fits = mapped
-                .get(&(search.to_owned(), k.to_owned()))
-                .and_then(|id| tmdb.get(id))
-                .is_some_and(|info| {
-                    let titles: Vec<&str> = ms.iter().map(|m| m.title.as_str()).collect();
-                    let year = most_common(ms.iter().filter_map(|m| m.year.map(|y| (y, 1))));
-                    tmdb_fits(info, &titles, year)
-                });
-            if fits {
-                let id = mapped[&(search.to_owned(), k.to_owned())].clone();
-                remap.insert(k.to_owned(), format!("tmdb:{id}"));
-            }
-        }
-        remap
-    };
+    let mut keys = assign_keys(&members);
+    let remap = remap_search_matches(&members, &keys, &tmdb, kind, &load_tmdb_map(conn)?);
     for k in &mut keys {
         if let Some(new) = remap.get(k) {
-            *k = new.clone();
+            k.clone_from(new);
         }
     }
 
@@ -191,6 +167,7 @@ pub(super) fn rebuild_works(conn: &Connection, kind: WorkKind) -> Result<usize> 
         e.push(m);
     }
 
+    let table = kind.table();
     conn.execute("DELETE FROM work WHERE kind = ?1", [kind])?;
     conn.execute("DELETE FROM work_facet WHERE kind = ?1", [kind])?;
     {
@@ -212,156 +189,43 @@ pub(super) fn rebuild_works(conn: &Connection, kind: WorkKind) -> Result<usize> 
 
     for key in &order {
         let ms = &groups[key];
-        // metadata from the best-weighted copy (ties: the one with artwork, newest)
-        let rep = ms
-            .iter()
-            .max_by_key(|m| (m.weight(), m.poster.is_some() as i64, m.added.unwrap_or(0)))
-            .copied()
-            .expect("groups are never empty");
-        let title = most_common(ms.iter().map(|m| (m.title.clone(), m.weight().max(1))))
-            .unwrap_or_else(|| rep.title.clone());
-        let year = most_common(ms.iter().filter_map(|m| m.year.map(|y| (y, 1))));
-        let by_weight = |f: &dyn Fn(&Member) -> Option<String>| -> Option<String> {
-            let mut best: Option<(i64, String)> = None;
-            for m in ms {
-                if let Some(v) = f(m).filter(|v| !v.is_empty())
-                    && best.as_ref().is_none_or(|(w, _)| m.weight() > *w)
-                {
-                    best = Some((m.weight(), v));
-                }
-            }
-            best.map(|(_, v)| v)
-        };
-        let mut poster = by_weight(&|m| m.poster.clone());
-        let mut backdrop = by_weight(&|m| m.backdrop.clone());
-        let mut rating = ms
-            .iter()
-            .filter_map(|m| m.rating)
-            .fold(None, |a: Option<f64>, r| Some(a.map_or(r, |a| a.max(r))));
-        let mut year = year;
-        let info = key
-            .strip_prefix("tmdb:")
-            .and_then(|id| tmdb.get(id))
-            .filter(|i| {
-                let titles: Vec<&str> = ms.iter().map(|m| m.title.as_str()).collect();
-                tmdb_fits(i, &titles, year)
-            });
-        if let Some(i) = info {
-            // the provider's own data wins; TMDB fills the gaps
-            year = year.or(i.year);
-            if rating.is_none_or(|r| r <= 0.0) && i.votes >= 20 {
-                rating = i.rating;
-            }
-            poster = poster.or_else(|| {
-                i.poster
-                    .as_ref()
-                    .map(|p| format!("{}/w500{p}", crate::tmdb::IMAGES))
-            });
-            backdrop = backdrop.or_else(|| {
-                i.backdrop
-                    .as_ref()
-                    .map(|p| format!("{}/w1280{p}", crate::tmdb::IMAGES))
-            });
-        }
-
-        let mut genres: Vec<&'static str> = Vec::new();
-        let mut services: Vec<&'static str> = Vec::new();
-        let mut languages: Vec<&'static str> = Vec::new();
-        let mut quality: Vec<&'static str> = Vec::new();
-        for m in ms {
-            for g in m
-                .genre_text
-                .as_deref()
-                .map(genre::from_text)
-                .unwrap_or_default()
-            {
-                if !genres.contains(&g) {
-                    genres.push(g);
-                }
-            }
-            for g in m
-                .category
-                .as_deref()
-                .map(genre::from_category)
-                .unwrap_or_default()
-            {
-                if !genres.contains(&g) {
-                    genres.push(g);
-                }
-            }
-            if let Some(s) = m.variant.service
-                && !services.contains(&s)
-            {
-                services.push(s);
-            }
-            for l in [m.variant.language, m.variant.subtitles]
-                .into_iter()
-                .flatten()
-            {
-                if !languages.contains(&l) {
-                    languages.push(l);
-                }
-            }
-            for q in &m.variant.quality {
-                if !quality.contains(q) {
-                    quality.push(q);
-                }
-            }
-            if m.variant.origin == variant::Origin::Bluray && !quality.contains(&"Blu-ray") {
-                quality.push("Blu-ray");
-            }
-        }
-        if let Some(i) = info {
-            for g in genre::from_text(&i.genres.join(", ")) {
-                if !genres.contains(&g) {
-                    genres.push(g);
-                }
-            }
-        }
-        genres.sort_by_key(|g| {
-            genre::GENRES
-                .iter()
-                .position(|x| x == g)
-                .unwrap_or(usize::MAX)
-        });
-        let added = ms.iter().filter_map(|m| m.added).max();
-        let adult = ms.iter().any(|m| m.adult);
-
+        let w = work_row(key, ms, &tmdb);
+        let f = collect_facets(ms, w.info);
         insert_work.execute(params![
             kind,
             key,
-            title,
-            year,
-            poster,
-            backdrop,
-            rating,
-            (!genres.is_empty()).then(|| genres.join(", ")),
-            added,
+            w.title,
+            w.year,
+            w.poster,
+            w.backdrop,
+            w.rating,
+            (!f.genres.is_empty()).then(|| f.genres.join(", ")),
+            ms.iter().filter_map(|m| m.added).max(),
             ms.len() as i64,
-            quality.join("|"),
-            services.join("|"),
-            adult,
-            rep.source_id,
-            rep.id
+            f.quality.join("|"),
+            f.services.join("|"),
+            ms.iter().any(|m| m.adult),
+            w.rep.source_id,
+            w.rep.id
         ])?;
         let mut facet = |facet: &str, value: &str| {
             insert_facet
                 .execute(params![kind, facet, value, key])
                 .map(|_| ())
         };
-        for g in &genres {
+        for g in &f.genres {
             facet("genre", g)?;
         }
-        for s in &services {
+        for s in &f.services {
             facet("service", s)?;
         }
-        for l in &languages {
+        for l in &f.languages {
             facet("language", l)?;
         }
-        for q in &quality {
+        for q in &f.quality {
             facet("quality", q)?;
         }
-        if let Some(d) = genre::decade(year) {
+        if let Some(d) = genre::decade(w.year) {
             facet("decade", &d)?;
         }
         for m in ms {
@@ -369,7 +233,7 @@ pub(super) fn rebuild_works(conn: &Connection, kind: WorkKind) -> Result<usize> 
                 facet("collection", &format!("{}:{c}", m.source_id))?;
             }
         }
-        if let Some(i) = info {
+        if let Some(i) = w.info {
             if let Some(l) = i.language.as_deref().and_then(lang::name) {
                 facet("original", l)?;
             }
@@ -382,4 +246,186 @@ pub(super) fn rebuild_works(conn: &Connection, kind: WorkKind) -> Result<usize> 
         }
     }
     Ok(order.len())
+}
+
+/// Titles identified by search (tmdb.rs) join the TMDB group the search
+/// found — but only when TMDB's stored data actually fits the members, or a
+/// wrong match would infect the whole group `assign_keys` merged, and a
+/// NULL-json row ("not on TMDB") would hide the provider metadata. `tmdb` is
+/// pre-filtered to json IS NOT NULL, so a miss means: don't remap.
+/// Returns old key → `tmdb:` key.
+fn remap_search_matches(
+    members: &[Member],
+    keys: &[String],
+    tmdb: &HashMap<String, crate::tmdb::Info>,
+    kind: WorkKind,
+    mapped: &HashMap<(String, String), String>,
+) -> HashMap<String, String> {
+    let mut by_key: HashMap<&str, Vec<&Member>> = HashMap::new();
+    for (m, k) in members.iter().zip(keys) {
+        by_key.entry(k.as_str()).or_default().push(m);
+    }
+    let mut remap = HashMap::new();
+    for (k, ms) in by_key {
+        if !(k.starts_with("title:") || k.starts_with("item:")) {
+            continue;
+        }
+        let Some(id) = mapped.get(&(kind.tmdb().to_owned(), k.to_owned())) else {
+            continue;
+        };
+        let fits = tmdb.get(id).is_some_and(|info| {
+            let titles: Vec<&str> = ms.iter().map(|m| m.title.as_str()).collect();
+            let year = most_common(ms.iter().filter_map(|m| m.year.map(|y| (y, 1))));
+            tmdb_fits(info, &titles, year)
+        });
+        if fits {
+            remap.insert(k.to_owned(), format!("tmdb:{id}"));
+        }
+    }
+    remap
+}
+
+/// What a work row shows, from its copies and (when it fits) TMDB.
+struct WorkRow<'a> {
+    /// the copy whose metadata is used and that plays by default
+    rep: &'a Member,
+    /// TMDB details, when the work is a TMDB group whose data fits
+    info: Option<&'a crate::tmdb::Info>,
+    title: String,
+    year: Option<i64>,
+    poster: Option<String>,
+    backdrop: Option<String>,
+    rating: Option<f64>,
+}
+
+/// TMDB ratings with fewer votes than this don't replace a missing one.
+const TMDB_MIN_VOTES: i64 = 20;
+
+fn work_row<'a>(
+    key: &str,
+    ms: &[&'a Member],
+    tmdb: &'a HashMap<String, crate::tmdb::Info>,
+) -> WorkRow<'a> {
+    // metadata from the best-weighted copy (ties: the one with artwork, newest)
+    let rep = ms
+        .iter()
+        .max_by_key(|m| (m.weight(), m.poster.is_some() as i64, m.added.unwrap_or(0)))
+        .copied()
+        .expect("groups are never empty");
+    let title = most_common(ms.iter().map(|m| (m.title.clone(), m.weight().max(1))))
+        .unwrap_or_else(|| rep.title.clone());
+    let mut year = most_common(ms.iter().filter_map(|m| m.year.map(|y| (y, 1))));
+    let by_weight = |f: &dyn Fn(&Member) -> Option<String>| -> Option<String> {
+        let mut best: Option<(i64, String)> = None;
+        for m in ms {
+            if let Some(v) = f(m).filter(|v| !v.is_empty())
+                && best.as_ref().is_none_or(|(w, _)| m.weight() > *w)
+            {
+                best = Some((m.weight(), v));
+            }
+        }
+        best.map(|(_, v)| v)
+    };
+    let mut poster = by_weight(&|m| m.poster.clone());
+    let mut backdrop = by_weight(&|m| m.backdrop.clone());
+    let mut rating = ms
+        .iter()
+        .filter_map(|m| m.rating)
+        .fold(None, |a: Option<f64>, r| Some(a.map_or(r, |a| a.max(r))));
+    let info = key
+        .strip_prefix("tmdb:")
+        .and_then(|id| tmdb.get(id))
+        .filter(|i| {
+            let titles: Vec<&str> = ms.iter().map(|m| m.title.as_str()).collect();
+            tmdb_fits(i, &titles, year)
+        });
+    if let Some(i) = info {
+        // the provider's own data wins; TMDB fills the gaps
+        year = year.or(i.year);
+        if rating.is_none_or(|r| r <= 0.0) && i.votes >= TMDB_MIN_VOTES {
+            rating = i.rating;
+        }
+        poster = poster.or_else(|| {
+            i.poster
+                .as_ref()
+                .map(|p| format!("{}/w500{p}", crate::tmdb::IMAGES))
+        });
+        backdrop = backdrop.or_else(|| {
+            i.backdrop
+                .as_ref()
+                .map(|p| format!("{}/w1280{p}", crate::tmdb::IMAGES))
+        });
+    }
+    WorkRow {
+        rep,
+        info,
+        title,
+        year,
+        poster,
+        backdrop,
+        rating,
+    }
+}
+
+/// Browse facets of one work, each list in first-seen order without repeats
+/// (genres in `genre::GENRES` order).
+struct Facets {
+    genres: Vec<&'static str>,
+    services: Vec<&'static str>,
+    languages: Vec<&'static str>,
+    quality: Vec<&'static str>,
+}
+
+fn push_unique<T: PartialEq>(list: &mut Vec<T>, items: impl IntoIterator<Item = T>) {
+    for item in items {
+        if !list.contains(&item) {
+            list.push(item);
+        }
+    }
+}
+
+fn collect_facets(ms: &[&Member], info: Option<&crate::tmdb::Info>) -> Facets {
+    let mut f = Facets {
+        genres: Vec::new(),
+        services: Vec::new(),
+        languages: Vec::new(),
+        quality: Vec::new(),
+    };
+    for m in ms {
+        push_unique(
+            &mut f.genres,
+            m.genre_text
+                .as_deref()
+                .map(genre::from_text)
+                .unwrap_or_default(),
+        );
+        push_unique(
+            &mut f.genres,
+            m.category
+                .as_deref()
+                .map(genre::from_category)
+                .unwrap_or_default(),
+        );
+        push_unique(&mut f.services, m.variant.service);
+        push_unique(
+            &mut f.languages,
+            [m.variant.language, m.variant.subtitles]
+                .into_iter()
+                .flatten(),
+        );
+        push_unique(&mut f.quality, m.variant.quality.iter().copied());
+        if m.variant.origin == variant::Origin::Bluray {
+            push_unique(&mut f.quality, ["Blu-ray"]);
+        }
+    }
+    if let Some(i) = info {
+        push_unique(&mut f.genres, genre::from_text(&i.genres.join(", ")));
+    }
+    f.genres.sort_by_key(|g| {
+        genre::GENRES
+            .iter()
+            .position(|x| x == g)
+            .unwrap_or(usize::MAX)
+    });
+    f
 }

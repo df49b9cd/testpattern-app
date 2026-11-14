@@ -1,5 +1,7 @@
 // Mirrors the camelCase JSON produced by the Rust commands (src-tauri/src).
 
+import type { StartPage } from "./routes";
+
 export type SourceKind = "xtream" | "m3u";
 
 export interface Counts {
@@ -71,6 +73,10 @@ export type SyncProgress =
   | { stage: "failed"; sourceId: number; error: string };
 
 export type MediaKind = "live" | "movie" | "series";
+/** A work with versions and facets: a movie or a series. */
+export type WorkKind = "movie" | "series";
+/** What watch history is kept for (series progress lives on their episodes). */
+export type HistoryKind = "live" | "movie" | "episode";
 
 export interface Category {
   sourceId: number;
@@ -327,7 +333,7 @@ export interface SearchResults {
 }
 
 export interface HistoryItem {
-  kind: "live" | "movie" | "episode";
+  kind: HistoryKind;
   sourceId: number;
   itemId: string;
   seriesId?: string | null;
@@ -456,7 +462,7 @@ export interface PlayRequest {
 }
 
 export interface HistoryInput {
-  kind: "live" | "movie" | "episode";
+  kind: HistoryKind;
   sourceId: number;
   itemId: string;
   seriesId?: string | null;
@@ -519,7 +525,7 @@ export interface Settings {
   "player.subsEnabled"?: boolean;
   "player.volume"?: number;
   "content.showAdult"?: boolean;
-  "ui.startPage"?: string;
+  "ui.startPage"?: StartPage;
   /** the one-shot "subtitles are off" hint was shown (PL-100) */
   "ui.subHintSeen"?: boolean;
   "cache.imagesMb"?: number;

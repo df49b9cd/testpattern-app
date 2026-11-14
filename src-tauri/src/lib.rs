@@ -33,6 +33,12 @@ const CACHE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 const CACHE_LIMIT_EVERY: Duration = Duration::from_secs(6 * 3600);
 const TMDB_DELAY: Duration = Duration::from_secs(20);
 
+/// Starts the app and blocks until it quits.
+///
+/// # Panics
+///
+/// When the Tauri runtime fails to start, or `tauri.conf.json` has no
+/// "main" window.
 pub fn run() {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,testpattern_lib=debug"),
@@ -68,12 +74,7 @@ pub fn run() {
             if let Err(e) = works::rebuild_if_stale(&mut db.write()) {
                 log::error!("regrouping the catalog failed: {e}");
             }
-            let st: state::AppState = Arc::new(state::App {
-                db,
-                http: state::http_client(None),
-                cache_dir,
-                syncing: Default::default(),
-            });
+            let st: state::AppState = Arc::new(state::App::new(db, cache_dir));
             app.manage(st.clone());
             app.manage(Arc::new(probe::Probe::default()));
 
@@ -87,39 +88,7 @@ pub fn run() {
             #[cfg(debug_assertions)]
             dev_hooks(app);
 
-            // Artwork cache size limit: shortly after startup, then every 6 h.
-            let cache_state = st.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(CACHE_LIMIT_DELAY).await;
-                let mut tick = tokio::time::interval(CACHE_LIMIT_EVERY);
-                loop {
-                    tick.tick().await;
-                    images::enforce_limit(cache_state.clone()).await;
-                }
-            });
-
-            // TMDB details of titles added since the last run (tmdb.rs), after
-            // startup settled; syncs start further runs.
-            let (tmdb_app, tmdb_state) = (app.handle().clone(), st.clone());
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(TMDB_DELAY).await;
-                tmdb::spawn(tmdb_app, tmdb_state);
-            });
-
-            // Keep catalogs and guides fresh: a first pass as soon as the
-            // keyring passwords are loaded (secrets.rs), then every 30 min.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                secrets::startup(&st).await;
-                let mut tick = tokio::time::interval(STALE_CHECK_EVERY);
-                tick.tick().await;
-                loop {
-                    sources::sync_stale(&handle, &st, CATALOG_MAX_AGE, EPG_MAX_AGE).await;
-                    tick.tick().await;
-                    // a keyring that was locked until now (no prompt)
-                    secrets::ensure_loaded(&st, None, secrets::Unlock::Never).await;
-                }
-            });
+            spawn_background_jobs(app.handle(), st);
 
             window.show()?;
             Ok(())
@@ -180,6 +149,44 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running testpattern");
+}
+
+/// Long-running upkeep: the artwork cache limit, TMDB details and fresh
+/// catalogs/guides.
+fn spawn_background_jobs<R: tauri::Runtime>(app: &tauri::AppHandle<R>, st: state::AppState) {
+    // Artwork cache size limit: shortly after startup, then every 6 h.
+    let cache_state = st.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(CACHE_LIMIT_DELAY).await;
+        let mut tick = tokio::time::interval(CACHE_LIMIT_EVERY);
+        loop {
+            tick.tick().await;
+            images::enforce_limit(cache_state.clone()).await;
+        }
+    });
+
+    // TMDB details of titles added since the last run (tmdb.rs), after
+    // startup settled; syncs start further runs.
+    let (tmdb_app, tmdb_state) = (app.clone(), st.clone());
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(TMDB_DELAY).await;
+        tmdb::spawn(tmdb_app, tmdb_state);
+    });
+
+    // Keep catalogs and guides fresh: a first pass as soon as the
+    // keyring passwords are loaded (secrets.rs), then every 30 min.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        secrets::startup(&st).await;
+        let mut tick = tokio::time::interval(STALE_CHECK_EVERY);
+        tick.tick().await;
+        loop {
+            sources::sync_stale(&handle, &st, CATALOG_MAX_AGE, EPG_MAX_AGE).await;
+            tick.tick().await;
+            // a keyring that was locked until now (no prompt)
+            secrets::ensure_loaded(&st, None, secrets::Unlock::Never).await;
+        }
+    });
 }
 
 #[cfg(debug_assertions)]

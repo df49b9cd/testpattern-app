@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { itemKey } from "../lib/item";
 import { elapsed } from "../lib/format";
 import { playChannel } from "../lib/play";
+import { ROUTES } from "../lib/routes";
 import { loadJson, saveJson } from "../lib/storage";
 import { ChannelLogo, PosterCard, Shelf, ShelfItem } from "../components/media";
 import { QualityBadges, workSubtitle } from "../components/LibraryBrowser";
@@ -145,7 +146,7 @@ export function SearchPage() {
                     width={160}
                     onClick={() => {
                       remember();
-                      navigate(`/movies/${m.sourceId}/${m.id}`);
+                      navigate(ROUTES.movie(m));
                     }}
                   />
                 </ShelfItem>
@@ -165,7 +166,7 @@ export function SearchPage() {
                     width={160}
                     onClick={() => {
                       remember();
-                      navigate(`/series/${s.sourceId}/${s.id}`);
+                      navigate(ROUTES.series(s));
                     }}
                   />
                 </ShelfItem>

@@ -527,7 +527,11 @@ mod tests {
             at(60)
         );
         let r = import(&mut c, 1, broken.as_bytes(), &all, 2).unwrap();
-        assert!(r.incomplete.is_some() && r.programmes == 1);
+        assert!(
+            r.incomplete.is_some(),
+            "a truncated document is reported incomplete"
+        );
+        assert_eq!(r.programmes, 1, "programmes before the cut are kept");
         assert_eq!(titles(&c), ["a:new a", "b:old b", "c:old c"]);
 
         // a complete document drops channels it no longer lists
@@ -590,6 +594,6 @@ mod tests {
         let data = maybe_gunzip(std::fs::read(path).unwrap()).unwrap();
         let n = parse_xmltv(&data[..], 0, i64::MAX, |_| true, |_| {}).unwrap();
         println!("{n} programmes");
-        assert!(n > 0);
+        assert!(n > 0, "no programmes parsed from the file");
     }
 }

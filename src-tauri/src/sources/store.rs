@@ -1,7 +1,19 @@
 //! Writing a downloaded catalog into the database (one transaction per
 //! source: replaced wholesale, details of items still listed kept).
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use rusqlite::{Connection, Transaction, params};
+use serde_json::Value;
+
+use crate::error::Result;
+use crate::kind::ItemKind;
+use crate::names;
+use crate::util::fnv1a;
+use crate::util::json::{first_str, i64_of, str_of};
+
+use super::m3u;
+use super::xtream::rating_of;
 
 /// The six lists an Xtream panel serves (`get_*_categories`, `get_*_streams`,
 /// `get_series`).

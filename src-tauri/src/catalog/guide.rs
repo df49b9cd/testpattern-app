@@ -1,6 +1,19 @@
 //! Programme guide: one channel's programmes and the guide grid.
 
-use super::*;
+use base64::Engine;
+use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tauri::State;
+
+use crate::epg::ProgrammeRow;
+use crate::error::Result;
+use crate::sources::SourceKind;
+use crate::state::{AppState, read_blocking};
+use crate::util::json::{i64_of, str_of};
+use crate::{epg, sources};
+
+use super::{ChannelItem, ChannelQuery, Page, query_channels};
 
 #[tauri::command]
 pub async fn epg_channel(
@@ -39,7 +52,7 @@ pub async fn epg_channel(
     if src.kind != SourceKind::Xtream {
         return Ok(rows);
     }
-    let Ok(x) = sources::xtream_for(&src, http_client(src.user_agent.as_deref())) else {
+    let Ok(x) = sources::xtream_for(&src, st.client(src.user_agent.as_deref())) else {
         return Ok(rows);
     };
     let v = match x.short_epg(&channel_id, 24).await {

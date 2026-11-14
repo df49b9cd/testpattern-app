@@ -6,7 +6,8 @@ import { api, errorMessage } from "../lib/api";
 import { itemKey } from "../lib/item";
 import { useSettings } from "../lib/settings";
 import { channelsLabel, duration, languageName, resolutionLabel, seasonsLabel } from "../lib/format";
-import type { VersionInfo } from "../lib/types";
+import { queryKeys } from "../lib/queryKeys";
+import type { VersionInfo, WorkKind } from "../lib/types";
 import { usePlayer } from "../stores/player";
 import { Badge, ProgressBar } from "./ui";
 
@@ -81,7 +82,7 @@ export function Versions({
   pending,
   onPicked,
 }: {
-  kind: "movie" | "series";
+  kind: WorkKind;
   versions: VersionInfo[];
   pending: boolean;
   onPicked: () => void;
@@ -106,7 +107,7 @@ export function Versions({
       }
     }
     setChecking(null);
-    void qc.invalidateQueries({ queryKey: [kind === "movie" ? "movie-detail" : "series-detail"] });
+    void qc.invalidateQueries({ queryKey: queryKeys.workDetail(kind) });
   };
   if (versions.length < 2) return null;
   const mostEpisodes = Math.max(...versions.map((v) => v.episodes));
@@ -158,7 +159,7 @@ function VersionCard({
   checking,
   onPick,
 }: {
-  kind: "movie" | "series";
+  kind: WorkKind;
   v: VersionInfo;
   partial: boolean;
   busy: boolean;
@@ -238,14 +239,14 @@ function VersionCard({
 }
 
 /** Reads audio/subtitle tracks of a version nobody has played yet. */
-function ProbeButton({ kind, v, again }: { kind: "movie" | "series"; v: VersionInfo; again?: boolean }) {
+function ProbeButton({ kind, v, again }: { kind: WorkKind; v: VersionInfo; again?: boolean }) {
   const qc = useQueryClient();
   // the account allows one stream: no checks while something plays
   const playing = usePlayer((s) => s.now !== null);
   const probe = useMutation({
     mutationFn: () => api.versionProbe(kind, v.sourceId, v.id),
     // a failed check is remembered too (the card says so)
-    onSettled: () => void qc.invalidateQueries({ queryKey: [kind === "movie" ? "movie-detail" : "series-detail"] }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: queryKeys.workDetail(kind) }),
   });
   // (a stream that doesn't open is shown by the card itself)
   const failed = probe.isError ? errorMessage(probe.error) : null;

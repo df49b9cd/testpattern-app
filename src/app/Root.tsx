@@ -1,18 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router";
-import { api } from "../lib/api";
-import { ROUTES } from "../lib/routes";
+import { useSources } from "../lib/queries";
+import { ROUTES, START_PAGES } from "../lib/routes";
 import { useSettings } from "../lib/settings";
 import { useBackendEvents } from "../hooks/useBackendEvents";
 import { useProgressSaver } from "../hooks/useProgressSaver";
 import { Spinner } from "../components/ui";
 import { setVideoViewport, usePlayer } from "../stores/player";
 import { PipPlayer } from "../components/PipPlayer";
-
-/** Start pages the "ui.startPage" setting can choose (settings.rs). */
-export const START_PAGES = { home: "/", live: "/live", guide: "/guide" } as const;
-export type StartPage = keyof typeof START_PAGES;
 
 // once per launch, not every time the user comes back to Home
 let startPageApplied = false;
@@ -23,7 +18,7 @@ export function Root() {
   useProgressSaver();
   const location = useLocation();
   const navigate = useNavigate();
-  const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources });
+  const sources = useSources();
   const settings = useSettings();
 
   // Leaving the live preview / player: video goes back to full size, and
@@ -39,8 +34,9 @@ export function Root() {
   useEffect(() => {
     if (startPageApplied || !settings.data || !sources.data?.length) return;
     startPageApplied = true;
-    const page = START_PAGES[settings.data["ui.startPage"] as StartPage];
-    if (page && page !== "/" && location.pathname === "/") navigate(page, { replace: true });
+    const choice = settings.data["ui.startPage"];
+    const page = choice && START_PAGES[choice];
+    if (page && page !== ROUTES.home && location.pathname === ROUTES.home) navigate(page, { replace: true });
   }, [settings.data, sources.data, location.pathname, navigate]);
 
   if (sources.isLoading) {
@@ -50,8 +46,8 @@ export function Root() {
       </div>
     );
   }
-  if (sources.data && sources.data.length === 0 && location.pathname !== "/onboarding") {
-    return <Navigate to="/onboarding" replace />;
+  if (sources.data && sources.data.length === 0 && location.pathname !== ROUTES.onboarding) {
+    return <Navigate to={ROUTES.onboarding} replace />;
   }
   return (
     <>

@@ -23,6 +23,11 @@ pub enum Error {
     /// one failed title.
     #[error("TMDB did not accept the API key")]
     TmdbRejected,
+    /// The macOS keychain is locked (or can't prompt); callers skip it
+    /// instead of failing.
+    #[cfg(target_os = "macos")]
+    #[error("keyring: the keychain is locked")]
+    KeyringLocked,
 }
 
 impl From<reqwest::Error> for Error {
@@ -43,8 +48,8 @@ impl From<reqwest::Error> for Error {
 }
 
 impl Error {
-    pub fn msg(m: impl Into<String>) -> Self {
-        Error::Msg(m.into())
+    pub fn msg(m: String) -> Self {
+        Error::Msg(m)
     }
 }
 

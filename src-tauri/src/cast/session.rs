@@ -1,7 +1,22 @@
 //! One cast session: the task that owns the device connection, loads the
 //! item, follows the TV's media status and carries out the UI's commands.
 
-use super::*;
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+use serde_json::{Value, json};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio::sync::mpsc;
+
+use crate::state::AppState;
+
+use super::castv2::{Message, NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER, RECEIVER};
+use super::{
+    Cast, CastState, Cmd, DEFAULT_RECEIVER, Device, Item, LIVE_PAUSE_LIMIT, Meta, STATUS_EVENT,
+    Status, UNREACHABLE_AFTER, castv2, relay, remember,
+};
 
 struct Current {
     generation: u64,
@@ -112,7 +127,6 @@ impl<R: Runtime> Conn<R> {
             let _ = tx.send(Cmd::Started(generation, n, s));
         });
         let token = relay.publish(item.source, self.device.addr.ip(), on_start);
-        let _ = &cast; // the app borrow ends with this statement
         self.current = Some(Current {
             generation,
             token,
@@ -183,10 +197,9 @@ impl<R: Runtime> Conn<R> {
                 "metadata": metadata,
             },
         });
-        let _ = &cast;
         self.media_time = 0.0;
         self.update(|s| {
-            s.state = "loading";
+            s.state = CastState::Loading;
             s.position = start;
         });
         self.request(&transport, NS_MEDIA, payload).await
@@ -221,7 +234,7 @@ impl<R: Runtime> Conn<R> {
             }
             (NS_CONNECTION, "CLOSE") if Some(&m.source) == self.transport.as_ref() => {
                 self.update(|s| {
-                    s.state = "stopped";
+                    s.state = CastState::Stopped;
                     s.error = None;
                 });
                 return Ok(Flow::End);
@@ -258,7 +271,7 @@ impl<R: Runtime> Conn<R> {
                     // another app took over the TV, or the remote closed ours
                     (None, Some(_)) => {
                         self.update(|s| {
-                            s.state = "stopped";
+                            s.state = CastState::Stopped;
                             s.error = None;
                         });
                         return Ok(Flow::End);
@@ -268,7 +281,7 @@ impl<R: Runtime> Conn<R> {
             }
             (NS_RECEIVER, "LAUNCH_ERROR") => {
                 self.update(|s| {
-                    s.state = "stopped";
+                    s.state = CastState::Stopped;
                     s.error = Some("The TV could not start its media player".into());
                 });
                 return Ok(Flow::End);
@@ -283,7 +296,7 @@ impl<R: Runtime> Conn<R> {
                     .relay_error()
                     .unwrap_or_else(|| "The TV could not play this stream".into());
                 self.update(|s| {
-                    s.state = "error";
+                    s.state = CastState::Error;
                     s.error = Some(error);
                 });
             }
@@ -299,72 +312,75 @@ impl<R: Runtime> Conn<R> {
         if let Some(t) = ms["currentTime"].as_f64() {
             self.media_time = t;
         }
-        let state = ms["playerState"].as_str().unwrap_or("");
-        let reason = ms["idleReason"].as_str().unwrap_or("");
         let position = self.position();
-        let live = self.current.as_ref().is_some_and(|c| c.live);
-        match (state, reason) {
-            ("PLAYING", _) => {
+        let (live, reloads) = self
+            .current
+            .as_ref()
+            .map_or((false, 0), |c| (c.live, c.reloads));
+        let player_state = ms["playerState"].as_str().unwrap_or("");
+        let reason = ms["idleReason"].as_str().unwrap_or("");
+        match media_transition(player_state, reason, live, reloads) {
+            Transition::None => {}
+            Transition::Playing => {
                 if let Some(c) = self.current.as_mut() {
                     c.paused_at = None;
                 }
                 self.update(|s| {
-                    s.state = "playing";
+                    s.state = CastState::Playing;
                     s.position = position;
                     s.error = None;
                 });
             }
-            ("PAUSED", _) => {
+            Transition::Paused => {
                 if let Some(c) = self.current.as_mut() {
                     c.paused_at.get_or_insert_with(Instant::now);
                 }
                 self.update(|s| {
-                    s.state = "paused";
+                    s.state = CastState::Paused;
                     s.position = position;
                 });
             }
-            ("BUFFERING", _) => self.update(|s| {
-                s.state = "buffering";
+            Transition::Buffering => self.update(|s| {
+                s.state = CastState::Buffering;
                 s.position = position;
             }),
-            ("IDLE", "FINISHED" | "CANCELLED") if live => {
-                // the channel's stream dropped: tune in again a few times
-                let retry = self.current.as_mut().map(|c| {
+            Transition::ReloadLive => {
+                if let Some(c) = self.current.as_mut() {
                     c.reloads += 1;
-                    c.reloads <= 3
-                });
-                if retry == Some(true) {
-                    self.load_at(0.0).await?;
-                } else {
-                    // a stream that ended without an error of its own (e.g. a
-                    // file, or a receiver that closed early) is still "playing"
-                    let error = self.relay_error();
-                    self.update(|s| match error {
-                        Some(e) => {
-                            s.state = "error";
-                            s.error = Some(e);
-                        }
-                        None => {
-                            s.state = "playing";
-                            s.error = None;
-                        }
-                    });
                 }
+                self.load_at(0.0).await?;
             }
-            ("IDLE", "FINISHED") => self.update(|s| {
-                s.state = "ended";
+            Transition::LiveGaveUp => {
+                if let Some(c) = self.current.as_mut() {
+                    c.reloads += 1;
+                }
+                // a stream that ended without an error of its own (e.g. a
+                // file, or a receiver that closed early) is still "playing"
+                let error = self.relay_error();
+                self.update(|s| match error {
+                    Some(e) => {
+                        s.state = CastState::Error;
+                        s.error = Some(e);
+                    }
+                    None => {
+                        s.state = CastState::Playing;
+                        s.error = None;
+                    }
+                });
+            }
+            Transition::Ended => self.update(|s| {
+                s.state = CastState::Ended;
                 s.position = s.duration.max(position);
             }),
-            ("IDLE", "ERROR") => {
+            Transition::Failed => {
                 let error = self
                     .relay_error()
                     .unwrap_or_else(|| "The TV could not play this stream".into());
                 self.update(|s| {
-                    s.state = "error";
+                    s.state = CastState::Error;
                     s.error = Some(error);
                 });
             }
-            _ => {}
         }
         Ok(Flow::Continue)
     }
@@ -382,7 +398,7 @@ impl<R: Runtime> Conn<R> {
                 let stale = self.current.as_ref().is_some_and(|c| {
                     c.live && c.paused_at.is_some_and(|t| t.elapsed() > LIVE_PAUSE_LIMIT)
                 });
-                let ended = self.status.lock().state == "ended";
+                let ended = self.status.lock().state == CastState::Ended;
                 if stale || ended {
                     // live: back to "now"; VOD at the end: from the start
                     self.load_at(0.0).await?;
@@ -433,7 +449,7 @@ impl<R: Runtime> Conn<R> {
                         .await;
                 }
                 self.update(|s| {
-                    s.state = "stopped";
+                    s.state = CastState::Stopped;
                     s.error = None;
                 });
                 return Ok(Flow::End);
@@ -462,11 +478,11 @@ impl<R: Runtime> Conn<R> {
 
     async fn on_tick(&mut self) -> std::io::Result<Flow> {
         let state = self.status.lock().state;
-        if matches!(state, "playing" | "buffering") {
+        if matches!(state, CastState::Playing | CastState::Buffering) {
             self.media("GET_STATUS").await?;
         }
         let unreachable = self.current.as_ref().is_some_and(|c| {
-            !c.started && state == "loading" && c.loaded_at.elapsed() > UNREACHABLE_AFTER
+            !c.started && state == CastState::Loading && c.loaded_at.elapsed() > UNREACHABLE_AFTER
         });
         if unreachable {
             let error = self.relay_error().unwrap_or_else(|| {
@@ -475,7 +491,7 @@ impl<R: Runtime> Conn<R> {
                     .into()
             });
             self.update(|s| {
-                s.state = "error";
+                s.state = CastState::Error;
                 s.error = Some(error);
             });
             if let Some(c) = self.current.as_mut() {
@@ -505,7 +521,7 @@ pub(super) async fn run<R: Runtime>(
                 device.addr
             );
             let mut s = status.lock();
-            s.state = "stopped";
+            s.state = CastState::Stopped;
             s.error = Some(format!("Can't connect to {}", device.name));
             emit(&s);
             return;
@@ -578,7 +594,7 @@ pub(super) async fn run<R: Runtime>(
         log::warn!("cast: connection to {} lost: {e}", c.device.name);
         c.update(|s| {
             if !s.finished() {
-                s.state = "stopped";
+                s.state = CastState::Stopped;
                 s.error = Some(format!("Lost the connection to {}", c.device.name));
             }
         });
@@ -600,4 +616,98 @@ pub(super) async fn run<R: Runtime>(
         .send(RECEIVER, NS_CONNECTION, json!({"type": "CLOSE"}))
         .await;
     log::info!("cast: session with {} ended", c.device.name);
+}
+
+/// Times a live channel that dropped is tuned in again before giving up.
+const LIVE_RELOADS: u32 = 3;
+
+/// What a receiver `MEDIA_STATUS` means for the session.
+#[derive(Debug, PartialEq, Eq)]
+enum Transition {
+    None,
+    Playing,
+    Paused,
+    Buffering,
+    /// the live stream dropped: tune in again
+    ReloadLive,
+    /// the live stream dropped once too often
+    LiveGaveUp,
+    Ended,
+    Failed,
+}
+
+/// `playerState`/`idleReason` of a media status → what to do. `reloads` is
+/// how often the current live item was tuned in again already.
+fn media_transition(player_state: &str, idle_reason: &str, live: bool, reloads: u32) -> Transition {
+    match (player_state, idle_reason) {
+        ("PLAYING", _) => Transition::Playing,
+        ("PAUSED", _) => Transition::Paused,
+        ("BUFFERING", _) => Transition::Buffering,
+        ("IDLE", "FINISHED" | "CANCELLED") if live => {
+            if reloads < LIVE_RELOADS {
+                Transition::ReloadLive
+            } else {
+                Transition::LiveGaveUp
+            }
+        }
+        ("IDLE", "FINISHED") => Transition::Ended,
+        ("IDLE", "ERROR") => Transition::Failed,
+        _ => Transition::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_status_transitions() {
+        assert_eq!(
+            media_transition("PLAYING", "", false, 0),
+            Transition::Playing
+        );
+        assert_eq!(media_transition("PAUSED", "", true, 0), Transition::Paused);
+        assert_eq!(
+            media_transition("BUFFERING", "", false, 0),
+            Transition::Buffering
+        );
+        assert_eq!(
+            media_transition("IDLE", "FINISHED", false, 0),
+            Transition::Ended
+        );
+        assert_eq!(
+            media_transition("IDLE", "CANCELLED", false, 0),
+            Transition::None
+        );
+        assert_eq!(
+            media_transition("IDLE", "ERROR", false, 0),
+            Transition::Failed
+        );
+        assert_eq!(
+            media_transition("IDLE", "ERROR", true, 0),
+            Transition::Failed
+        );
+        assert_eq!(media_transition("", "", false, 0), Transition::None);
+    }
+
+    #[test]
+    fn a_dropped_live_stream_is_reloaded_three_times() {
+        let attempts: Vec<Transition> = (0..=LIVE_RELOADS)
+            .map(|reloads| media_transition("IDLE", "FINISHED", true, reloads))
+            .collect();
+        assert_eq!(
+            attempts,
+            vec![
+                Transition::ReloadLive,
+                Transition::ReloadLive,
+                Transition::ReloadLive,
+                Transition::LiveGaveUp
+            ]
+        );
+        assert_eq!(
+            media_transition("IDLE", "CANCELLED", true, 0),
+            Transition::ReloadLive,
+            "a receiver that cancels a live stream is retried too"
+        );
+    }
 }

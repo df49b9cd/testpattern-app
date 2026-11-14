@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { SyncProgress } from "../lib/types";
 
-export interface SyncState {
+interface SyncState {
   running: boolean;
   message: string;
   error: string | null;

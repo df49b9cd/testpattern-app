@@ -380,7 +380,14 @@ mod tests {
                 bytes: 80 * 1024
             }
         );
-        assert!(!dir.join("old").exists() && dir.join("mid").exists() && dir.join("new").exists());
+        assert!(
+            !dir.join("old").exists(),
+            "the oldest file is evicted first"
+        );
+        assert!(
+            dir.join("mid").exists() && dir.join("new").exists(),
+            "newer files stay"
+        );
         // clear
         assert_eq!(prune(&dir, 0, now).unwrap(), CacheStats::default());
         std::fs::remove_dir_all(&dir).unwrap();

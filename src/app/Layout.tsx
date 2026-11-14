@@ -2,8 +2,7 @@ import clsx from "clsx";
 import { CalendarRange, Cast, Clapperboard, Film, House, RefreshCw, Search, Settings, Tv, VolumeX, X } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet, useLocation, useMatches, useNavigate } from "react-router";
-import { useQuery } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { useSources } from "../lib/queries";
 import { ROUTES } from "../lib/routes";
 import { runningSync, useSync } from "../stores/sync";
 import { control, usePlayer } from "../stores/player";
@@ -16,12 +15,12 @@ import { pipClipPath, usePipVisible, useViewportSize } from "../components/PipPl
 import type { RouteHandle } from "./router";
 
 const NAV = [
-  { to: "/", label: "Home", icon: House, end: true },
-  { to: "/live", label: "Live TV", icon: Tv },
-  { to: "/guide", label: "TV Guide", icon: CalendarRange },
-  { to: "/movies", label: "Movies", icon: Film },
-  { to: "/series", label: "Series", icon: Clapperboard },
-  { to: "/search", label: "Search", icon: Search },
+  { to: ROUTES.home, label: "Home", icon: House, end: true },
+  { to: ROUTES.live, label: "Live TV", icon: Tv },
+  { to: ROUTES.guide, label: "TV Guide", icon: CalendarRange },
+  { to: ROUTES.movieList, label: "Movies", icon: Film },
+  { to: ROUTES.seriesList, label: "Series", icon: Clapperboard },
+  { to: ROUTES.search, label: "Search", icon: Search },
 ];
 
 /**
@@ -59,7 +58,7 @@ export function Layout() {
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (e.key === "/" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k")) {
         e.preventDefault();
-        navigate("/search");
+        navigate(ROUTES.search);
         return;
       }
       // PL-101: playback may run without the player page open (preview on
@@ -138,7 +137,7 @@ function Sidebar() {
       <NowPlayingCard />
       <SyncStatus />
       <NavLink
-        to="/settings"
+        to={ROUTES.settings}
         className={({ isActive }) =>
           clsx(
             "mx-3 mb-4 flex h-10 items-center gap-3 rounded-xl px-3 text-[14.5px] font-medium transition-colors",
@@ -224,7 +223,7 @@ function CastNotice({ text }: { text: string }) {
 
 function SyncStatus() {
   const running = useSync(runningSync);
-  const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources });
+  const sources = useSources();
   const backendRunning = sources.data?.find((s) => s.syncing);
   if (!running && !backendRunning) return null;
   const message = running?.message || "Updating library…";

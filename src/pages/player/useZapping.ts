@@ -1,8 +1,12 @@
 import { useCallback, useRef, useState } from "react";
+import { useTimeout } from "../../hooks/useTimeout";
 import { channelNowPlaying } from "../../lib/play";
 import type { Channel } from "../../lib/types";
 import { usePlayer } from "../../stores/player";
 import { zapIndex, zapStep } from "./logic";
+
+/** A typed channel number tunes once no digit came for this long (ms). */
+const DIGIT_WAIT = 1400;
 
 /** Live zapping: up/down through the channel list, or a typed channel number. */
 export function useZapping(poke: () => void) {
@@ -27,21 +31,20 @@ export function useZapping(poke: () => void) {
   // number keys: up to 4 digits, tuned once typing pauses
   const [digits, setDigits] = useState("");
   const typed = useRef("");
-  const digitTimer = useRef(0);
+  const digitTimer = useTimeout();
   const enterDigit = useCallback(
     (d: string) => {
       const next = (typed.current + d).slice(-4);
       typed.current = next;
       setDigits(next);
-      window.clearTimeout(digitTimer.current);
-      digitTimer.current = window.setTimeout(() => {
+      digitTimer.start(() => {
         const target = zapList.find((c) => String(c.num) === next);
         if (target) zapTo(target);
         typed.current = "";
         setDigits("");
-      }, 1400);
+      }, DIGIT_WAIT);
     },
-    [zapList, zapTo],
+    [zapList, zapTo, digitTimer],
   );
 
   return { zapList, zap, zapTo, digits, enterDigit };

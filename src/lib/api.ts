@@ -13,6 +13,7 @@ import type {
   GuideRow,
   HistoryInput,
   HistoryItem,
+  HistoryKind,
   LiveNav,
   MediaKind,
   MediaTracks,
@@ -33,6 +34,7 @@ import type {
   TmdbStatus,
   UpNext,
   WatchedMeta,
+  WorkKind,
 } from "./types";
 
 /** Thin typed wrappers around the Tauri commands (src-tauri/src/lib.rs). */
@@ -61,11 +63,11 @@ export const api = {
   movieDetail: (sourceId: number, id: string) => invoke<MovieDetail>("movie_detail", { sourceId, id }),
   seriesDetail: (sourceId: number, id: string) => invoke<SeriesDetail>("series_detail", { sourceId, id }),
   /** Browse facets with work counts. */
-  workFacets: (kind: "movie" | "series", query?: MediaQuery) => invoke<Facets>("work_facets", { kind, query }),
+  workFacets: (kind: WorkKind, query?: MediaQuery) => invoke<Facets>("work_facets", { kind, query }),
   /** Remembers which copy of a movie/series plays. */
-  workPrefer: (kind: "movie" | "series", sourceId: number, id: string) => invoke<void>("work_prefer", { kind, sourceId, id }),
+  workPrefer: (kind: WorkKind, sourceId: number, id: string) => invoke<void>("work_prefer", { kind, sourceId, id }),
   /** Opens one version briefly to read its audio/subtitle tracks (only while nothing plays). */
-  versionProbe: (kind: "movie" | "series", sourceId: number, id: string) =>
+  versionProbe: (kind: WorkKind, sourceId: number, id: string) =>
     invoke<MediaTracks | null>("version_probe", { kind, sourceId, id }),
   epg: (sourceId: number, channelId: string, from: number, to: number) =>
     invoke<Programme[]>("epg_channel", { sourceId, channelId, from, to }),
@@ -81,7 +83,7 @@ export const api = {
   /** `meta` describes items without history yet (never-played episodes). */
   markWatched: (kind: "movie" | "episode", sourceId: number, itemId: string, watched: boolean, meta?: WatchedMeta) =>
     invoke<void>("mark_watched", { kind, sourceId, itemId, watched, meta }),
-  removeHistory: (kind: HistoryItem["kind"], sourceId: number, itemId: string) =>
+  removeHistory: (kind: HistoryKind, sourceId: number, itemId: string) =>
     invoke<void>("history_remove", { kind, sourceId, itemId }),
   continueWatching: (limit = 20) => invoke<HistoryItem[]>("continue_watching", { limit }),
   recentChannels: (limit = 20) => invoke<RecentChannel[]>("recent_channels", { limit }),

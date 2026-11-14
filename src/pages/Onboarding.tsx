@@ -3,6 +3,7 @@ import { CircleAlert, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api, errorMessage } from "../lib/api";
+import { ROUTES } from "../lib/routes";
 import type { Source } from "../lib/types";
 import { useSync } from "../stores/sync";
 import { SourceForm } from "../components/SourceForm";
@@ -43,7 +44,7 @@ export function OnboardingPage() {
               source={source}
               onDone={() => {
                 void qc.invalidateQueries();
-                navigate("/", { replace: true });
+                navigate(ROUTES.home, { replace: true });
               }}
               onRetry={() => setSource(null)}
             />

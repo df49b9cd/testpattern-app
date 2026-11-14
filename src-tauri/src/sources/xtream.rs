@@ -194,7 +194,7 @@ impl Xtream {
                 Err(e) => last_err = Some(e.into()),
             }
         }
-        Err(last_err.unwrap_or_else(|| Error::msg("no server configured")))
+        Err(last_err.unwrap_or_else(|| Error::msg("no server configured".into())))
     }
 
     pub async fn account(&self) -> Result<AccountInfo> {
@@ -202,7 +202,9 @@ impl Xtream {
         let ui = v.get("user_info").cloned().unwrap_or(Value::Null);
         let si = v.get("server_info").cloned().unwrap_or(Value::Null);
         if i64_of(&ui["auth"]) != Some(1) {
-            return Err(Error::msg("Login failed — check the username and password"));
+            return Err(Error::msg(
+                "Login failed — check the username and password".into(),
+            ));
         }
         let status = str_of(&ui["status"]).unwrap_or_else(|| "Unknown".into());
         let offset = match (str_of(&si["time_now"]), i64_of(&si["timestamp_now"])) {

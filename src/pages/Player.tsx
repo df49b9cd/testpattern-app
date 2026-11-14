@@ -1,5 +1,4 @@
 import clsx from "clsx";
-import { useQuery } from "@tanstack/react-query";
 import {
   AudioLines,
   ChevronLeft,
@@ -26,14 +25,15 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { api } from "../lib/api";
-import { clock, elapsed, hhmm, nowUnix } from "../lib/format";
+import { channelsLabel, clock, currentAndUpcoming, elapsed, hhmm, languageName, nowUnix, resolutionLabel } from "../lib/format";
 import { itemKey, sameItem, type ItemRef } from "../lib/item";
 import { playEpisode } from "../lib/play";
-import { playerWrite } from "../lib/playerWrite";
+import { backgroundWrite } from "../lib/backgroundWrite";
+import { useSeriesDetail } from "../lib/queries";
+import { ROUTES } from "../lib/routes";
 import { SETTINGS_KEY, writeSetting } from "../lib/settings";
 import type { Channel, Settings, Track } from "../lib/types";
-import { control, MAX_VOLUME_CAST, MAX_VOLUME_LOCAL, maxVolume, usePlayer, setSubsEnabled, subKeyAction, subKeyHint } from "../stores/player";
+import { control, MAX_VOLUME_CAST, MAX_VOLUME_LOCAL, usePlayer, setSubsEnabled, subKeyAction, subKeyHint, type NowPlaying } from "../stores/player";
 import { CastingBackdrop, CastMenu } from "../components/CastMenu";
 import { queryClient } from "../lib/queryClient";
 import { useChannelEpg } from "../hooks/useChannelEpg";
@@ -43,10 +43,14 @@ import { useFullscreen } from "./player/fullscreen";
 import { nextEpisode } from "./player/logic";
 import { useChromeAutoHide } from "./player/useChromeAutoHide";
 import { usePlayerKeys, type KeyBinding } from "./player/usePlayerKeys";
+import { useNotice } from "./player/useNotice";
 import { useRecording } from "./player/useRecording";
+import { SEEK_BACK, SEEK_BIG, SEEK_FWD, useTransport, VOLUME_STEP } from "./player/useTransport";
 import { useZapping } from "./player/useZapping";
 
 const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
+type Panel = "channels" | "audio" | "subs" | "aspect" | "speed";
 
 export function PlayerPage() {
   const navigate = useNavigate();
@@ -57,17 +61,13 @@ export function PlayerPage() {
   const reconnectAttempt = usePlayer((s) => s.reconnectAttempt);
   const casting = usePlayer((s) => !!s.cast);
 
-  const [panel, setPanel] = useState<null | "channels" | "audio" | "subs" | "aspect" | "speed">(null);
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const togglePanel = useCallback((name: Panel) => setPanel((v) => (v === name ? null : name)), []);
+  const closePanel = useCallback(() => setPanel(null), []);
   const [info, setInfo] = useState(false);
-  const [flash, setFlash] = useState<null | "play" | "pause">(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const noticeTimer = useRef(0);
-  const say = useCallback((text: string) => {
-    setNotice(text);
-    window.clearTimeout(noticeTimer.current);
-    noticeTimer.current = window.setTimeout(() => setNotice(null), 4000);
-  }, []);
-  const { chrome, poke } = useChromeAutoHide(() => setPanel(null));
+  const toggleInfo = useCallback(() => setInfo((v) => !v), []);
+  const { notice, say } = useNotice();
+  const { chrome, poke } = useChromeAutoHide(closePanel);
   const { fullscreen, flipFullscreen, leaveFullscreen } = useFullscreen();
 
   // PL-100: subtitles are persisted-off but a subtitle track is selected and
@@ -82,7 +82,7 @@ export function PlayerPage() {
     if (typeof sid !== "number" || subVisible || usePlayer.getState().cast) return;
     if (settings["ui.subHintSeen"] === true) return;
     say(subKeyHint(usePlayer.getState().props) === "cycle" ? "Subtitles are off — press S to switch" : "Subtitles are off — press S to turn them on");
-    void playerWrite(writeSetting(queryClient, "ui.subHintSeen", true));
+    void backgroundWrite(writeSetting(queryClient, "ui.subHintSeen", true));
   }, [sid, subVisible, say]);
 
   const live = now?.kind === "live";
@@ -122,81 +122,35 @@ export function PlayerPage() {
     // back to where the user came from (react-router keeps the history index)
     const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
     if (idx > 0) navigate(-1);
-    else navigate("/", { replace: true });
+    else navigate(ROUTES.home, { replace: true });
   }, [navigate, leaveFullscreen]);
 
-  // Live TV can be paused (mpv keeps buffering). The normal read-ahead gap
-  // between playback and buffer end is noted at pause time, so "behind" only
-  // counts real delay.
-  const [liveGap, setLiveGap] = useState<number | null>(null);
-  useEffect(() => setLiveGap(null), [now?.id]);
-
-  const togglePause = useCallback(() => {
-    const { props: cur, now: np } = usePlayer.getState();
-    const paused = cur.pause;
-    if (!paused && np?.kind === "live" && !usePlayer.getState().cast) setLiveGap((g) => g ?? Math.max(0, cur.cacheTime - cur.timePos));
-    void control.setPause(!paused);
-    setFlash(paused ? "play" : "pause");
-    window.setTimeout(() => setFlash(null), 500);
-  }, []);
-
-  const seekBy = useCallback((secs: number) => {
-    void control.seekBy(secs);
-    say(secs < 0 ? `« ${secs} s` : `» +${secs} s`);
-    poke();
-  }, [poke, say]);
-
-  const nudgeVolume = useCallback((delta: number) => {
-    const st = usePlayer.getState();
-    const target = Math.max(0, Math.min(maxVolume(), st.props.volume + delta));
-    void control.setVolume(target).then((ok) => {
-      if (!ok) return;
-      if (st.cast) {
-        say(`TV volume ${Math.round(target)}`);
-        return;
-      }
-      // mpv applies async; read what it has a moment later so the chip shows
-      // the real level, not the pre-clamp guess.
-      window.setTimeout(() => {
-        void playerWrite(
-          api.get("volume").then((v) => {
-            if (typeof v === "number") say(`Volume ${Math.round(v)}`);
-          }),
-        );
-      }, 60);
-    });
-    poke();
-  }, [say, poke]);
-
-  const toggleMute = useCallback(() => {
-    const st = usePlayer.getState();
-    void control.setMute(!st.props.mute).then((ok) => ok && say(st.props.mute ? "Sound on" : "Muted"));
-    poke();
-  }, [say, poke]);
-
-  const { zapList, zap, zapTo, digits, enterDigit } = useZapping(poke);
-  const { recordingFile, recordingSince, toggleRecord } = useRecording(say);
+  const transport = useTransport(say, poke);
+  const { flash, togglePause, seekBy, nudgeVolume, toggleMute } = transport;
+  const zapping = useZapping(poke);
+  const { zapList, zap, zapTo, digits, enterDigit } = zapping;
+  const recording = useRecording(say);
 
   // ---- keyboard (first matching entry wins)
   const keys: KeyBinding[] = [
     { keys: [" ", "k", "K"], run: togglePause },
-    { keys: ["ArrowLeft"], when: !live, run: (e) => seekBy(e.shiftKey ? -60 : -10) },
-    { keys: ["ArrowRight"], when: !live, run: (e) => seekBy(e.shiftKey ? 60 : 30) },
+    { keys: ["ArrowLeft"], when: !live, run: (e) => seekBy(e.shiftKey ? -SEEK_BIG : -SEEK_BACK) },
+    { keys: ["ArrowRight"], when: !live, run: (e) => seekBy(e.shiftKey ? SEEK_BIG : SEEK_FWD) },
     { keys: ["ArrowUp"], when: live, run: () => zap(-1) },
     { keys: ["ArrowDown"], when: live, run: () => zap(1) },
     { keys: ["PageUp"], run: () => zap(-1) },
     { keys: ["PageDown"], run: () => zap(1) },
-    { keys: ["ArrowUp"], when: !live, run: () => nudgeVolume(5) },
-    { keys: ["ArrowDown"], when: !live, run: () => nudgeVolume(-5) },
+    { keys: ["ArrowUp"], when: !live, run: () => nudgeVolume(VOLUME_STEP) },
+    { keys: ["ArrowDown"], when: !live, run: () => nudgeVolume(-VOLUME_STEP) },
     { keys: ["f", "F"], run: flipFullscreen },
     { keys: ["m", "M"], run: toggleMute },
     { keys: ["Escape"], run: () => (panel ? setPanel(null) : void exit()) },
-    { keys: ["a", "A"], when: !casting, run: () => void playerWrite(api.command("cycle", "audio")) },
+    { keys: ["a", "A"], when: !casting, run: () => void control.cycleAudio() },
     { keys: ["s", "S"], when: !casting, run: () => subtitleKey(say) },
-    { keys: ["i", "I"], when: !casting, run: () => setInfo((v) => !v) },
-    { keys: ["r", "R"], when: live && !casting, run: toggleRecord },
+    { keys: ["i", "I"], when: !casting, run: toggleInfo },
+    { keys: ["r", "R"], when: live && !casting, run: recording.toggleRecord },
     { keys: ["p", "P"], when: !casting, run: () => void toPip() },
-    { keys: ["l", "L", "c", "C"], when: live, run: () => setPanel((v) => (v === "channels" ? null : "channels")) },
+    { keys: ["l", "L", "c", "C"], when: live, run: () => togglePanel("channels") },
     { keys: DIGITS, when: live, run: (e) => enterDigit(e.key) },
   ];
   usePlayerKeys(keys, poke);
@@ -256,31 +210,11 @@ export function PlayerPage() {
           last frame and sets eof-reached instead of ending the file */}
       {(status === "ended" || p.eof) && now.kind === "episode" && <NextEpisode />}
 
-      {/* top bar */}
-      <div
-        className={clsx(
-          "absolute inset-x-0 top-0 flex items-start gap-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-8 pb-16 pt-6 transition-opacity duration-300",
-          visible ? "opacity-100" : "pointer-events-none opacity-0",
-        )}
-      >
-        <IconButton label="Back" variant="glass" onClick={() => void exit()}>
-          <ChevronLeft className="size-5" />
-        </IconButton>
-        {live && now.image && <ChannelLogo src={now.image} title={now.title} size={44} className="size-11 bg-black/30" />}
-        <div className="min-w-0 flex-1 pt-0.5">
-          <h1 className="truncate text-xl font-bold drop-shadow">{now.title}</h1>
-          {now.subtitle && <p className="truncate text-sm text-white/70">{now.subtitle}</p>}
-        </div>
-        <div className="flex items-center gap-2">
-          {recordingFile && <RecordingBadge since={recordingSince} />}
-          {!casting && <TechBadges />}
-          <Clock />
-        </div>
-      </div>
+      <TopBar now={now} visible={visible} live={live} casting={casting} recording={recording} onBack={() => void exit()} />
       {/* the REC light stays on when the controls hide */}
-      {recordingFile && !visible && (
+      {recording.recordingFile && !visible && (
         <div className="pointer-events-none absolute right-8 top-7">
-          <RecordingBadge since={recordingSince} />
+          <RecordingBadge since={recording.recordingSince} />
         </div>
       )}
 
@@ -291,104 +225,199 @@ export function PlayerPage() {
         </div>
       )}
 
-      {/* bottom bar */}
-      <div
-        className={clsx(
-          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-8 pb-6 pt-24 transition-opacity duration-300",
-          visible ? "opacity-100" : "pointer-events-none opacity-0",
-        )}
-      >
-        {live ? <LiveInfo channel={now.channel} /> : vod ? <SeekBar onSeek={poke} /> : null}
-        <div className="mt-4 flex items-center gap-2">
-          <IconButton label={p.pause ? "Play" : "Pause"} variant="solid" size="lg" onClick={togglePause}>
-            {p.pause ? <Play className="size-6 translate-x-0.5 fill-current" /> : <Pause className="size-6 fill-current" />}
-          </IconButton>
-          {vod && (
-            <>
-              <IconButton label="Back 10 seconds" onClick={() => seekBy(-10)} className="text-white">
-                <RotateCcw className="size-5" />
-              </IconButton>
-              <IconButton label="Forward 30 seconds" onClick={() => seekBy(30)} className="text-white">
-                <RotateCw className="size-5" />
-              </IconButton>
-            </>
-          )}
-          {live && zapList.length > 1 && (
-            <>
-              <IconButton label="Previous channel" onClick={() => zap(-1)} className="text-white">
-                <ChevronUp className="size-5" />
-              </IconButton>
-              <IconButton label="Next channel" onClick={() => zap(1)} className="text-white">
-                <ChevronDown className="size-5" />
-              </IconButton>
-            </>
-          )}
-          {live && !casting && (
-            <IconButton
-              label={recordingFile ? "Stop recording (R)" : "Record (R)"}
-              onClick={toggleRecord}
-              className={clsx("text-white", recordingFile && "bg-live/25")}
-            >
-              <Circle className={clsx("size-5", recordingFile && "fill-live text-live")} />
-            </IconButton>
-          )}
-          {live && liveGap !== null && (
-            <BehindLive
-              gap={liveGap}
-              onLive={() => {
-                setLiveGap(null);
-                const cur = usePlayer.getState().now;
-                if (cur) void usePlayer.getState().play(cur);
-              }}
-            />
-          )}
-          <div className="flex-1" />
-          <Volume />
-          <CastMenu />
-          {!casting && (
-            <>
-          <MenuButton label="Audio" icon={<AudioLines className="size-5" />} open={panel === "audio"} onToggle={() => setPanel(panel === "audio" ? null : "audio")}>
-            <TrackMenu type="audio" onDone={() => setPanel(null)} />
-          </MenuButton>
-          <MenuButton label="Subtitles" icon={<Subtitles className="size-5" />} open={panel === "subs"} onToggle={() => setPanel(panel === "subs" ? null : "subs")}>
-            <TrackMenu type="sub" onDone={() => setPanel(null)} />
-          </MenuButton>
-          <MenuButton label="Picture" icon={<RectangleHorizontal className="size-5" />} open={panel === "aspect"} onToggle={() => setPanel(panel === "aspect" ? null : "aspect")}>
-            <AspectMenu onDone={() => setPanel(null)} />
-          </MenuButton>
-          {vod && (
-            <MenuButton label="Speed" icon={<Gauge className="size-5" />} open={panel === "speed"} onToggle={() => setPanel(panel === "speed" ? null : "speed")}>
-              <SpeedMenu onDone={() => setPanel(null)} />
-            </MenuButton>
-          )}
-            </>
-          )}
-          {live && (
-            <IconButton label="Channels (L)" active={panel === "channels"} onClick={() => setPanel(panel === "channels" ? null : "channels")} className="text-white">
-              <List className="size-5" />
-            </IconButton>
-          )}
-          {!casting && (
-            <>
-              <IconButton label="Picture in picture (P)" onClick={() => void toPip()} className="text-white">
-                <PictureInPicture2 className="size-5" />
-              </IconButton>
-              <IconButton label="Info (I)" active={info} onClick={() => setInfo((v) => !v)} className="text-white">
-                <Info className="size-5" />
-              </IconButton>
-            </>
-          )}
-          <IconButton
-            label={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"}
-            onClick={flipFullscreen}
-            className="text-white"
-          >
-            {fullscreen ? <Minimize className="size-5" /> : <Maximize className="size-5" />}
-          </IconButton>
-        </div>
-      </div>
+      <BottomBar
+        channel={now.channel}
+        visible={visible}
+        live={live}
+        vod={vod}
+        casting={casting}
+        poke={poke}
+        transport={transport}
+        zapping={zapping}
+        recording={recording}
+        panel={panel}
+        togglePanel={togglePanel}
+        closePanel={closePanel}
+        info={info}
+        toggleInfo={toggleInfo}
+        onPip={() => void toPip()}
+        fullscreen={fullscreen}
+        flipFullscreen={flipFullscreen}
+      />
 
       {live && panel === "channels" && <ChannelPanel channels={zapList} current={now} onPick={zapTo} />}
+    </div>
+  );
+}
+
+/** Title, channel logo, REC light, stream badges and the clock. */
+function TopBar({
+  now,
+  visible,
+  live,
+  casting,
+  recording,
+  onBack,
+}: {
+  now: NowPlaying;
+  visible: boolean;
+  live: boolean;
+  casting: boolean;
+  recording: ReturnType<typeof useRecording>;
+  onBack: () => void;
+}) {
+  return (
+    <div
+      className={clsx(
+        "absolute inset-x-0 top-0 flex items-start gap-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-8 pb-16 pt-6 transition-opacity duration-300",
+        visible ? "opacity-100" : "pointer-events-none opacity-0",
+      )}
+    >
+      <IconButton label="Back" variant="glass" onClick={onBack}>
+        <ChevronLeft className="size-5" />
+      </IconButton>
+      {live && now.image && <ChannelLogo src={now.image} title={now.title} size={44} className="size-11 bg-black/30" />}
+      <div className="min-w-0 flex-1 pt-0.5">
+        <h1 className="truncate text-xl font-bold drop-shadow">{now.title}</h1>
+        {now.subtitle && <p className="truncate text-sm text-white/70">{now.subtitle}</p>}
+      </div>
+      <div className="flex items-center gap-2">
+        {recording.recordingFile && <RecordingBadge since={recording.recordingSince} />}
+        {!casting && <TechBadges />}
+        <Clock />
+      </div>
+    </div>
+  );
+}
+
+/** Live info or the seek bar, then the transport and menu buttons. */
+function BottomBar({
+  channel,
+  visible,
+  live,
+  vod,
+  casting,
+  poke,
+  transport,
+  zapping,
+  recording,
+  panel,
+  togglePanel,
+  closePanel,
+  info,
+  toggleInfo,
+  onPip,
+  fullscreen,
+  flipFullscreen,
+}: {
+  channel?: Channel;
+  visible: boolean;
+  live: boolean;
+  vod: boolean;
+  casting: boolean;
+  poke: () => void;
+  transport: ReturnType<typeof useTransport>;
+  zapping: ReturnType<typeof useZapping>;
+  recording: ReturnType<typeof useRecording>;
+  panel: Panel | null;
+  togglePanel: (name: Panel) => void;
+  closePanel: () => void;
+  info: boolean;
+  toggleInfo: () => void;
+  onPip: () => void;
+  fullscreen: boolean;
+  flipFullscreen: () => void;
+}) {
+  const paused = usePlayer((s) => s.props.pause);
+  const { togglePause, seekBy, liveGap, goLive } = transport;
+  const { zapList, zap } = zapping;
+  const { recordingFile, toggleRecord } = recording;
+  return (
+    <div
+      className={clsx(
+        "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-8 pb-6 pt-24 transition-opacity duration-300",
+        visible ? "opacity-100" : "pointer-events-none opacity-0",
+      )}
+    >
+      {live ? <LiveInfo channel={channel} /> : vod ? <SeekBar onSeek={poke} /> : null}
+      <div className="mt-4 flex items-center gap-2">
+        <IconButton label={paused ? "Play" : "Pause"} variant="solid" size="lg" onClick={togglePause}>
+          {paused ? <Play className="size-6 translate-x-0.5 fill-current" /> : <Pause className="size-6 fill-current" />}
+        </IconButton>
+        {vod && (
+          <>
+            <IconButton label={`Back ${SEEK_BACK} seconds`} onClick={() => seekBy(-SEEK_BACK)} className="text-white">
+              <RotateCcw className="size-5" />
+            </IconButton>
+            <IconButton label={`Forward ${SEEK_FWD} seconds`} onClick={() => seekBy(SEEK_FWD)} className="text-white">
+              <RotateCw className="size-5" />
+            </IconButton>
+          </>
+        )}
+        {live && zapList.length > 1 && (
+          <>
+            <IconButton label="Previous channel" onClick={() => zap(-1)} className="text-white">
+              <ChevronUp className="size-5" />
+            </IconButton>
+            <IconButton label="Next channel" onClick={() => zap(1)} className="text-white">
+              <ChevronDown className="size-5" />
+            </IconButton>
+          </>
+        )}
+        {live && !casting && (
+          <IconButton
+            label={recordingFile ? "Stop recording (R)" : "Record (R)"}
+            onClick={toggleRecord}
+            className={clsx("text-white", recordingFile && "bg-live/25")}
+          >
+            <Circle className={clsx("size-5", recordingFile && "fill-live text-live")} />
+          </IconButton>
+        )}
+        {live && liveGap !== null && <BehindLive gap={liveGap} onLive={goLive} />}
+        <div className="flex-1" />
+        <Volume />
+        <CastMenu />
+        {!casting && (
+          <>
+            <MenuButton label="Audio" icon={<AudioLines className="size-5" />} open={panel === "audio"} onToggle={() => togglePanel("audio")}>
+              <TrackMenu type="audio" onDone={closePanel} />
+            </MenuButton>
+            <MenuButton label="Subtitles" icon={<Subtitles className="size-5" />} open={panel === "subs"} onToggle={() => togglePanel("subs")}>
+              <TrackMenu type="sub" onDone={closePanel} />
+            </MenuButton>
+            <MenuButton label="Picture" icon={<RectangleHorizontal className="size-5" />} open={panel === "aspect"} onToggle={() => togglePanel("aspect")}>
+              <AspectMenu onDone={closePanel} />
+            </MenuButton>
+            {vod && (
+              <MenuButton label="Speed" icon={<Gauge className="size-5" />} open={panel === "speed"} onToggle={() => togglePanel("speed")}>
+                <SpeedMenu onDone={closePanel} />
+              </MenuButton>
+            )}
+          </>
+        )}
+        {live && (
+          <IconButton label="Channels (L)" active={panel === "channels"} onClick={() => togglePanel("channels")} className="text-white">
+            <List className="size-5" />
+          </IconButton>
+        )}
+        {!casting && (
+          <>
+            <IconButton label="Picture in picture (P)" onClick={onPip} className="text-white">
+              <PictureInPicture2 className="size-5" />
+            </IconButton>
+            <IconButton label="Info (I)" active={info} onClick={toggleInfo} className="text-white">
+              <Info className="size-5" />
+            </IconButton>
+          </>
+        )}
+        <IconButton
+          label={fullscreen ? "Exit fullscreen (F)" : "Fullscreen (F)"}
+          onClick={flipFullscreen}
+          className="text-white"
+        >
+          {fullscreen ? <Minimize className="size-5" /> : <Maximize className="size-5" />}
+        </IconButton>
+      </div>
     </div>
   );
 }
@@ -401,16 +430,16 @@ function subtitleKey(say: (text: string) => void): void | false {
   const action = subKeyAction(usePlayer.getState().props);
   if (!action) return false;
   if ("cycle" in action) {
-    void playerWrite(api.set("sid", action.cycle)).then((ok) => {
+    void control.setTrack("sub", action.cycle).then((ok) => {
       if (!ok) return;
-      if (action.cycle !== false) void playerWrite(setSubsEnabled(true));
+      if (action.cycle !== false) void backgroundWrite(setSubsEnabled(true));
       say(action.cycle === false ? "Subtitles off" : "Subtitles on");
     });
   } else if (action.toggle) {
     // turning on: only claim it when the write landed
-    void playerWrite(setSubsEnabled(true)).then((ok) => ok && say("Subtitles on"));
+    void backgroundWrite(setSubsEnabled(true)).then((ok) => ok && say("Subtitles on"));
   } else {
-    void playerWrite(setSubsEnabled(false));
+    void backgroundWrite(setSubsEnabled(false));
     say("Subtitles off");
   }
 }
@@ -442,14 +471,15 @@ function RecordingBadge({ since }: { since: number }) {
 
 function TechBadges() {
   const p = usePlayer((s) => s.props);
-  const res = p.videoH >= 2000 ? "4K" : p.videoH >= 1000 ? "1080p" : p.videoH >= 700 ? "720p" : p.videoH > 0 ? `${p.videoH}p` : null;
+  // no badge until the size is known (resolutionLabel says "SD" for small ones)
+  const res = p.videoH > 0 ? resolutionLabel(p.videoW, p.videoH) : null;
   const audio = p.tracks.find((t) => t.type === "audio" && t.selected);
   const ch = audio?.["demux-channel-count"];
   return (
     <div className="mr-2 hidden items-center gap-1.5 md:flex">
       {res && <Badge className="bg-white/15 text-white">{res}</Badge>}
       {p.fps > 45 && <Badge className="bg-white/15 text-white">{Math.round(p.fps)}fps</Badge>}
-      {ch && ch > 2 && <Badge className="bg-white/15 text-white">{ch === 6 ? "5.1" : ch === 8 ? "7.1" : `${ch}ch`}</Badge>}
+      {ch && ch > 2 && <Badge className="bg-white/15 text-white">{channelsLabel(ch)}</Badge>}
     </div>
   );
 }
@@ -527,9 +557,8 @@ function LiveInfo({ channel }: { channel?: Channel }) {
     const i = window.setInterval(() => tick((x) => x + 1), 30_000);
     return () => window.clearInterval(i);
   }, []);
-  const list = epg.data ?? [];
-  const cur = list.find((p) => p.start <= nowUnix() && p.stop > nowUnix());
-  const next = list.find((p) => p.start >= (cur?.stop ?? nowUnix()));
+  const { current: cur, upcoming } = currentAndUpcoming(epg.data ?? [], nowUnix());
+  const next = upcoming[0];
   return (
     <div className="flex items-end gap-6">
       <div className="min-w-0 flex-1">
@@ -623,17 +652,8 @@ function MenuItem({ active, onClick, children, hint }: { active: boolean; onClic
   );
 }
 
-const LANGS: Record<string, string> = {
-  eng: "English", en: "English", dan: "Danish", da: "Danish", swe: "Swedish", sv: "Swedish", nor: "Norwegian", nob: "Norwegian",
-  no: "Norwegian", fin: "Finnish", fi: "Finnish", ger: "German", deu: "German", de: "German", fre: "French", fra: "French",
-  fr: "French", spa: "Spanish", es: "Spanish", ita: "Italian", it: "Italian", dut: "Dutch", nld: "Dutch", nl: "Dutch",
-  pol: "Polish", pl: "Polish", por: "Portuguese", pt: "Portuguese", tur: "Turkish", tr: "Turkish", ara: "Arabic", ar: "Arabic",
-  rus: "Russian", ru: "Russian", jpn: "Japanese", ja: "Japanese", kor: "Korean", ko: "Korean", chi: "Chinese", zho: "Chinese",
-  hin: "Hindi", hun: "Hungarian", ces: "Czech", cze: "Czech", gre: "Greek", ell: "Greek", heb: "Hebrew", ice: "Icelandic",
-};
-
 function trackLabel(t: Track): string {
-  const lang = t.lang ? (LANGS[t.lang.toLowerCase()] ?? t.lang.toUpperCase()) : null;
+  const lang = languageName(t.lang);
   const title = t.title && t.title !== lang ? t.title : null;
   return [lang, title].filter(Boolean).join(" · ") || `Track ${t.id}`;
 }
@@ -643,18 +663,18 @@ function TrackMenu({ type, onDone }: { type: "audio" | "sub"; onDone: () => void
   const current = usePlayer((s) => (type === "audio" ? s.props.aid : s.props.sid));
   const subVisible = usePlayer((s) => s.props.subVisible);
   const pick = (v: number | "no") => {
-    void playerWrite(api.set(type === "audio" ? "aid" : "sid", v));
+    void control.setTrack(type, v);
     // picking a track while subtitles are hidden must show it (PL-100);
     // "Off" persists the disabling so it survives the next session
-    if (type === "sub") void playerWrite(setSubsEnabled(v !== "no"));
+    if (type === "sub") void backgroundWrite(setSubsEnabled(v !== "no"));
     onDone();
   };
   // turning visibility on with no track selected: select the first one so
   // something actually shows (visibility and selection are separate in mpv)
   const toggleVisible = () => {
     const on = !subVisible;
-    void playerWrite(setSubsEnabled(on));
-    if (on && (current === false || current === null) && tracks.length > 0) void playerWrite(api.set("sid", tracks[0].id));
+    void backgroundWrite(setSubsEnabled(on));
+    if (on && (current === false || current === null) && tracks.length > 0) void control.setTrack("sub", tracks[0].id);
     onDone();
   };
   return (
@@ -718,8 +738,7 @@ function AspectMenu({ onDone }: { onDone: () => void }) {
           key={o.label}
           active={(aspect === o.aspect || (o.aspect === "no" && (aspect === "-1" || aspect === "no"))) && Math.abs(panscan - o.panscan) < 0.01}
           onClick={() => {
-            void playerWrite(api.set("video-aspect-override", o.aspect));
-            void playerWrite(api.set("panscan", o.panscan));
+            void control.setAspect(o.aspect, o.panscan);
             onDone();
           }}
         >
@@ -739,7 +758,7 @@ function SpeedMenu({ onDone }: { onDone: () => void }) {
           key={v}
           active={Math.abs(speed - v) < 0.01}
           onClick={() => {
-            void playerWrite(api.set("speed", v));
+            void control.setSpeed(v);
             onDone();
           }}
         >
@@ -762,22 +781,22 @@ function ChannelPanel({ channels, current, onPick }: { channels: Channel[]; curr
         {channels.map((c) => {
           const isCurrent = sameItem(c, current);
           return (
-          <button
-            key={itemKey(c)}
-            data-current={isCurrent}
-            onClick={() => onPick(c)}
-            className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors", isCurrent ? "bg-white/15" : "hover:bg-white/[0.07]")}
-          >
-            <span className="w-8 text-right text-xs tabular-nums text-white/40">{c.num ?? ""}</span>
-            <ChannelLogo src={c.logo} title={c.title} size={36} className="size-9" />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5 truncate text-sm font-semibold text-white">
-                {isCurrent && <LiveDot />}
-                {c.title}
+            <button
+              key={itemKey(c)}
+              data-current={isCurrent}
+              onClick={() => onPick(c)}
+              className={clsx("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors", isCurrent ? "bg-white/15" : "hover:bg-white/[0.07]")}
+            >
+              <span className="w-8 text-right text-xs tabular-nums text-white/40">{c.num ?? ""}</span>
+              <ChannelLogo src={c.logo} title={c.title} size={36} className="size-9" />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 truncate text-sm font-semibold text-white">
+                  {isCurrent && <LiveDot />}
+                  {c.title}
+                </span>
+                <span className="block truncate text-xs text-white/50">{c.now?.title ?? ""}</span>
               </span>
-              <span className="block truncate text-xs text-white/50">{c.now?.title ?? ""}</span>
-            </span>
-          </button>
+            </button>
           );
         })}
       </div>
@@ -809,11 +828,7 @@ function StatsOverlay() {
 /** At the end of an episode: count down and continue with the next one. */
 function NextEpisode() {
   const now = usePlayer((s) => s.now);
-  const detail = useQuery({
-    queryKey: ["series-detail", now?.sourceId, now?.seriesId],
-    queryFn: () => api.seriesDetail(now!.sourceId, now!.seriesId!),
-    enabled: !!now?.seriesId,
-  });
+  const detail = useSeriesDetail(now?.seriesId ? { sourceId: now.sourceId, id: now.seriesId } : null);
   const id = now?.id;
   const season = now?.season;
   const episode = now?.episode;

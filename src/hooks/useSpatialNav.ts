@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router";
 
-export type Dir = "left" | "right" | "up" | "down";
+type Dir = "left" | "right" | "up" | "down";
 const KEYS: Record<string, Dir> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
 
 const FOCUSABLE = 'button:not([disabled]), a[href], [role="button"], input, select, textarea, [tabindex]:not([tabindex="-1"])';

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api, errorMessage } from "../lib/api";
-import { playerWrite } from "../lib/playerWrite";
+import { backgroundWrite } from "../lib/backgroundWrite";
 import { invalidateWatchState, queryClient } from "../lib/queryClient";
 import { writeSetting } from "../lib/settings";
 import type { CastDevice, CastMeta, CastStatus, Channel, PlayKind, PlayRequest, PlayerEvent, Track } from "../lib/types";
@@ -33,7 +33,7 @@ export interface NowPlaying {
   catchupMinutes?: number;
 }
 
-export interface Chapter {
+interface Chapter {
   title?: string;
   time: number;
 }
@@ -72,7 +72,7 @@ export interface PlaybackProps {
   recording: string;
 }
 
-export type PlayerStatus = "idle" | "loading" | "playing" | "reconnecting" | "ended" | "error";
+type PlayerStatus = "idle" | "loading" | "playing" | "reconnecting" | "ended" | "error";
 
 const initialProps: PlaybackProps = {
   pause: false,
@@ -216,7 +216,7 @@ function playRequest(np: NowPlaying): PlayRequest {
 }
 
 /** What the TV shows about the item. */
-export function castMeta(np: NowPlaying): CastMeta {
+function castMeta(np: NowPlaying): CastMeta {
   return { title: np.title, subtitle: np.subtitle ?? null, image: np.backdrop ?? np.image ?? null };
 }
 
@@ -293,7 +293,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
     const { now, props, cast } = get();
     const saved = !!now && (await saveProgress(now, props));
     set({ now: null, status: "idle", error: null, pip: false, cast: null });
-    await playerWrite(cast ? api.castStop() : api.stop());
+    await backgroundWrite(cast ? api.castStop() : api.stop());
     // the page we return to may show this item's progress
     if (saved) invalidateWatchState();
   },
@@ -331,7 +331,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
   stopCasting: async () => {
     if (!get().cast) return;
     set({ cast: null });
-    await playerWrite(api.castStop());
+    await backgroundWrite(api.castStop());
     continueHere();
   },
 
@@ -385,7 +385,7 @@ export const usePlayer = create<PlayerStore>((set, get) => ({
  * casting (the TV's volume was showing).
  */
 export function syncLocalVolume(): Promise<boolean> {
-  return playerWrite(
+  return backgroundWrite(
     Promise.all([api.get<number>("volume"), api.get<boolean>("mute")]).then(([volume, mute]) =>
       usePlayer.setState((s) => ({ props: { ...s.props, volume: volume ?? s.props.volume, mute: mute ?? s.props.mute } })),
     ),
@@ -418,30 +418,61 @@ export const maxVolume = () => (usePlayer.getState().cast ? MAX_VOLUME_CAST : MA
  */
 export const control = {
   setPause(pause: boolean, onError?: (message: string) => void) {
-    if (usePlayer.getState().cast) return playerWrite(api.castControl(pause ? "pause" : "play"), onError);
-    return playerWrite(api.set("pause", pause), onError);
+    if (usePlayer.getState().cast) return backgroundWrite(api.castControl(pause ? "pause" : "play"), onError);
+    return backgroundWrite(api.set("pause", pause), onError);
   },
   seekTo(seconds: number, onError?: (message: string) => void) {
     const { cast, props } = usePlayer.getState();
-    if (!cast) return playerWrite(api.command("seek", seconds.toFixed(2), "absolute"), onError);
+    if (!cast) return backgroundWrite(api.command("seek", seconds.toFixed(2), "absolute"), onError);
     const t = Math.max(0, props.duration > 0 ? Math.min(seconds, props.duration - 1) : seconds);
     usePlayer.setState({ props: { ...props, timePos: t } });
-    return playerWrite(api.castControl("seek", t), onError);
+    return backgroundWrite(api.castControl("seek", t), onError);
   },
   seekBy(seconds: number, onError?: (message: string) => void) {
     const { cast, props } = usePlayer.getState();
-    if (!cast) return playerWrite(api.command("seek", seconds, "relative"), onError);
+    if (!cast) return backgroundWrite(api.command("seek", seconds, "relative"), onError);
     return control.seekTo(props.timePos + seconds, onError);
   },
   /** 0…MAX_VOLUME_LOCAL here, 0…MAX_VOLUME_CAST on the TV; clamped to the side's range */
   setVolume(volume: number, onError?: (message: string) => void) {
     const v = Math.max(0, Math.min(maxVolume(), volume));
-    if (usePlayer.getState().cast) return playerWrite(api.castControl("volume", v / 100), onError);
-    return playerWrite(api.set("volume", v), onError);
+    if (usePlayer.getState().cast) return backgroundWrite(api.castControl("volume", v / 100), onError);
+    return backgroundWrite(api.set("volume", v), onError);
   },
   setMute(mute: boolean, onError?: (message: string) => void) {
-    if (usePlayer.getState().cast) return playerWrite(api.castControl("mute", mute ? 1 : 0), onError);
-    return playerWrite(api.set("mute", mute), onError);
+    if (usePlayer.getState().cast) return backgroundWrite(api.castControl("mute", mute ? 1 : 0), onError);
+    return backgroundWrite(api.set("mute", mute), onError);
+  },
+
+  // The rest exist only here: the TV picks its own tracks, picture and speed,
+  // so while casting they refuse (resolve false) without touching mpv.
+
+  /** Selects an audio or subtitle track ("no" / false: none). */
+  setTrack(type: "audio" | "sub", id: number | "no" | false, onError?: (message: string) => void) {
+    if (usePlayer.getState().cast) return Promise.resolve(false);
+    return backgroundWrite(api.set(type === "audio" ? "aid" : "sid", id), onError);
+  },
+  /** Next audio track, like mpv's `cycle audio`. */
+  cycleAudio(onError?: (message: string) => void) {
+    if (usePlayer.getState().cast) return Promise.resolve(false);
+    return backgroundWrite(api.command("cycle", "audio"), onError);
+  },
+  /** Aspect override ("no" = the video's own, "16:9", …) and pan-and-scan crop (0…1). */
+  setAspect(aspect: string, panscan: number, onError?: (message: string) => void) {
+    if (usePlayer.getState().cast) return Promise.resolve(false);
+    return Promise.all([backgroundWrite(api.set("video-aspect-override", aspect), onError), backgroundWrite(api.set("panscan", panscan), onError)]).then(
+      (oks) => oks.every(Boolean),
+    );
+  },
+  setSpeed(speed: number, onError?: (message: string) => void) {
+    if (usePlayer.getState().cast) return Promise.resolve(false);
+    return backgroundWrite(api.set("speed", speed), onError);
+  },
+  /** mpv's volume as it applied it (clamped, async); null while casting or unknown. */
+  readVolume(): Promise<number | null> {
+    if (usePlayer.getState().cast) return Promise.resolve(null);
+    let volume: number | null = null;
+    return backgroundWrite(api.get<number>("volume").then((v) => void (volume = typeof v === "number" ? v : null))).then(() => volume);
   },
 };
 
@@ -481,11 +512,13 @@ export function subKeyHint(props: PlaybackProps): "cycle" | "on" | "off" | null 
   return a.toggle ? "on" : "off";
 }
 
+/** The volume is saved once it has not changed for this long (ms). */
+const VOLUME_SAVE_DELAY = 1000;
 let volumeTimer = 0;
 /** Persists the volume (applied at startup, settings.rs) once it settles. */
 function rememberVolume(volume: number) {
   window.clearTimeout(volumeTimer);
-  volumeTimer = window.setTimeout(() => void playerWrite(api.setSetting("player.volume", Math.round(volume))), 1000);
+  volumeTimer = window.setTimeout(() => void backgroundWrite(api.setSetting("player.volume", Math.round(volume))), VOLUME_SAVE_DELAY);
 }
 
 /**
@@ -496,7 +529,7 @@ function rememberVolume(volume: number) {
 export async function saveProgress(np: NowPlaying, p: PlaybackProps): Promise<boolean> {
   if (np.kind !== "movie" && np.kind !== "episode") return false;
   if (p.duration <= 0) return false;
-  return playerWrite(
+  return backgroundWrite(
     api.updateHistory({
       kind: np.kind,
       sourceId: np.sourceId,
@@ -527,6 +560,6 @@ export async function setVideoViewport(rect: DOMRect | null): Promise<void> {
     ? { left: rect.left / W, right: (W - rect.right) / W, top: rect.top / H, bottom: (H - rect.bottom) / H }
     : { left: 0, right: 0, top: 0, bottom: 0 };
   await Promise.all(
-    Object.entries(m).map(([side, v]) => playerWrite(api.set(`video-margin-ratio-${side}`, clamp(v)))),
+    Object.entries(m).map(([side, v]) => backgroundWrite(api.set(`video-margin-ratio-${side}`, clamp(v)))),
   );
 }

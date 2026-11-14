@@ -1,12 +1,17 @@
 import clsx from "clsx";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Check, CircleCheck, Heart, MonitorPlay, Play, Star } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { api } from "../lib/api";
+import { backgroundWrite } from "../lib/backgroundWrite";
 import { duration, resolutionLabel } from "../lib/format";
 import { openExternal, youtubeUrl } from "../lib/open";
 import { playEpisode } from "../lib/play";
+import { pollWhileVersionsPending, useSeriesDetail } from "../lib/queries";
+import { invalidateWatchState } from "../lib/queryClient";
+import { queryKeys } from "../lib/queryKeys";
+import { ROUTES } from "../lib/routes";
 import type { Episode, SeriesDetail } from "../lib/types";
 import { DetailHero, Facts, MetaDot } from "../components/DetailHero";
 import { VersionPill, Versions } from "../components/Versions";
@@ -19,13 +24,7 @@ export function SeriesDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const sid = Number(sourceId);
-  const q = useQuery({
-    queryKey: ["series-detail", sid, id],
-    queryFn: () => api.seriesDetail(sid, id!),
-    enabled: !!id,
-    // other versions' episode lists still loading: ask again a few times
-    refetchInterval: (query) => (query.state.data?.versionsPending && query.state.dataUpdateCount < 6 ? 3000 : false),
-  });
+  const q = useSeriesDetail(id ? { sourceId: sid, id } : null, { refetchInterval: pollWhileVersionsPending });
   const s = q.data;
   const [season, setSeason] = useState<number | null>(() => (params.get("season") ? Number(params.get("season")) : null));
 
@@ -40,10 +39,11 @@ export function SeriesDetailPage() {
   const current = s.seasons.find((x) => x.season === season) ?? s.seasons[0];
   const allEpisodes = s.seasons.flatMap((x) => x.episodes);
   const resumeEp = s.resume ? allEpisodes.find((e) => e.id === s.resume!.episodeId) : undefined;
-  const refresh = () => {
-    void qc.invalidateQueries({ queryKey: ["series-detail", sid, id] });
-    void qc.invalidateQueries({ queryKey: ["series"] });
-    void qc.invalidateQueries({ queryKey: ["continue"] });
+  // favorite / watched: this page, continue watching and the series grids
+  const refresh = (ok: boolean) => {
+    if (!ok) return;
+    invalidateWatchState();
+    void qc.invalidateQueries({ queryKey: queryKeys.works("series") });
   };
   const pickSeason = (n: number) => {
     setSeason(n);
@@ -101,10 +101,7 @@ export function SeriesDetailPage() {
               label={s.favorite ? "Remove from favorites" : "Add to favorites"}
               variant="glass"
               size="lg"
-              onClick={async () => {
-                await api.toggleFavorite("series", s.sourceId, s.id);
-                refresh();
-              }}
+              onClick={() => void backgroundWrite(api.toggleFavorite("series", s.sourceId, s.id)).then(refresh)}
             >
               <Heart className={s.favorite ? "size-5 fill-live text-live" : "size-5"} />
             </IconButton>
@@ -140,22 +137,23 @@ export function SeriesDetailPage() {
                 episode={e}
                 highlighted={e.id === s.resume?.episodeId}
                 onPlay={() => void playEpisode(s, e, navigate)}
-                onToggleWatched={async () => {
+                onToggleWatched={() =>
                   // same fields as a playback save (stores/player.ts saveProgress);
                   // the episode's own copy of the series
-                  await api.markWatched("episode", e.sourceId, e.id, !e.watched, {
-                    seriesId: e.seriesId,
-                    season: e.season,
-                    episode: e.episode,
-                    title: s.title,
-                    subtitle: e.title,
-                    image: s.cover,
-                    backdrop: s.backdrop ?? e.image,
-                    ext: e.ext,
-                    duration: e.duration,
-                  });
-                  refresh();
-                }}
+                  void backgroundWrite(
+                    api.markWatched("episode", e.sourceId, e.id, !e.watched, {
+                      seriesId: e.seriesId,
+                      season: e.season,
+                      episode: e.episode,
+                      title: s.title,
+                      subtitle: e.title,
+                      image: s.cover,
+                      backdrop: s.backdrop ?? e.image,
+                      ext: e.ext,
+                      duration: e.duration,
+                    }),
+                  ).then(refresh)
+                }
               />
             ))}
           </div>
@@ -166,10 +164,7 @@ export function SeriesDetailPage() {
           kind="series"
           versions={s.versions}
           pending={s.versionsPending}
-          onPicked={() => {
-            void qc.invalidateQueries({ queryKey: ["series-detail", sid, id] });
-            void qc.invalidateQueries({ queryKey: ["continue"] });
-          }}
+          onPicked={invalidateWatchState}
         />
       </div>
       <div className="mt-10">
@@ -184,7 +179,7 @@ export function SeriesDetailPage() {
               s.tmdb?.networks.length ? (
                 <span className="flex flex-wrap gap-x-3">
                   {s.tmdb.networks.map((n) => (
-                    <button key={n} className="font-medium text-accent-strong hover:text-fg" onClick={() => navigate(`/series?network=${encodeURIComponent(n)}`)}>
+                    <button key={n} className="font-medium text-accent-strong hover:text-fg" onClick={() => navigate(`${ROUTES.seriesList}?network=${encodeURIComponent(n)}`)}>
                       {n}
                     </button>
                   ))}

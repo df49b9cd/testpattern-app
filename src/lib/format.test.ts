@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ago, channelsLabel, clock, duration, elapsed, initials, languageName, resolutionLabel, seasonsLabel } from "./format";
+import { ago, channelsLabel, clock, currentAndUpcoming, duration, elapsed, initials, isAiring, languageName, resolutionLabel, seasonsLabel } from "./format";
 
 describe("clock", () => {
   it("shows minutes, and hours when needed", () => {
@@ -32,6 +32,25 @@ describe("elapsed", () => {
     expect(elapsed(100, 200, 50)).toBe(0);
     expect(elapsed(100, 200, 500)).toBe(1);
     expect(elapsed(200, 200, 200)).toBe(0);
+  });
+});
+
+describe("now/next", () => {
+  const show = (start: number, stop: number) => ({ start, stop, title: `${start}` });
+  it("airs from its start up to (not including) its stop", () => {
+    expect(isAiring(show(100, 200), 100)).toBe(true);
+    expect(isAiring(show(100, 200), 199)).toBe(true);
+    expect(isAiring(show(100, 200), 200)).toBe(false);
+    expect(isAiring(show(100, 200), 99)).toBe(false);
+  });
+  it("splits a guide into the running show and the ones after it", () => {
+    const list = [show(0, 100), show(100, 200), show(200, 300), show(300, 400)];
+    expect(currentAndUpcoming(list, 150)).toEqual({ current: list[1], upcoming: [list[2], list[3]] });
+  });
+  it("lists what comes next when nothing airs (a gap in the guide)", () => {
+    const list = [show(0, 100), show(200, 300)];
+    expect(currentAndUpcoming(list, 150)).toEqual({ current: undefined, upcoming: [list[1]] });
+    expect(currentAndUpcoming([], 150)).toEqual({ current: undefined, upcoming: [] });
   });
 });
 

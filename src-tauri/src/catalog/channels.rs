@@ -1,7 +1,22 @@
 //! Live channels: listings with now/next, channel groups and their feeds, and
 //! the Live page's country/genre navigation.
 
-use super::*;
+use std::collections::HashMap;
+use std::time::Instant;
+
+use rusqlite::types::Value as Sql;
+use rusqlite::{Connection, OptionalExtension, Row};
+use serde::Serialize;
+use tauri::State;
+
+use crate::db::now;
+use crate::error::{Error, Result};
+use crate::settings;
+use crate::state::{AppState, read_blocking};
+use crate::works::versions;
+
+use super::types::like_pattern;
+use super::{Brief, ChannelItem, ChannelQuery, GroupInfo, Page, split_badges};
 
 /// Channel rows with now/next. `grouped`: one row per channel group,
 /// titled as the group and playing its chosen variant (`g.source_id`/
@@ -444,6 +459,7 @@ pub async fn channel_variants(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     #[test]
     fn a_country_lists_its_guide_channels_first() {

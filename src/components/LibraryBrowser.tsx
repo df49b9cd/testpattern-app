@@ -1,17 +1,24 @@
 import clsx from "clsx";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ChevronDown, Film, Heart, LayoutGrid, Search, X } from "lucide-react";
+import { Film, Heart, LayoutGrid, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
 import { itemKey } from "../lib/item";
-import { loadJson, saveJson } from "../lib/storage";
-import type { FacetFilter, FacetName, Facets, FacetValue, MediaQuery, MediaSort, Movie, Series } from "../lib/types";
+import { ROUTES } from "../lib/routes";
+import { groupBy } from "../lib/groupBy";
+import { queryKeys } from "../lib/queryKeys";
+import type { FacetFilter, FacetName, Facets, FacetValue, MediaQuery, MediaSort, Movie, Series, WorkKind } from "../lib/types";
+import { useFolds } from "../hooks/useFolds";
 import { PosterCard } from "./media";
 import { PosterGrid } from "./PosterGrid";
-import { Badge, EmptyState, Segmented, Spinner } from "./ui";
+import { Badge, EmptyState, FoldHeader, NavRow, SearchInput, Segmented, Spinner } from "./ui";
 
-type Kind = "movie" | "series";
+/** How each kind is named in the browser. */
+const KIND_TEXT: Record<WorkKind, { title: string; plural: string; singular: string }> = {
+  movie: { title: "Movies", plural: "movies", singular: "movie" },
+  series: { title: "Series", plural: "series", singular: "series" },
+};
 
 const SORTS: { value: MediaSort; label: string }[] = [
   { value: "added", label: "Recent" },
@@ -55,7 +62,7 @@ function filtersFromParams(params: URLSearchParams): FacetFilter[] {
   });
 }
 
-export function LibraryBrowser({ kind }: { kind: Kind }) {
+export function LibraryBrowser({ kind }: { kind: WorkKind }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const sort = (params.get("sort") as MediaSort) ?? "added";
@@ -82,12 +89,12 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
 
   const query: MediaQuery = { favorites: favorites || undefined, q: debounced || undefined, sort, facets };
   const facetQuery = useQuery({
-    queryKey: [kind === "movie" ? "movies" : "series", "facets", { favorites, q: debounced, facets }],
+    queryKey: [...queryKeys.works(kind), "facets", { favorites, q: debounced, facets }],
     queryFn: () => api.workFacets(kind, { favorites: favorites || undefined, q: debounced || undefined, facets }),
     placeholderData: keepPreviousData,
   });
 
-  const title = kind === "movie" ? "Movies" : "Series";
+  const title = KIND_TEXT[kind].title;
   const labelOf = (f: FacetFilter) =>
     facetQuery.data?.[f.facet].find((v) => v.value === f.value)?.label ?? f.value;
   const clearAll = () => {
@@ -105,15 +112,7 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
           {facetQuery.data && <span className="text-sm tabular-nums text-dim">{facetQuery.data.total.toLocaleString()}</span>}
         </div>
         <div className="flex items-center gap-3">
-          <label className="relative flex w-64 items-center">
-            <Search className="pointer-events-none absolute left-3 size-4 text-faint" />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder={`Filter ${title.toLowerCase()}`}
-              className="h-9 w-full rounded-lg bg-white/[0.06] pl-9 pr-3 text-sm outline-none ring-1 ring-white/[0.06] placeholder:text-faint focus:ring-accent"
-            />
-          </label>
+          <SearchInput value={q} onChange={setQ} placeholder={`Filter ${KIND_TEXT[kind].plural}`} className="w-64" />
           <Segmented value={sort} options={SORTS} onChange={(v) => update({ sort: v === "added" ? null : v })} />
         </div>
       </div>
@@ -138,7 +137,7 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
   );
 
   const empty = favorites && !facets.length && !debounced ? (
-    <EmptyState icon={<Heart />} title="No favorites yet" text={`Tap the heart on any ${kind === "movie" ? "movie" : "series"} to collect it here.`} />
+    <EmptyState icon={<Heart />} title="No favorites yet" text={`Tap the heart on any ${KIND_TEXT[kind].singular} to collect it here.`} />
   ) : (
     <EmptyState icon={<Film />} title="Nothing found" text="No title matches all of these filters." />
   );
@@ -158,7 +157,7 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
       <div className="min-w-0 flex-1">
         {kind === "movie" ? (
           <PosterGrid<Movie>
-            queryKey={["movies", "grid", query]}
+            queryKey={[...queryKeys.works("movie"), "grid", query]}
             fetchPage={(offset, limit) => api.movies({ ...query, offset, limit })}
             itemKey={(m) => m.key ?? itemKey(m)}
             header={header}
@@ -174,13 +173,13 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
                 favorite={m.favorite}
                 badge={<QualityBadges quality={m.quality} />}
                 width={w}
-                onClick={() => navigate(`/movies/${m.sourceId}/${m.id}`)}
+                onClick={() => navigate(ROUTES.movie(m))}
               />
             )}
           />
         ) : (
           <PosterGrid<Series>
-            queryKey={["series", "grid", query]}
+            queryKey={[...queryKeys.works("series"), "grid", query]}
             fetchPage={(offset, limit) => api.series({ ...query, offset, limit })}
             itemKey={(s) => s.key ?? itemKey(s)}
             header={header}
@@ -194,7 +193,7 @@ export function LibraryBrowser({ kind }: { kind: Kind }) {
                 favorite={s.favorite}
                 badge={<QualityBadges quality={s.quality} />}
                 width={w}
-                onClick={() => navigate(`/series/${s.sourceId}/${s.id}`)}
+                onClick={() => navigate(ROUTES.series(s))}
               />
             )}
           />
@@ -239,17 +238,6 @@ function FilterChip({ children, onRemove }: { children: React.ReactNode; onRemov
 
 // ------------------------------------------------------------ facet panel
 
-function usePersistedFlags(key: string, initial: Record<string, boolean>) {
-  const [flags, setFlags] = useState<Record<string, boolean>>(() => ({ ...initial, ...loadJson<Record<string, boolean>>(key, {}) }));
-  const toggle = (name: string) =>
-    setFlags((f) => {
-      const next = { ...f, [name]: !f[name] };
-      saveJson(key, next);
-      return next;
-    });
-  return [flags, toggle] as const;
-}
-
 function FacetPanel({
   kind,
   facets,
@@ -260,7 +248,7 @@ function FacetPanel({
   onFavorites,
   onToggle,
 }: {
-  kind: Kind;
+  kind: WorkKind;
   facets?: Facets;
   loading: boolean;
   active: FacetFilter[];
@@ -270,37 +258,31 @@ function FacetPanel({
   onToggle: (facet: FacetName, value: string) => void;
 }) {
   // collapsed sections; provider categories start collapsed (there are ~80)
-  const [collapsed, toggleCollapsed] = usePersistedFlags(`library.collapsed.${kind}`, { collection: true });
+  const folds = useFolds(`library.collapsed.${kind}`, (facet) => facet === "collection");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const isActive = (facet: FacetName, value: string) => active.some((f) => f.facet === facet && f.value === value);
 
   return (
     <nav aria-label="Browse" className="flex w-[248px] shrink-0 flex-col border-r border-line bg-panel">
       <div className="flex-1 overflow-y-auto px-2 pb-8 pt-6">
-        <PanelRow icon={<LayoutGrid className="size-4" />} active={!active.length && !favorites} onClick={onAll} count={undefined}>
-          All {kind === "movie" ? "movies" : "series"}
-        </PanelRow>
-        <PanelRow icon={<Heart className={clsx("size-4", favorites && "fill-live text-live")} />} active={favorites} onClick={onFavorites}>
+        <NavRow dense icon={<LayoutGrid className="size-4" />} active={!active.length && !favorites} onClick={onAll}>
+          All {KIND_TEXT[kind].plural}
+        </NavRow>
+        <NavRow dense icon={<Heart className={clsx("size-4", favorites && "fill-live text-live")} />} active={favorites} onClick={onFavorites}>
           Favorites
-        </PanelRow>
+        </NavRow>
         {loading && <Spinner className="px-3 py-4" />}
         {facets &&
           SECTIONS.map(({ facet, title, rows }) => {
             const values = facets[facet];
             const selected = active.find((f) => f.facet === facet);
             if (!values.length && !selected) return null;
-            const open = !collapsed[facet] || !!selected;
+            const open = !folds.isCollapsed(facet) || !!selected;
             return (
               <section key={facet} className="mt-4">
-                <button
-                  onClick={() => toggleCollapsed(facet)}
-                  aria-expanded={open}
-                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-faint hover:text-dim"
-                >
-                  <ChevronDown className={clsx("size-3.5 transition-transform", !open && "-rotate-90")} />
+                <FoldHeader open={open} onToggle={() => folds.toggle(facet)} count={values.length}>
                   {title}
-                  <span className="ml-auto font-medium normal-case tracking-normal">{values.length}</span>
-                </button>
+                </FoldHeader>
                 {open &&
                   (facet === "collection" ? (
                     <CollectionList values={values} isActive={(v) => isActive(facet, v)} onToggle={(v) => onToggle(facet, v)} />
@@ -342,9 +324,9 @@ function ValueList({
   return (
     <div className="flex flex-col">
       {shown.map((v) => (
-        <PanelRow key={v.value} active={isActive(v.value)} onClick={() => onToggle(v.value)} count={v.count}>
+        <NavRow key={v.value} dense active={isActive(v.value)} onClick={() => onToggle(v.value)} count={v.count}>
           {v.label}
-        </PanelRow>
+        </NavRow>
       ))}
       {values.length > limit && !more && (
         <button onClick={onMore} className="px-3 py-1.5 text-left text-[12.5px] font-semibold text-accent-strong hover:text-fg">
@@ -371,14 +353,8 @@ function CollectionList({
   onToggle: (value: string) => void;
 }) {
   const groups = useMemo(() => {
-    const map = new Map<string, FacetValue[]>();
-    for (const v of values) {
-      const g = v.group ?? "Other";
-      if (!map.has(g)) map.set(g, []);
-      map.get(g)!.push(v);
-    }
     // bigger groups first, "Other" last
-    return [...map.entries()].sort(
+    return [...groupBy(values, (v) => v.group ?? "Other")].sort(
       (a, b) => Number(a[0] === "Other") - Number(b[0] === "Other") || b[1].length - a[1].length || a[0].localeCompare(b[0]),
     );
   }, [values]);
@@ -388,44 +364,12 @@ function CollectionList({
         <div key={group} className="mt-1">
           <div className="px-3 pb-0.5 pt-1.5 text-[11.5px] font-semibold text-dim">{group}</div>
           {vs.map((v) => (
-            <PanelRow key={v.value} active={isActive(v.value)} onClick={() => onToggle(v.value)} count={v.count} inset>
+            <NavRow key={v.value} dense inset active={isActive(v.value)} onClick={() => onToggle(v.value)} count={v.count}>
               {v.label}
-            </PanelRow>
+            </NavRow>
           ))}
         </div>
       ))}
     </div>
-  );
-}
-
-function PanelRow({
-  active,
-  onClick,
-  count,
-  icon,
-  inset,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  count?: number;
-  icon?: React.ReactNode;
-  inset?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={clsx(
-        "flex min-h-8 w-full items-center gap-2.5 rounded-lg px-3 py-1 text-left text-[13.5px] transition-colors",
-        inset && "pl-5",
-        active ? "bg-accent/15 font-semibold text-fg" : "text-dim hover:bg-white/[0.04] hover:text-fg",
-      )}
-    >
-      {icon && <span className={clsx("shrink-0", active ? "text-accent-strong" : "text-faint")}>{icon}</span>}
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-      {count != null && <span className="shrink-0 text-[11px] tabular-nums text-faint">{count.toLocaleString()}</span>}
-    </button>
   );
 }

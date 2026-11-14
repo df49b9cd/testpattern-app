@@ -37,7 +37,7 @@ pub fn toggle_favorite(
             "DELETE FROM favorite WHERE source_id = ?1 AND kind = ?2 AND item_id = ?3",
             params![source_id, kind, item_id],
         )?,
-        ItemKind::Episode => return Err(Error::msg("cannot favorite an episode")),
+        ItemKind::Episode => return Err(Error::msg("cannot favorite an episode".into())),
         ItemKind::Movie | ItemKind::Series => conn.execute(
             &format!(
                 "DELETE FROM favorite WHERE kind = ?2 AND (

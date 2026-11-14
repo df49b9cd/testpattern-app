@@ -4,8 +4,8 @@ import { nowUnix } from "../lib/format";
 import type { ItemRef } from "../lib/item";
 
 /** Guide window around now: the running show's start … well past the next ones. */
-export const EPG_BEHIND = 3600;
-export const EPG_AHEAD = 12 * 3600;
+const EPG_BEHIND = 3600;
+const EPG_AHEAD = 12 * 3600;
 const EPG_REFRESH = 5 * 60_000;
 
 /**
