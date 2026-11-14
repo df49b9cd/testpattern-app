@@ -145,8 +145,8 @@ export function PlayerPage() {
     { keys: ["f", "F"], run: flipFullscreen },
     { keys: ["m", "M"], run: toggleMute },
     { keys: ["Escape"], run: () => (panel ? setPanel(null) : void exit()) },
-    { keys: ["a", "A"], when: !casting, run: () => void control.cycleAudio() },
-    { keys: ["s", "S"], when: !casting, run: () => subtitleKey(say) },
+    { keys: ["a", "A"], run: () => void control.cycleAudio() },
+    { keys: ["s", "S"], run: () => subtitleKey(say) },
     { keys: ["i", "I"], when: !casting, run: toggleInfo },
     { keys: ["r", "R"], when: live && !casting, run: recording.toggleRecord },
     { keys: ["p", "P"], when: !casting, run: () => void toPip() },
@@ -377,14 +377,14 @@ function BottomBar({
         <div className="flex-1" />
         <Volume />
         <CastMenu />
+        <MenuButton label="Audio" icon={<AudioLines className="size-5" />} open={panel === "audio"} onToggle={() => togglePanel("audio")}>
+          <TrackMenu type="audio" onDone={closePanel} />
+        </MenuButton>
+        <MenuButton label="Subtitles" icon={<Subtitles className="size-5" />} open={panel === "subs"} onToggle={() => togglePanel("subs")}>
+          <TrackMenu type="sub" onDone={closePanel} />
+        </MenuButton>
         {!casting && (
           <>
-            <MenuButton label="Audio" icon={<AudioLines className="size-5" />} open={panel === "audio"} onToggle={() => togglePanel("audio")}>
-              <TrackMenu type="audio" onDone={closePanel} />
-            </MenuButton>
-            <MenuButton label="Subtitles" icon={<Subtitles className="size-5" />} open={panel === "subs"} onToggle={() => togglePanel("subs")}>
-              <TrackMenu type="sub" onDone={closePanel} />
-            </MenuButton>
             <MenuButton label="Picture" icon={<RectangleHorizontal className="size-5" />} open={panel === "aspect"} onToggle={() => togglePanel("aspect")}>
               <AspectMenu onDone={closePanel} />
             </MenuButton>
@@ -434,6 +434,14 @@ function subtitleKey(say: (text: string) => void): void | false {
       if (!ok) return;
       if (action.cycle !== false) void backgroundWrite(setSubsEnabled(true));
       say(action.cycle === false ? "Subtitles off" : "Subtitles on");
+    });
+  } else if (usePlayer.getState().cast) {
+    // the TV has no hidden-but-selected subtitles: on/off is the selection
+    const one = usePlayer.getState().props.tracks.find((t) => t.type === "sub" && t.castable !== false);
+    void control.setTrack("sub", action.toggle && one ? one.id : "no").then((ok) => {
+      if (!ok) return;
+      void backgroundWrite(setSubsEnabled(action.toggle));
+      say(action.toggle ? "Subtitles on" : "Subtitles off");
     });
   } else if (action.toggle) {
     // turning on: only claim it when the write landed
@@ -662,6 +670,10 @@ function TrackMenu({ type, onDone }: { type: "audio" | "sub"; onDone: () => void
   const tracks = usePlayer((s) => s.props.tracks).filter((t) => t.type === type);
   const current = usePlayer((s) => (type === "audio" ? s.props.aid : s.props.sid));
   const subVisible = usePlayer((s) => s.props.subVisible);
+  const cast = usePlayer((s) => s.cast);
+  // on the TV: the tracks are known once it started the item; picking one reloads it there
+  const castWaiting = !!cast && !cast.tracksKnown && !cast.live && cast.state !== "error";
+  const castable = tracks.filter((t) => t.castable !== false);
   const pick = (v: number | "no") => {
     void control.setTrack(type, v);
     // picking a track while subtitles are hidden must show it (PL-100);
@@ -674,7 +686,9 @@ function TrackMenu({ type, onDone }: { type: "audio" | "sub"; onDone: () => void
   const toggleVisible = () => {
     const on = !subVisible;
     void backgroundWrite(setSubsEnabled(on));
-    if (on && (current === false || current === null) && tracks.length > 0) void control.setTrack("sub", tracks[0].id);
+    // the TV shows what is selected: off is no track there
+    if (cast && !on) void control.setTrack("sub", "no");
+    else if (on && (current === false || current === null) && castable.length > 0) void control.setTrack("sub", castable[0].id);
     onDone();
   };
   return (
@@ -706,17 +720,32 @@ function TrackMenu({ type, onDone }: { type: "audio" | "sub"; onDone: () => void
           Off
         </MenuItem>
       )}
-      {tracks.length === 0 && <div className="px-3 py-2 text-sm text-faint">No {type === "audio" ? "audio" : "subtitle"} tracks</div>}
-      {tracks.map((t) => (
-        <MenuItem
-          key={t.id}
-          active={current === t.id}
-          onClick={() => pick(t.id)}
-          hint={[t.codec?.toUpperCase(), t["demux-channel-count"] ? `${t["demux-channel-count"]}ch` : null].filter(Boolean).join(" ")}
-        >
-          {trackLabel(t)}
-        </MenuItem>
-      ))}
+      {castWaiting && <div className="px-3 py-2 text-sm text-faint">Waiting for the TV…</div>}
+      {cast?.live && type === "sub" ? (
+        <div className="px-3 py-2 text-sm text-faint">Live channels can't show subtitles on the TV</div>
+      ) : (
+        !castWaiting &&
+        tracks.length === 0 && <div className="px-3 py-2 text-sm text-faint">No {type === "audio" ? "audio" : "subtitle"} tracks</div>
+      )}
+      {(cast?.live && type === "sub" ? [] : tracks).map((t) =>
+        t.castable === false ? (
+          // picture subtitles (PGS, DVD) can't be turned into the TV's text subtitles
+          <div key={t.id} className="flex items-center gap-3 px-3 py-2 text-sm text-faint" title="This subtitle is an image and can't be shown on the TV">
+            <span className="size-1.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{trackLabel(t)}</span>
+            <span className="shrink-0 text-xs">Not on TV</span>
+          </div>
+        ) : (
+          <MenuItem
+            key={t.id}
+            active={current === t.id}
+            onClick={() => pick(t.id)}
+            hint={[t.codec?.toUpperCase(), t["demux-channel-count"] ? `${t["demux-channel-count"]}ch` : null].filter(Boolean).join(" ")}
+          >
+            {trackLabel(t)}
+          </MenuItem>
+        ),
+      )}
     </div>
   );
 }

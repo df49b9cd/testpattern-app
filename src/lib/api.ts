@@ -4,6 +4,7 @@ import type {
   CastDevice,
   CastDevices,
   CastMeta,
+  CastTracks,
   CastStatus,
   Category,
   Channel,
@@ -104,8 +105,10 @@ export const api = {
   /** Adds a TV by IP address (networks where it can't be found). */
   castAddDevice: (address: string) => invoke<CastDevice>("cast_add_device", { address }),
   /** Plays on `deviceId` (new session), or on the TV being cast to when omitted. */
-  castPlay: (req: PlayRequest, meta: CastMeta, deviceId?: string) => invoke<void>("cast_play", { req, meta, deviceId }),
-  castControl: (action: "play" | "pause" | "seek" | "volume" | "mute", value?: number) =>
+  castPlay: (req: PlayRequest, meta: CastMeta, deviceId?: string, tracks?: CastTracks) =>
+    invoke<void>("cast_play", { req, meta, deviceId, tracks: tracks ?? null }),
+  /** audio / subtitle: a stream id from the cast status (subtitle < 0: off); reloads the item where it is */
+  castControl: (action: "play" | "pause" | "seek" | "volume" | "mute" | "audio" | "subtitle", value?: number) =>
     invoke<void>("cast_control", { action, value }),
   castStop: () => invoke<void>("cast_stop"),
   castStatus: () => invoke<CastStatus | null>("cast_status"),

@@ -15,8 +15,8 @@ use crate::{playback, settings};
 use super::discovery::{search, start_browsing};
 use super::session::run;
 use super::{
-    Cast, CastState, Cmd, Device, Devices, Item, Meta, STATUS_EVENT, Session, Status, emit_devices,
-    probe, relay, remember,
+    Cast, CastState, Cmd, Device, Devices, Item, Meta, STATUS_EVENT, Session, Status, TrackRequest,
+    emit_devices, probe, relay, remember,
 };
 
 /// The cast devices found so far; the first call starts looking
@@ -60,7 +60,8 @@ pub async fn cast_add_device<R: Runtime>(
 
 /// Plays `req` on a TV: on `device_id` (starting a session there), or on the
 /// TV already being cast to. Local playback stops — the account streams to
-/// one place.
+/// one place. `tracks` are the audio/subtitle streams to start with (those
+/// playing here when casting starts); without, the language settings pick.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed `State` as an argument
 pub async fn cast_play<R: Runtime>(
@@ -72,14 +73,22 @@ pub async fn cast_play<R: Runtime>(
     device_id: Option<String>,
     req: PlayRequest,
     meta: Option<Meta>,
+    tracks: Option<TrackRequest>,
 ) -> Result<()> {
     let st = state.inner().clone();
     let stream = playback::resolve_and_touch(&st, &req).await?;
-    let audio_lang =
-        read_blocking(&st, |conn| Ok(settings::get_str(conn, "player.audioLang"))).await?;
+    let (audio_lang, sub_lang, subs_enabled) = read_blocking(&st, |conn| {
+        Ok((
+            settings::get_str(conn, "player.audioLang"),
+            settings::get_str(conn, "player.subLang"),
+            settings::get_bool(conn, "player.subsEnabled"),
+        ))
+    })
+    .await?;
     probe.cancel_running().await?;
     let _ = player.stop();
 
+    let (audio, subtitle) = tracks.unwrap_or_default().picks(subs_enabled);
     let mut urls = vec![stream.url];
     urls.extend(stream.alternates);
     let mut meta = meta.unwrap_or_default();
@@ -91,9 +100,12 @@ pub async fn cast_play<R: Runtime>(
             referrer: stream.referrer,
             live: stream.live,
             audio_lang,
+            sub_lang,
         },
         meta,
         start: req.start.unwrap_or(0.0),
+        audio,
+        subtitle,
     });
 
     let mut session = cast.session.lock();
@@ -172,16 +184,21 @@ pub async fn cast_play<R: Runtime>(
     Ok(())
 }
 
-/// play | pause | seek (seconds) | volume (0…1) | mute (0/1)
+/// play | pause | seek (seconds) | volume (0…1) | mute (0/1) | audio (stream
+/// id) | subtitle (stream id, < 0: off) — ids from `Status::audio_tracks` /
+/// `subtitle_tracks`; a track change reloads the item where it is
 #[tauri::command]
 pub fn cast_control(cast: State<'_, Cast>, action: String, value: Option<f64>) -> Result<()> {
     let v = value.unwrap_or(0.0);
+    let stream = |v: f64| (v >= 0.0 && v.is_finite()).then_some(v as u32);
     let cmd = match action.as_str() {
         "play" => Cmd::Play,
         "pause" => Cmd::Pause,
         "seek" => Cmd::Seek(v),
         "volume" => Cmd::Volume(v),
         "mute" => Cmd::Mute(v != 0.0),
+        "audio" => Cmd::Audio(stream(v).ok_or_else(|| Error::msg("unknown audio track".into()))?),
+        "subtitle" => Cmd::Subtitle(stream(v)),
         other => return Err(Error::msg(format!("unknown cast action {other}"))),
     };
     cast.send(cmd)

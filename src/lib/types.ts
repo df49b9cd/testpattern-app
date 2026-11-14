@@ -499,6 +499,10 @@ export interface Track {
   default?: boolean;
   selected?: boolean;
   external?: boolean;
+  /** the stream's index in its file (mpv `ff-index`; cast track ids are the same) */
+  "ff-index"?: number;
+  /** casting only: false for subtitles the TV can't show (picture subtitles, live channels) */
+  castable?: boolean;
   "demux-channel-count"?: number;
   "demux-w"?: number;
   "demux-h"?: number;
@@ -572,6 +576,32 @@ export interface CastStatus {
   volume: number;
   muted: boolean;
   error: string | null;
+  /** the item's streams are known (`audioTracks`, `subtitleTracks`; `audio`, `subtitle` settled) */
+  tracksKnown?: boolean;
+  /** the item's streams, known once the TV started it (ids = stream indexes) */
+  audioTracks?: CastTrack[];
+  subtitleTracks?: CastTrack[];
+  /** the audio stream the TV plays */
+  audio?: number | null;
+  /** the subtitle stream the TV shows; null: off */
+  subtitle?: number | null;
+}
+
+export interface CastTrack {
+  id: number;
+  lang?: string | null;
+  title?: string | null;
+  codec: string;
+  channels: number;
+  default: boolean;
+  /** subtitles: false for picture subtitles and live channels */
+  castable: boolean;
+}
+
+/** The tracks a cast item starts with: stream indexes; subtitle < 0 = off, omitted = by the settings. */
+export interface CastTracks {
+  audio?: number;
+  subtitle?: number;
 }
 
 export interface CastMeta {
